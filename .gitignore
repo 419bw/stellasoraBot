@@ -8,3 +8,6 @@ data/
 # 本地构建产物与容器暂存
 vendor/
 out/
+
+# 本地开发笔记（不入仓库）
+DEVELOPMENT-NOTES.md

@@ -1,0 +1,18 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "news": {
+   "id": 4490,
+   "title": "诺瓦异闻·新篇章",
+   "type": "notice",
+   "typeLabel": "公告",
+   "publishTime": 1787976000344,
+   "thumbnail": "https://webusstatic.yo-star.com/web-cms-test/upload/content/2026/08/28/yVXjRj6S.jpg",
+   "content": "<div class=\"announcement\">\n<p><img src=\"https://webusstatic.yo-star.com/web-cms-test/upload/content/2026/08/28/KkS8nT8i.jpg\" alt=\"\" width=\"100%\" height=\"100%\"></p>\n<p>踏上诺瓦之旅的魔王啊，愿听那旅人之事，宛如繁星闪烁于您旅途的夜空。<br>诺瓦异闻全新篇章即将开放，魔王大人可从异闻中探寻独属于旅人少女们的故事。</p>\n<p>▌内容说明<br>诺瓦异闻开放全新篇章第十七篇「最珍贵的宝物」。<br><br>▌开放时间<br>2026/09/01 12:00开放后常驻</p>\n</div>"
+  },
+  "preNewsId": 4482,
+  "nextNewsId": 4481
+ },
+ "timestamp": 1788707229456
+}

@@ -1,0 +1,10 @@
+.probe/
+cmd/qqprobe/qqprobe.exe
+*.exe
+creds*.json
+data/
+*.db
+
+# 本地构建产物与容器暂存
+vendor/
+out/

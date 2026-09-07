@@ -1,0 +1,18 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "news": {
+   "id": 4156,
+   "title": "「出击海滨阵地！倾尽全力的碎瓜一击」说明",
+   "type": "notice",
+   "typeLabel": "公告",
+   "publishTime": 1786428000759,
+   "thumbnail": "https://webusstatic.yo-star.com/web-cms-test/upload/content/2026/08/07/1nwtHhKX.png",
+   "content": "<div class=\"announcement\">\n<p><img src=\"https://webusstatic.yo-star.com/web-cms-test/upload/content/2026/08/07/SLF0_2MC.jpg\" alt=\"\" width=\"100%\" height=\"100%\"></p>\n<p>夏日，海滩，西瓜！找准时机使出你倾尽全力的碎瓜一击吧。活动期间，参与活动、完成任务可获得[星之砂]、[精美礼物随机盒]、[精选旅人晋升礼盒]等奖励！<br><br>▌参与活动<br><a href=\"https://watermelon-stellasora.yostar.cn/\">&gt;&gt;点击此处进入活动</a><br><br>▌活动任务与奖励发放说明</p>\n<div data-page-id=\"RCFLdnaKoo0xACxR54icVfWhnEc\" data-lark-html-role=\"root\" data-docx-has-block-data=\"false\">\n<div class=\"ace-line ace-line old-record-id-Fj9ldWXRMoMAQNxG05hcI0i6nKh\">由于活动相关任务进度记录与奖励发放需您在活动页面内登录游戏账号后才能正常进行，您可点击界面右上方登录按钮跟随活动登录指引进行登录。</div>\n<div class=\"ace-line ace-line old-record-id-Fj9ldWXRMoMAQNxG05hcI0i6nKh\"><br>▌活动时间<br>2026/08/11 12:00 ~ 2026/09/08 10:59</div>\n</div>\n</div>"
+  },
+  "preNewsId": 4169,
+  "nextNewsId": 4155
+ },
+ "timestamp": 1788707228673
+}

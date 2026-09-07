@@ -1,0 +1,120 @@
+// 星塔机器人 —— 包依赖图（编译期）
+// 依据：go list -f "{{.ImportPath}} -> {{join .Imports " "}}" ./internal/... ./cmd/...
+// 只统计非测试文件的 import。红虚线 = 报告里记为「已知设计取舍」的渗透边。
+// 布局：newrank + rank=same 把图钉成五行——装配 / 功能 / 内核+基础设施 / 内核子包 / 外部世界。
+digraph packages {
+	graph [fontname="Microsoft YaHei", rankdir=TB, ranksep=0.7, nodesep=0.3,
+	       newrank=true, splines=true, labelloc=t, fontsize=20, label="包依赖图（编译期 import，测试不计）"];
+	node [fontname="Microsoft YaHei", shape=box, style="rounded,filled", fontsize=12,
+	      fillcolor="#f5f6f8", color="#3c3f44", margin="0.16,0.09"];
+	edge [fontsize=10, color="#8b8f96", arrowsize=0.6];
+
+	// ---- 装配层（第 0 行）--------------------------------------------------
+	subgraph cluster_cmd {
+		label="装配层 cmd/（全项目唯一把具体实现接起来的地方）"; fontsize=13; style="rounded,dashed"; color="#9aa0a6";
+		xingtabot [label="cmd/xingtabot\nmain.go：开库 · 建日历 · 造 client\n注册 4 个功能 · 提供 Sink", fillcolor="#fff3cd"];
+		qqprobe [label="cmd/qqprobe\n平台可达性探针"];
+		qqwatch [label="cmd/qqwatch\n事件抓包观察"];
+		qqsimcmd [label="cmd/qqsim\n本地模拟平台"];
+		{rank=same; xingtabot; qqprobe; qqwatch; qqsimcmd;}
+	}
+
+	// ---- 功能层（第 1 行）--------------------------------------------------
+	subgraph cluster_feat {
+		label="功能层 internal/feature/（功能间零 import，只共享 text 叶子包）"; fontsize=13; style="rounded,dashed"; color="#9aa0a6";
+		calexpiry [label="calexpiry\n到期提醒\n（唯一用主动消息的功能）", fillcolor="#e6f4ea"];
+		calquery  [label="calquery\n活动查询命令\n（不存任何东西）", fillcolor="#e6f4ea"];
+		calops    [label="calops\n人工覆盖 / 待确认\n（管理员命令）", fillcolor="#e6f4ea"];
+		fetext    [label="feature/text\n排版叶子包\n（无业务概念）", fillcolor="#eef1f4"];
+		{rank=same; calexpiry; calquery; calops; fetext;}
+	}
+
+	// ---- 内核 + 基础设施（第 2 行）-----------------------------------------
+	subgraph cluster_kernel {
+		label="内核 internal/kernel/（不 import 任何上层包）"; fontsize=13; style="rounded,dashed"; color="#c0392b";
+		kernel [label="kernel\nRuntime + API（5 方法）\nFeature 接口", fillcolor="#fde3e3"];
+	}
+	subgraph cluster_infra {
+		label="领域引擎与基础设施（不认识 feature）"; fontsize=13; style="rounded,dashed"; color="#9aa0a6";
+		annsync    [label="annsync\n抓取→存储→投影\n同步引擎（也是 kernel.Feature）", fillcolor="#e8daf5"];
+		stellasora [label="stellasora\n星塔源：列目录 + 解析公告 v2", fillcolor="#e8daf5"];
+		store      [label="store\n带 ns 的文档存储\n只暴露 Doc/Batch/OpenBolt", fillcolor="#e8daf5"];
+		command    [label="command\n命令表 + Hub 适配器\n「一条命令 = 一条回复」", fillcolor="#e8daf5"];
+		qq         [label="qq\nClient·Token·Gateway\nHub·Dedup·Webhook", fillcolor="#e8daf5"];
+		{rank=same; annsync; stellasora; store; command; qq;}
+	}
+	{rank=same; kernel; annsync; stellasora; store; command; qq;}
+
+	// ---- 内核子包（第 3 行）------------------------------------------------
+	kcal   [label="kernel/calendar\n内存活动索引\nView / Writer 读写分离"];
+	kqueue [label="kernel/queue\n限流·合并·退避·丢弃"];
+	ksch   [label="kernel/schedule\n最小堆定时器"];
+	subgraph cluster_kernel2 {
+		label=" "; style="invis";
+		{rank=same; kcal; kqueue; ksch;}
+	}
+
+	// ---- 外部世界与工具（第 4 行 / 顶部右侧）-------------------------------
+	subgraph cluster_tools {
+		label="devtools（不参与线上进程）"; fontsize=13; style="rounded,dashed"; color="#9aa0a6";
+		devqqsim  [label="devtools/qqsim"];
+		devload   [label="devtools/loadtest"];
+		storetest [label="store/storetest\n契约测试 + 内存实现"];
+	}
+	subgraph cluster_ext {
+		label="外部世界（运行期网络）"; fontsize=13; style="rounded,dashed"; color="#9aa0a6";
+		qqplat [label="QQ 开放平台\napi.bot.qq.com", shape=ellipse, fillcolor="#cfe2ff", peripheries=2];
+		gsite  [label="星塔官网 / CDN\n公告 JSON", shape=ellipse, fillcolor="#cfe2ff", peripheries=2];
+		legend [label="图例：红虚线 = 已知设计取舍\l① queue.Item / calendar.View 子包类型渗入 feature 层\l② API.Scheduler() 全项目零调用，删掉即彻底封死\l", shape=note, fontsize=10.5, fillcolor="#fffbe6"];
+		{rank=same; qqplat; gsite; legend;}
+	}
+
+	// ---- 边：装配层 --------------------------------------------------------
+	// 探针/观察/模拟工具不参与线上分层，用浮边（constraint=false）避免干扰分层。
+	xingtabot -> {annsync command calexpiry calquery calops kernel kcal kqueue qq stellasora store};
+	qqprobe -> qq   [constraint=false];
+	qqwatch -> qq   [constraint=false];
+	qqsimcmd -> {devqqsim devload} [constraint=false];
+
+	// ---- 边：功能层自选核心的哪一块 ----------------------------------------
+	calexpiry -> kernel [weight=2];
+	calexpiry -> kcal [style=dashed, color="#c0392b", label="View 渗透", fontcolor="#c0392b"];
+	calexpiry -> kqueue [style=dashed, color="#c0392b", label="queue.Item 渗透", fontcolor="#c0392b"];
+	calexpiry -> store;
+	calexpiry -> fetext;
+
+	calquery -> kernel;
+	calquery -> kcal [label="只拿 View"];
+	calquery -> command;
+	calquery -> annsync [label="只取 Status 类型"];
+	calquery -> qq [label="只为 *qq.Message"];
+	calquery -> fetext;
+
+	calops -> kernel;
+	calops -> annsync [label="受控只读面"];
+	calops -> command;
+	calops -> store;
+	calops -> qq [label="只为 *qq.Message"];
+	calops -> fetext;
+
+	// ---- 边：内核（kernel -> ksch 只画下面那条红色强调边，避免重复）-------
+	kernel -> {kcal kqueue} [weight=2];
+
+	// ---- 边：基础设施（全部朝下或同层，无反向依赖）------------------------
+	annsync -> kernel [label="实现 Feature"];
+	annsync -> kcal [label="唯一持有 Writer", weight=2];
+	annsync -> store;
+	stellasora -> annsync [label="实现 Source"];
+	command -> qq [label="Cmd.Run 签名\n绑 *qq.Message"];
+	storetest -> store [constraint=false, color="#c3c7cd"];
+	devload -> devqqsim [constraint=false];
+	devload -> qq [constraint=false, color="#c3c7cd"];
+
+	// ---- 外部交互（虚线 = 运行期网络；外部节点钉在最底部）-----------------
+	qq -> qqplat [style=dotted, label="REST 发送", fontcolor="#6b7076"];
+	qq -> qqplat [style=dotted, dir=back, label="WebSocket 事件 / HTTP 回包", fontcolor="#6b7076"];
+	stellasora -> gsite [style=dotted, label="HTTP 抓公告", fontcolor="#6b7076"];
+
+	// ---- 依赖方向的唯一例外：kernel 里的 Scheduler() 出口 ----------------
+	kernel -> ksch [style=bold, color="#c0392b", label="API.Scheduler()\n全项目零调用", fontcolor="#c0392b"];
+}

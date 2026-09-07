@@ -1,0 +1,21 @@
+{
+ "id": "ROBOT1.0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+ "author": {
+  "id": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+  "member_openid": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+  "member_role": "member",
+  "username": "小明",
+  "bot": false
+ },
+ "content": " /今日天气 ",
+ "group_openid": "B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5",
+ "message_type": 0,
+ "timestamp": "2026-07-21T10:00:00+08:00",
+ "message_scene": {
+  "source": "default",
+  "ext": [
+   "msg_idx=REFIDX_xxxxxxxxxxxxxxx==",
+   "auth_token=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  ]
+ }
+}

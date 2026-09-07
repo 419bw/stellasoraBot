@@ -1,0 +1,18 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "news": {
+   "id": 1750,
+   "title": "「夜月倾流，闪烁刀影里」限时招募开启",
+   "type": "notice",
+   "typeLabel": "公告",
+   "publishTime": 1760844600399,
+   "thumbnail": "https://webusstatic.yo-star.com/web-cms-prod/upload/content/2025/10/17/d9H6HI9H.jpeg",
+   "content": "<div class=\"announcement\">\n<p><img src=\"https://webusstatic.yo-star.com/web-cms-prod/upload/content/2025/10/17/8MZDFeFg.jpeg\" alt=\"\" width=\"100%\" height=\"100%\"></p>\n<p>「夜月倾流，闪烁刀影里」限时招募活动即将开启，活动期间，全新5星旅人「千都世」招募概率提升！</p>\n<p>▌招募时间<br>2025/10/20 公测开启后 ~ 2025/11/11 03:59</p>\n<p>▌招募说明<br>活动期间，全新5星旅人「千都世」招募概率提升；招募数首次达到120抽时，可领取1次5星旅人「千都世」，仅限一次，在本次招募活动结束时将会清零，不可累计到下个卡池。<br>活动期间，4星旅人「特丽莎」「璟麟」招募概率提升！<br>本期招募活动结束后，5星旅人「千都世」不会立即进入「旅人常驻招募」。<br>本期招募属于「旅人限时招募」，所有未获取5星旅人「千都世」的招募次数会一直累计在「旅人限时招募」中，与其他招募类型的招募次数、保底独立计算，互不影响。<br><br>*更多招募信息可点击招募界面左下角「卡池详情」按钮进行查询。</p>\n</div>"
+  },
+  "preNewsId": 1751,
+  "nextNewsId": 1749
+ },
+ "timestamp": 1788707229670
+}

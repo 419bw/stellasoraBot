@@ -1,0 +1,97 @@
+// 星塔机器人 —— 能力面与注入关系（谁拿到了什么，以及实际调了哪几个方法）
+// 这张图对应那句架构原则：核心只提供基础功能，feature 自选内容做事；内部不做多余的接口暴露。
+// 红字 = 零调用/未接线的出口。
+digraph surfaces {
+	graph [fontname="Microsoft YaHei", rankdir=LR, ranksep=1.1, nodesep=0.26,
+	       labelloc=t, fontsize=20, splines=true,
+	       label="能力面图：接口按消费者定义 —— 以及仍然漏出去的口子"];
+	node [fontname="Microsoft YaHei", shape=box, style="rounded,filled", fontsize=11,
+	      fillcolor="#f5f6f8", color="#3c3f44", margin="0.15,0.10"];
+	edge [fontsize=9.5, color="#6b7076", arrowsize=0.55];
+
+	// ===== 能力面（接口）=====
+	subgraph cluster_api {
+		label="kernel 交给功能的面"; fontsize=13; style="rounded"; color="#c0392b"; fillcolor="#fff6f6";
+		iAPI [label="kernel.API（5 方法）\lSubmit(queue.Item) error\lSchedule(id, at, fn)\lCancel(id) bool\lCalendar() calendar.View\lScheduler() schedule.Scheduler\l", fillcolor="#fde3e3"];
+		iFeat[label="kernel.Feature\lName() string\lStart(ctx, API) error\l（Start 必须非阻塞）", fillcolor="#fde3e3"];
+		iView[label="calendar.View（读，4 方法）\lGet\lActive / Upcoming / EndingWithin", fillcolor="#ffe9e9"];
+		iWrit[label="calendar.Writer（写，4 方法）\lUpsert / BulkUpsert\lRemove / RemoveSet", fillcolor="#ffe9e9"];
+		iSched[label="schedule.Scheduler（5 方法）\lSchedule / Cancel / Run\lPending / Next", fillcolor="#fff0f0"];
+	}
+
+	// ===== 领域与基础设施交给功能的面 =====
+	subgraph cluster_dom {
+		label="领域引擎 / 基础设施的面"; fontsize=13; style="rounded"; color="#1f5c8b"; fillcolor="#f3f8fd";
+		iDoc  [label="store.Doc = Batch + Batch(fn) + Close\l只有 Put/Get/Scan/Delete 四个动作\l值 = JSON 字节，本包不认识任何 ns", fillcolor="#dfeefb"];
+		iReg  [label="command.Registrar\lAdd(Cmd) error\l（calquery 自己再加 HelpText 扩成所需面）", fillcolor="#dfeefb"];
+		iSrc  [label="annsync.Source\lName / List / Fetch", fillcolor="#dfeefb"];
+		iMerg [label="annsync.Merger\lMerge(all []Item) []Item", fillcolor="#f2f4f6", style="rounded,filled,dashed"];
+		iFace [label="annsync 只读面（face.go 受控通道）\lReadStatus / ReadRecs / ReadPending / ReadItems", fillcolor="#dfeefb"];
+		iOv   [label="annsync.OverrideStore\lGet / Put / All", fillcolor="#dfeefb"];
+		iRefr [label="calops.Refresher\lRefresh()\l（功能自己声明的单方法面）", fillcolor="#dfeefb"];
+		iSink [label="queue.Sink\lSend(ctx, *Batch) error", fillcolor="#dfeefb"];
+		iSend [label="command.SendAPI\lSendGroupReply / SendC2CReply", fillcolor="#dfeefb"];
+	}
+
+	// ===== 持有者 =====
+	subgraph cluster_owner {
+		label="持有者（装配全在 cmd/xingtabot/main.go 一处完成）"; fontsize=13; style="rounded"; color="#2f6f4f"; fillcolor="#f4faf6";
+		fexp [label="calexpiry", fillcolor="#dff0e6"];
+		fqry [label="calquery", fillcolor="#dff0e6"];
+		fops [label="calops", fillcolor="#dff0e6"];
+		fsyn [label="annsync（也是 Feature）", fillcolor="#dff0e6"];
+		srcn [label="stellasora", fillcolor="#dff0e6"];
+		mainn[label="cmd/xingtabot\nactiveSink + 注入 everything", fillcolor="#fff3cd"];
+		queu [label="kernel.queue\lDispatcher（藏在 Runtime 内）", fillcolor="#e7efe7"];
+		sched[label="kernel.schedule\lHeapScheduler（藏在 Runtime 内）", fillcolor="#e7efe7"];
+	}
+
+	// ---- 谁实现 Feature ----
+	{fexp fqry fops fsyn} -> iFeat [label="实现"];
+	mainn -> iFeat [label="Register ×4", style=dashed];
+
+	// ---- 谁拿到 API，实际用了哪几个方法 ----
+	iAPI -> fexp [label="Submit · Schedule\lCancel · Calendar\l（四个都用）", color="#2f6f4f", penwidth=1.5];
+	iAPI -> fqry [label="Start 收到 api 但全程未用\l（日历由 main 构造注入）\l", style=dashed, color="#9aa0a6"];
+	iAPI -> fops [label="Start 收到 api 同样未用\l（存储/注册面由 main 注入）\l", style=dashed, color="#9aa0a6"];
+	iAPI -> iSched [label="Scheduler() 把整个调度器\l（含 Run）递给每个功能\l全项目零调用 —— 最该删", color="#c0392b", penwidth=2, fontcolor="#c0392b"];
+	iAPI -> iView  [label="Calendar() 返回只读 View"];
+
+	// ---- View / Writer 的持有者 ----
+	iView -> fqry [label="Active/Upcoming/\lEndingWithin\l（Get 生产零调用）", color="#2f6f4f", penwidth=1.4];
+	iView -> mainn [style=invis];
+	iWrit -> fsyn [label="全项目唯一持有者\l实际只用\lBulkUpsert + RemoveSet", color="#2f6f4f", penwidth=1.4];
+	queu  -> sched [style=invis];
+
+	// ---- 存储与注入 ----
+	iDoc -> fsyn;
+	iDoc -> fexp [label="ns \"calexpiry\""];
+	iDoc -> fops [label="经 OverrideStore"];
+	iReg -> fqry;
+	iReg -> fops;
+	iFace -> fqry [label="只要一个 Status 类型"];
+	iFace -> fops [label="ReadPending / ReadItems"];
+	iOv -> fops  [label="写覆盖"];
+	iOv -> fsyn  [label="投影时读"];
+	iSrc -> srcn [dir=back, label="实现"];
+	fsyn -> iSrc [label="只认识这个接口"];
+	iMerg -> srcn [dir=back, label="没有生产实现者\l只有测试假件", color="#c0392b", fontcolor="#c0392b", style=dashed];
+	fsyn -> iMerg [label="src.(Merger) 类型断言", style=dotted];
+	iRefr -> fsyn [dir=back, label="Syncer 天然满足", color="#8a6d1f"];
+	fops -> iRefr [label="由 main 注入\lnil 也能用（等下一轮）", color="#8a6d1f"];
+
+	// ---- 出站投递与回复 ----
+	iSink -> mainn [dir=back, label="activeSink 实现"];
+	queu -> iSink [label="调 Sink.Send"];
+	iSend -> mainn [label="交给 command.Attach"];
+	srcn -> iSrc [style=invis];
+
+	// ---- 藏在 Runtime 里、外部根本拿不到具体类型（所以这些「预留」接不上线）----
+	mainn -> queu [label="只传 Sink + Policy\l*Dispatcher 不出 kernel 包\l→ OnError / SetRetryClassifier 无处赋值", color="#c0392b", fontcolor="#c0392b"];
+	mainn -> sched [label="schedule.New() 在 NewRuntime 内部\l→ HeapScheduler.OnError 零赋值零测试", color="#c0392b", fontcolor="#c0392b"];
+
+	// ---- 说明 ----
+	note [label="三条判读线\l1. 功能只从 kernel.API / 各引擎的小接口拿能力，\l   没有任何功能绕过 kernel 直接发消息\l2. Writer 只有 annsync 一家持有 —— 读写分离成立\l3. 多余暴露集中在 kernel 出口：Scheduler() 是唯一实违，\l   其余是零调用的预留口（删掉 Scheduler 后才彻底关死）",
+	      shape=note, fillcolor="#fffbe6", fontsize=11];
+	iFeat -> note [style=invis];
+}

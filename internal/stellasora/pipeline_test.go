@@ -19,9 +19,9 @@ import (
 // 单元测覆盖了各自内部，这里盯的是接缝——源产出的条目经引擎投影之后，
 // 日历上到底躺着哪几行、名字对不对、有没有重复。
 
-// pipelineIDs 是 testdata 里的全部十条公告：6 条应当进日历，
-// 4 条（付费礼包、版本内容一览、版本一览、常驻内容）一条都不该进。
-var pipelineIDs = []int64{4506, 4492, 4480, 4481, 4378, 4156, 4507, 4357, 3801, 4490}
+// pipelineIDs 是 testdata 里登记的公告：6 条子活动 + 1 条版本主活动（4356 活动一览）
+// 应当进库，4 条（付费礼包、版本内容一览、版本一览、常驻内容）一条都不该进。
+var pipelineIDs = []int64{4506, 4492, 4480, 4481, 4378, 4156, 4356, 4507, 4357, 3801, 4490}
 
 // serveSite 起一个像真官网的假站：列表只含登记的 id，详情按 /api/resource/news/{id} 路由，
 // 没登记的 id 返回真实的业务码错误形状。
@@ -149,20 +149,21 @@ func TestEngineWithRealFixturesFillsCalendar(t *testing.T) {
 		t.Errorf("进行中活动 %d 种, want 6（%v）", len(got), keysOf(got))
 	}
 
-	// ② 付费礼包、版本汇总、常驻内容一律不进日历
+	// ② 付费礼包、版本汇总、常驻内容一律不进记录（4356 活动一览产出的版本主活动
+	//    是正经记录，欢歌劲浪这个名字现在合法在库）。
 	recs, err := annsync.ReadRecs(doc, "stellasora")
 	if err != nil {
 		t.Fatalf("ReadRecs: %v", err)
 	}
-	for _, bad := range []string{"创业激励基金", "枪林弹雨覆黄沙", "欢歌劲浪·闪耀假日惊涛探险！", "诺瓦异闻·新篇章"} {
+	for _, bad := range []string{"创业激励基金", "枪林弹雨覆黄沙", "诺瓦异闻·新篇章"} {
 		for _, r := range recs {
 			if r.Title == bad {
 				t.Errorf("%q 进了记录（%s）：它不是活动", bad, r.ID)
 			}
 		}
 	}
-	if len(recs) != 6 {
-		t.Errorf("活动记录 %d 条, want 6（%v）", len(recs), pendingTitles(recs))
+	if len(recs) != 7 {
+		t.Errorf("活动记录 %d 条, want 7（%v）", len(recs), pendingTitles(recs))
 	}
 
 	// ③ 真公告不该产生任何假报警：待确认桶为空

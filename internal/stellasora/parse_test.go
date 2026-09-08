@@ -208,7 +208,7 @@ func TestMultiplePrimariesGoToReviewNotCalendar(t *testing.T) {
 	if len(r.ExtraPrimary) != 1 {
 		t.Errorf("ExtraPrimary = %d, want 1（要能向人说清还有几个）", len(r.ExtraPrimary))
 	}
-	if want := "正文有 2 个主时间窗口，像是汇总公告，未采信"; r.Note() != want {
+	if want := "正文有 2 个主时间窗口且切不出条目名，未采信"; r.Note() != want {
 		t.Errorf("Note = %q, want %q", r.Note(), want)
 	}
 }
@@ -386,6 +386,56 @@ func TestNameShapes(t *testing.T) {
 				t.Errorf("名字 = %q, want %q", r.Name, c.want)
 			}
 		})
+	}
+}
+
+// 「[X]活动一览」实际上就是版本主活动自己的公告（4356/4540/3994 三条实测同形状）：
+// 版本窗口之外，还须产出一条主活动事件——主活动的海报（版本主视觉）就从这来。
+// 事件窗口必须与版本边界同源：都取「活动时间」行，玩法止不是兑换止。
+func TestVersionOverviewEmitsMainEvent(t *testing.T) {
+	r := stellasora.Parse(syn("[奋斗吧！大小姐的旅人修炼手册]活动一览",
+		`<p>「奋斗吧！大小姐的旅人修炼手册」限时活动即将开启，完成任务可得奖励！</p>`+
+			`<p>查看长图可了解活动详情~</p>`+
+			`<p>▌开放时间</p><p>活动时间：2026/09/08 维护结束后 ~ 2026/09/22 03:59</p>`+
+			`<p>活动商店与奖励兑换时间：2026/09/08 维护结束后 ~ 2026/09/29 10:59</p>`+
+			`<p>▌参与条件</p><p>权限等级&ge;5</p>`), testZone)
+
+	if r.Ver == nil {
+		t.Fatalf("版本窗口没抽出来")
+	}
+	if r.Ver.Name != "奋斗吧！大小姐的旅人修炼手册" {
+		t.Errorf("版本名 = %q", r.Ver.Name)
+	}
+	if want := at("2026-09-29 10:59"); !r.Ver.RedeemEnd.Equal(want) {
+		t.Errorf("兑换止 = %s, want %s", r.Ver.RedeemEnd, want)
+	}
+	if len(r.Entries) != 1 {
+		t.Fatalf("主活动条目 = %d, want 1", len(r.Entries))
+	}
+	e := r.Entries[0]
+	if e.Name != "奋斗吧！大小姐的旅人修炼手册" {
+		t.Errorf("条目名 = %q, want 版本名（正文散文里的「」不参与命名）", e.Name)
+	}
+	if e.Ival.Status != annsync.StatusFuzzyStart {
+		t.Errorf("Status = %q, want fuzzy_start（维护结束后）", e.Ival.Status)
+	}
+	if want := at("2026-09-22 03:59"); !e.Ival.End.Equal(want) {
+		t.Errorf("条目终点 = %s, want %s（玩法止，不是兑换止）", e.Ival.End, want)
+	}
+	if r.Suspect() {
+		t.Error("活动一览不该报警")
+	}
+}
+
+// 「[X]版本一览」整张图（4357 形状）：零窗口 → 也不产主活动事件。
+// 零事件与不报警在 source_test 用 4357 真夹具钉过，这里钉 parse 层的产出形状。
+func TestVersionImageOnlyEmitsNothing(t *testing.T) {
+	r := stellasora.Parse(syn("[某版本名]版本一览", `<p><img src="https://example.com/long.jpg"></p>`), testZone)
+	if r.Ver != nil {
+		t.Errorf("整图版本一览抽出了版本窗口 %+v", r.Ver)
+	}
+	if len(r.Entries) != 0 {
+		t.Errorf("产出了条目 %+v, want 空", r.Entries)
 	}
 }
 

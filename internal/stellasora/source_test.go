@@ -160,6 +160,10 @@ func TestFetchFillsNamePosterURLFromPost(t *testing.T) {
 	if got.Label != "活动时间" {
 		t.Errorf("Label = %q, want 活动时间（正文里还有活动奖励领取时间，那行不算活动）", got.Label)
 	}
+	if !got.ClaimStart.Equal(at("2026-09-01 12:00")) || !got.ClaimEnd.Equal(at("2026-09-11 03:59")) {
+		t.Errorf("领奖窗 = %s ~ %s, want 09/01 12:00 ~ 09/11 03:59（活动奖励领取时间随事件带出）",
+			got.ClaimStart, got.ClaimEnd)
+	}
 	if got.Status != annsync.StatusOK {
 		t.Errorf("Status = %q, want ok", got.Status)
 	}
@@ -206,6 +210,42 @@ func TestFetchLeavesNonActivitiesEmptyAndQuiet(t *testing.T) {
 				t.Errorf("被判成待确认: %s", it.Note)
 			}
 		})
+	}
+}
+
+// 「[X]活动一览」= 版本主活动自己的公告：Fetch 产出主活动事件，海报用它的封面
+// （版本主视觉）。4356 是线上真夹具（欢歌劲浪活动一览）。
+func TestFetchVersionOverviewEmitsMainEvent(t *testing.T) {
+	srv := serveDetails(t, 4356)
+	it := fetchItem(t, srv.URL, 4356)
+
+	if len(it.Events) != 1 {
+		t.Fatalf("事件数 = %d, want 1（%v）", len(it.Events), eventTitles(it))
+	}
+	got := it.Events[0]
+	if got.Title != "欢歌劲浪·闪耀假日惊涛探险！" {
+		t.Errorf("活动名 = %q, want 版本名", got.Title)
+	}
+	if got.Label != "活动时间" {
+		t.Errorf("Label = %q, want 活动时间", got.Label)
+	}
+	if got.Status != annsync.StatusFuzzyStart {
+		t.Errorf("Status = %q, want fuzzy_start（维护结束后）", got.Status)
+	}
+	if got.Provenance != stellasora.ProvVersion {
+		t.Errorf("Provenance = %q, want version", got.Provenance)
+	}
+	if !got.ClaimStart.Equal(at("2026-08-18 00:00")) || !got.ClaimEnd.Equal(at("2026-09-08 10:59")) {
+		t.Errorf("领奖窗 = %s ~ %s, want 08/18 00:00 ~ 09/08 10:59（活动商店与奖励兑换时间）",
+			got.ClaimStart, got.ClaimEnd)
+	}
+	fixture := readFixture(t, "detail_4356.json")
+	want := fixture["data"].(map[string]any)["news"].(map[string]any)["thumbnail"].(string)
+	if got.Poster != want {
+		t.Errorf("Poster = %q, want 版本主视觉 %q", got.Poster, want)
+	}
+	if it.Suspect {
+		t.Errorf("被判成待确认: %s", it.Note)
 	}
 }
 

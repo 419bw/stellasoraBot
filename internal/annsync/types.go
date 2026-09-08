@@ -30,6 +30,9 @@ type Event struct {
 	End    time.Time
 	Status string
 
+	ClaimStart time.Time // 领奖/兑换窗口；零值 = 无。查询与提醒口径不使用，仅供展示
+	ClaimEnd   time.Time
+
 	Fragment   string // 原文片段，人工核对用
 	Poster     string // 该子活动的海报 URL
 	URL        string
@@ -75,6 +78,9 @@ type Rec struct {
 	Fragment string
 	Poster   string
 	URL      string
+
+	ClaimStart time.Time // 领奖/兑换窗口；零值 = 无。查询与提醒口径不使用，仅供展示
+	ClaimEnd   time.Time
 
 	Provenance string
 	TwinRef    string

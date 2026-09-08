@@ -71,8 +71,13 @@ func listHash(r ListItem) [32]byte {
 	return sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%d|%s", r.ID, r.Title, r.PublishTime, r.Thumbnail)))
 }
 
-// Fetch 拉一条详情并解析。标题里没有「」的（维护说明、周边上新、版本预告）
-// 一律产不出事件；正文里只有领取/售卖窗口的（付费礼包那种）同理。
+// Fetch 拉一条详情并解析、按产出来源分派：
+//   - solo（独立公告，恰好一个主窗口）→ 1 条事件，海报 = 公告封面；
+//   - summary（维护更新说明切出的条目）→ N 条事件，海报留空——维护公告的封面是
+//     通用运营图，填进去等于给每个活动配同一张假海报；独立公告发出后 Merger 会
+//     用 solo 侧覆盖（它带真封面）；
+//   - version（[XXX]活动/版本一览）→ 不是活动，不产事件；
+//   - 其余（没档期、切分失败交人工的）→ 不产事件，Suspect/Note 已带说明。
 func (s *Source) Fetch(ctx context.Context, r annsync.Ref) (annsync.Item, error) {
 	id, err := strconv.ParseInt(r.ID, 10, 64)
 	if err != nil {
@@ -82,31 +87,79 @@ func (s *Source) Fetch(ctx context.Context, r annsync.Ref) (annsync.Item, error)
 	if err != nil {
 		return annsync.Item{}, classify(err)
 	}
-
 	res := Parse(d.News, s.cfg.Zone)
+	return s.BuildItem(r.ID, d.News, time.UnixMilli(d.News.PublishTime).In(s.cfg.Zone), res), nil
+}
+
+// BuildItem 把解析结果装成引擎条目。Fetch 与离线核对工具共用这一个分派，
+// 保证"探针跑出来的时间表"和"生产日历"是同一套规则的结果。
+func (s *Source) BuildItem(refID string, n NewsBody, published time.Time, res Result) annsync.Item {
 	item := annsync.Item{
-		Ref:       r,
-		Published: time.UnixMilli(d.News.PublishTime).In(s.cfg.Zone),
-		Title:     strings.TrimSpace(d.News.Title),
-		Thumbnail: d.News.Thumbnail,
+		Ref:       annsync.Ref{ID: refID},
+		Published: published,
+		Title:     strings.TrimSpace(n.Title),
+		Thumbnail: n.Thumbnail,
 		Suspect:   res.Suspect(),
 		Note:      res.Note(),
 	}
-	if len(res.Primary) != 1 {
-		return item, nil // 0 个没档期，>1 个交人工，都不进日历
+	url := s.newsURL(n.ID)
+	switch res.Provenance {
+	case ProvSolo:
+		iv := res.Primary[0]
+		cs, ce := pickClaim(res.Secondary)
+		item.Events = []annsync.Event{{
+			Title: res.Name, Label: iv.Tag,
+			Start: iv.Start, End: iv.End, Status: iv.Status,
+			ClaimStart: cs, ClaimEnd: ce,
+			Fragment: iv.Line, Poster: n.Thumbnail,
+			URL: url, Provenance: ProvSolo,
+		}}
+	case ProvSummary:
+		for _, e := range res.Entries {
+			ev := annsync.Event{
+				Title: e.Name, Label: e.Ival.Tag,
+				Start: e.Ival.Start, End: e.Ival.End, Status: e.Ival.Status,
+				Fragment: e.Ival.Line,
+				URL:      url, Provenance: ProvSummary,
+			}
+			if e.Redeem != nil {
+				ev.ClaimStart, ev.ClaimEnd = e.Redeem.Start, e.Redeem.End
+			}
+			item.Events = append(item.Events, ev)
+		}
+	case ProvVersion:
+		// 活动一览 = 版本主活动自己的公告：事件带它的封面（版本主视觉），
+		// 兑换行作领奖窗随事件带出。版本一览整图无 Ver、无 Entries，自然零事件。
+		for _, e := range res.Entries {
+			ev := annsync.Event{
+				Title: e.Name, Label: e.Ival.Tag,
+				Start: e.Ival.Start, End: e.Ival.End, Status: e.Ival.Status,
+				Fragment: e.Ival.Line, Poster: n.Thumbnail,
+				URL: url, Provenance: ProvVersion,
+			}
+			if e.Redeem != nil {
+				ev.ClaimStart, ev.ClaimEnd = e.Redeem.Start, e.Redeem.End
+			}
+			item.Events = append(item.Events, ev)
+		}
 	}
-	iv := res.Primary[0]
-	item.Events = []annsync.Event{{
-		Title:    res.Name,
-		Label:    iv.Tag,
-		Start:    iv.Start,
-		End:      iv.End,
-		Status:   iv.Status,
-		Fragment: iv.Line,
-		Poster:   d.News.Thumbnail,
-		URL:      s.newsURL(d.News.ID),
-	}}
-	return item, nil
+	return item
+}
+
+// pickClaim 从独立公告的附属窗口里挑领奖/兑换期：标签含 领取 或 兑换 的取终点
+// 最晚的一条。售卖/结算/补偿不是领奖期，不挑。
+func pickClaim(sec []Interval) (time.Time, time.Time) {
+	var cs, ce time.Time
+	for _, iv := range sec {
+		if !strings.Contains(iv.Tag, "领取") && !strings.Contains(iv.Tag, "領取") &&
+			!strings.Contains(iv.Tag, "兑换") && !strings.Contains(iv.Tag, "兌换") {
+			continue
+		}
+		if ce.Before(iv.End) {
+			cs, ce = iv.Start, iv.End
+		}
+	}
+	return cs, ce
 }
 
 // newsURL 拼公告页地址。形状照列表接口真实返回的 link 字段核对过：<base>/news/<id>。

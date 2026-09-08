@@ -541,7 +541,9 @@ func TestMergerIsAppliedBeforeProjection(t *testing.T) {
 	}
 }
 
-func TestTitleAndPosterFallBackToItem(t *testing.T) {
+// 标题缺失回退条目标题；海报不回退——通用运营图当海报比没有更糟（方案 §3.4），
+// 缺就让展示层画占位。
+func TestTitleFallsBackToItemButPosterDoesNot(t *testing.T) {
 	doc := storetest.NewMem()
 	w := newWriter()
 	src := newSource("fake", ref("1"))
@@ -563,8 +565,8 @@ func TestTitleAndPosterFallBackToItem(t *testing.T) {
 	if recs[0].Title != "公告标题" {
 		t.Errorf("Title = %q, want 公告标题（子活动没名字时该用条目标题）", recs[0].Title)
 	}
-	if recs[0].Poster != "https://example.test/poster.png" {
-		t.Errorf("Poster = %q, want 条目封面（下一轮出图要靠它）", recs[0].Poster)
+	if recs[0].Poster != "" {
+		t.Errorf("Poster = %q, want 空（不拿条目封面当海报）", recs[0].Poster)
 	}
 	a, _ := w.inner.Get("fake:1:0")
 	if a.Title != "公告标题" || a.Game != "fake" {

@@ -249,8 +249,9 @@ func (s *syncer) reproject() error {
 	return nil
 }
 
-// buildRecs 把条目快照摊平成一行一个子活动，并做两件与源无关的兜底：
-// 标题缺失用条目标题、海报缺失用条目封面。
+// buildRecs 把条目快照摊平成一行一个子活动。标题缺失用条目标题兜底；
+// 海报不兜底——维护公告的列表封面是通用运营图，填给切分条目等于给每个
+// 活动配同一张假海报，比没有更糟（方案 §3.4），没有就让展示层画占位。
 func (s *syncer) buildRecs(items []Item) []Rec {
 	src := s.src.Name()
 	now := s.cfg.Now()
@@ -261,10 +262,6 @@ func (s *syncer) buildRecs(items []Item) []Rec {
 			if title == "" {
 				title = it.Title
 			}
-			poster := ev.Poster
-			if poster == "" {
-				poster = it.Thumbnail
-			}
 			out = append(out, Rec{
 				ID:         recID(src, it.Ref.ID, i),
 				SourceID:   src,
@@ -274,8 +271,10 @@ func (s *syncer) buildRecs(items []Item) []Rec {
 				Start:      ev.Start,
 				End:        ev.End,
 				Status:     ev.Status,
+				ClaimStart: ev.ClaimStart,
+				ClaimEnd:   ev.ClaimEnd,
 				Fragment:   ev.Fragment,
-				Poster:     poster,
+				Poster:     ev.Poster,
 				URL:        ev.URL,
 				Provenance: ev.Provenance,
 				TwinRef:    ev.TwinRef,

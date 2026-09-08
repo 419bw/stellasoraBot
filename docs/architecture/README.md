@@ -24,6 +24,7 @@ internal/
   command/                ← 命令机制层（注册表 + dispatch + 被动回复铁律）
   annsync/                ← 通用公告同步引擎（列目录→抓详情→投影→日历）
   stellasora/             ← 中文网 Source（HTTP 客户端 + 规则 v3 解析器 + 跨条合并）
+  poster/                 ← 日历出图：纯几何(layout) + 绘制(draw)，不认识业务词
   feature/                ← 业务功能
     calquery/             ← 查活动（活动/快结束/即将/帮助）
     calops/               ← 运维操作（待确认/覆盖/确认/隐藏/显示）
@@ -47,6 +48,14 @@ internal/
 | kernel | `API` (Submit/Schedule/Cancel/Calendar) | Feature.Start() 参数 |
 | command | `Registrar` (Add) | calquery, calops |
 | stellasora | `Source` (Name/List/Fetch) | annsync |
+| poster | `Layout(Input) Frame`（纯几何）+ 绘制入口 | feature 层 |
+
+**基础设施的名字里不许出现业务词。** 队列搬图不叫 `PosterSpec{VersionKey}`，叫 `Media{Kind, Key}`——`Kind`
+的取值由接线的 Sink 认领，队列不枚举；也不带平台给的 `file_info`（ttl 只有几分钟，排队加退避一过期必发不出去），
+只带"该发哪一张"的引用，上传与生成推到 Sink 真要发的那一刻。同理，`annsync` 不认识 `"version"` 这个源自述的
+取值：版本列表由功能自己 `ReadRecs` 后过滤 `Provenance`，那个字面量在 `main.go` 从 `stellasora.ProvVersion` 传进去。
+`poster` 是叶子服务，只被功能调用，自己不 import 任何业务包：轨道叫什么、哪条带算周期玩法、要不要画领奖尾，
+都由调用方判断后用字段传进来。
 
 关掉一个功能 = 删掉 main.go 里对应那行 `rt.Register(...)`。它的命令、定时任务、命名空间写入一起停。
 
@@ -173,6 +182,7 @@ QQ 平台 (api.bot.qq.com)
 | 时间表版式回归 | `.probe/calpng/check.js`（4 模式 × 3 页签 + 定点断言） | 本机 node |
 | 时间表文字溢出 | `.probe/calpng/fit.js`（真排版量字宽 + 图例色块压字 + 出图时刻线的落点与贯穿；负对照 = 调小 PPD / 改错 inset） | 本机 node + Chrome |
 | 版本键→内容映射 | `.probe/calpng/keycheck.js`（真 Chrome 渲染 `#x<key>`，核 `#vname` 与按钮选中态；负对照 = 键命中后错一位） | 本机 node + Chrome |
+| Go 布局 vs 模板几何 | `.probe/calpng/parity.js`（模板侧 vm 渲染、Go 侧 `.probe/posterdump`，同一份 data.json 逐条带比 left/width/top/尾段/标记/日期；容差 1e-6%，负对照 = 开闸估计改一小时、行高改一格、共端点改各占一行、关掉并带） | 本机 node + go run |
 | 富媒体四步上传 | `internal/qq/media_test.go`（httptest 假平台：必填字段、`file_size`/`block_size` 是字符串、分片正文无 token、`url` 留空、`srv_send_msg=false`） | 任何 |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |
 

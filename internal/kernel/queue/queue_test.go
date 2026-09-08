@@ -15,6 +15,7 @@ type recordedSend struct {
 	target string
 	ids    []string
 	text   string
+	media string // 非空表示这一条发的是图，值是版本键
 }
 
 type recSink struct {
@@ -43,8 +44,18 @@ func (s *recSink) Send(ctx context.Context, b *Batch) error {
 	for _, it := range b.Items {
 		ids = append(ids, it.ID)
 	}
-	s.sends = append(s.sends, recordedSend{at: time.Now(), target: b.Target, ids: ids, text: b.Text})
+	s.sends = append(s.sends, recordedSend{
+		at: time.Now(), target: b.Target, ids: ids, text: b.Text,
+		media: mediaKey(b),
+	})
 	return nil
+}
+
+func mediaKey(b *Batch) string {
+	if b.Media == nil {
+		return ""
+	}
+	return b.Media.Key
 }
 
 func (s *recSink) snapshot() []recordedSend {
@@ -161,6 +172,71 @@ func TestDifferentTopicsAreNotMerged(t *testing.T) {
 
 	if got := len(sink.snapshot()); got != 2 {
 		t.Errorf("发送次数 = %d, want 2（不同 Topic 被错误合并）", got)
+	}
+}
+
+// TestPosterItemsNeverMerge：图不能并成一条。这里故意把 Mergeable 也设上，
+// 挡的就是"调用方标错一个字段，图就被拼进文字里"。
+func TestPosterItemsNeverMerge(t *testing.T) {
+	sink := &recSink{}
+	d := New(sink, fastPolicy())
+	startDispatcher(t, d)
+
+	for i := 0; i < 3; i++ {
+		d.Submit(Item{ID: "p" + itoa(i), Target: "g1", Topic: "poster", Mergeable: true,
+			Media: &Media{Kind: "poster", Key: "202609080000"}})
+	}
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 3 }, 5*time.Second, "三张图未全部发出")
+
+	sends := sink.snapshot()
+	if len(sends) != 3 {
+		t.Fatalf("发送次数 = %d, want 3（图被合并了）", len(sends))
+	}
+	for i, s := range sends {
+		if s.media == "" {
+			t.Errorf("第 %d 条不是图: %+v", i, s)
+		}
+		if len(s.ids) != 1 {
+			t.Errorf("第 %d 条带了 %d 个 item，want 1", i, len(s.ids))
+		}
+	}
+	if st := d.Stats(); st.Merged != 0 {
+		t.Errorf("Merged = %d, want 0", st.Merged)
+	}
+}
+
+// TestPosterNotAbsorbedIntoTextBatch 盯的是合并只看"头"的 Mergeable、不看被吸收那一侧
+// 的那个洞：图被并进文字批次后只剩一个空 Text，图本身静默消失。
+func TestPosterNotAbsorbedIntoTextBatch(t *testing.T) {
+	sink := &recSink{}
+	d := New(sink, fastPolicy())
+	startDispatcher(t, d)
+
+	d.Submit(Item{ID: "text", Target: "g1", Topic: "ending", Mergeable: true, Text: "活动结束了"})
+	d.Submit(Item{ID: "pic", Target: "g1", Topic: "ending", Mergeable: true,
+		Media: &Media{Kind: "poster", Key: "202609080000"}})
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 2 }, 5*time.Second, "文字与图未都发出")
+
+	sends := sink.snapshot()
+	if len(sends) != 2 {
+		t.Fatalf("发送次数 = %d, want 2: %+v", len(sends), sends)
+	}
+	var media, text int
+	for _, s := range sends {
+		if s.media != "" {
+			media++
+			if s.text != "" {
+				t.Errorf("图那条批次上还挂了文字 %q", s.text)
+			}
+			continue
+		}
+		text++
+		if s.text != "活动结束了" {
+			t.Errorf("文字那条内容 = %q", s.text)
+		}
+	}
+	if media != 1 || text != 1 {
+		t.Errorf("media/text = %d/%d, want 1/1", media, text)
 	}
 }
 

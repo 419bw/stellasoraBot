@@ -13,10 +13,23 @@ var ErrQueueFull = errors.New("queue: 发送队列已满")
 
 var ErrExpired = errors.New("queue: 消息超过投递截止时间")
 
+// Media 表示"这一条要发的不是文字，而是一个待解析的非文字载荷"。
+//
+// 队列只搬运一个引用，不解释它：Kind 由 Sink 自己认领，Key 是不透明标识。
+// 这里刻意不放已经上传好的 file_info——平台给的 file_info ttl 只有几分钟
+// （文档响应示例 ttl=300）且不能跨场景复用，排队加退避一过期就必发不出去，
+// 所以上传与生成都推迟到 Sink 真要发的那一刻。
+type Media struct {
+	Kind string // 取值由接线处与 Sink 约定，队列不枚举
+	Key  string // 该 Kind 内的不透明键
+}
+
 type Item struct {
 	ID     string
 	Target string // group_openid / user_openid
 	Text   string
+	// Media 非空表示发这个而不是 Text；此时必须 Mergeable=false。
+	Media *Media
 	// Topic 相同且 Mergeable 的消息会合并成一条发送，用于"多个活动同时结束"。
 	Topic     string
 	Mergeable bool
@@ -25,6 +38,7 @@ type Item struct {
 type Batch struct {
 	Target string
 	Text   string
+	Media  *Media
 	Items  []*Item
 }
 
@@ -293,7 +307,7 @@ func (d *Dispatcher) enqueue(item Item) {
 		q = d.pending[item.Target]
 	}
 	ready := now
-	if item.Mergeable {
+	if canMerge(item) {
 		ready = now.Add(d.p.MergeWindow) // 等同伴，凑齐再合成一条
 	}
 	d.pending[item.Target] = append(q, &itemState{
@@ -412,10 +426,10 @@ func (d *Dispatcher) popBatchLocked(target string, now time.Time) (*Batch, []*it
 
 	picked := []*itemState{head}
 	kept := q[1:]
-	if head.item.Mergeable {
+	if canMerge(head.item) {
 		rest := kept[:0]
 		for _, it := range kept {
-			if it.item.Topic == head.item.Topic && !it.readyAt.After(now) {
+			if canMerge(it.item) && it.item.Topic == head.item.Topic && !it.readyAt.After(now) {
 				picked = append(picked, it)
 				continue
 			}
@@ -438,8 +452,12 @@ func (d *Dispatcher) popBatchLocked(target string, now time.Time) (*Batch, []*it
 	if len(picked) > 1 {
 		d.stats.Merged += len(picked) - 1
 	}
-	return &Batch{Target: target, Text: strings.Join(texts, "\n"), Items: items}, picked
+	return &Batch{Target: target, Text: strings.Join(texts, "\n"), Media: head.item.Media, Items: items}, picked
 }
+
+// canMerge 是"这条能不能跟同伴合成一条文字消息"。图不参与合并：两张图拼不成一条消息，
+// 而被吸收进文字批次的那条只会留下空 Text，图就这么静默丢了。
+func canMerge(it Item) bool { return it.Mergeable && it.Media == nil }
 
 func (d *Dispatcher) globalBucketLocked(now time.Time) bucket {
 	if d.global.rate == 0 {

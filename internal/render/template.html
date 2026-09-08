@@ -1,0 +1,438 @@
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  .stage{padding:22px 14px 30px;overflow-x:auto;font-family:"Microsoft YaHei","PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    background:
+      repeating-linear-gradient(45deg,rgba(150,200,150,.09) 0 26px,transparent 26px 52px),
+      repeating-linear-gradient(-45deg,rgba(150,200,150,.09) 0 26px,transparent 26px 52px),
+      linear-gradient(165deg,#f4f8de,#dff0e4 46%,#f8f3d4)}
+  .win{width:1240px;margin:0 auto;border-radius:24px;overflow:hidden;
+    border:3px solid #2c3564;background:#eaf3e6;
+    box-shadow:0 16px 0 rgba(44,53,100,.14),0 24px 54px rgba(60,80,120,.3)}
+
+  .bar{position:relative;padding:13px 16px 11px;background:linear-gradient(180deg,#f6faea,#e8f2df);
+       border-bottom:3px solid #2c3564}
+  .logo{position:absolute;top:11px;right:15px;font-size:13px;font-weight:900;color:#2c3564;letter-spacing:1px}
+  .logo::after{content:"\2726";color:#f6c945;margin-left:3px}
+  h1{display:inline-block;font-size:25px;font-weight:900;color:#fff;letter-spacing:2px;
+     -webkit-text-stroke:5px #2c3564;paint-order:stroke fill;
+     text-shadow:0 3px 0 #2c3564,2px 2px 0 #2c3564,-2px 2px 0 #2c3564,2px -2px 0 #2c3564,-2px -2px 0 #2c3564,0 5px 12px rgba(44,53,100,.35)}
+  h1 em{font-style:normal;color:#ffe07a}
+  .vname{display:inline-block;margin-left:9px;font-size:12px;font-weight:800;color:#2c3564;
+     background:#ffe07a;border:2px solid #2c3564;border-radius:999px;padding:2px 10px;vertical-align:6px}
+  .tabs{display:flex;gap:7px;margin:9px 0 11px}
+  .tab{padding:5px 14px;border-radius:999px;font-size:12.5px;font-weight:800;color:#5a6488;
+       background:#fff;border:2px solid #b9c4dd}
+  .tab.on{color:#2c3564;border-color:#2c3564;background:#ffe07a;box-shadow:0 3px 0 #2c3564}
+  .tab.new::after{content:"NEW";margin-left:5px;font-size:9px;color:#e8483f;font-weight:900}
+  .ctrl{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
+  .seg{display:flex;gap:4px;padding:4px;border-radius:999px;background:#fff;border:2px solid #b9c4dd}
+  .seg button,.chip{border:0;border-radius:999px;padding:5px 11px;background:transparent;color:#5a6488;
+    font:800 11.5px/1.25 inherit;cursor:pointer;white-space:nowrap;transition:.14s}
+  .seg button:hover,.chip:hover{color:#2c3564;background:#eef3fb}
+  .seg button.on{background:#2c3564;color:#ffe07a}
+  .chip{background:#fff;border:2px solid #b9c4dd}
+  .chip.on{background:#35c8c0;border-color:#2c3564;color:#fff;box-shadow:0 2px 0 #2c3564}
+  .valance{height:14px;background:radial-gradient(circle at 14px -3px,#cfe6c6 14px,transparent 15px);
+           background-size:28px 28px;background-repeat:repeat-x;border-bottom:2px solid rgba(44,53,100,.16)}
+
+  /* axis = N equal day columns; the plot shares one linear map [g0,g1], bands float at real times */
+  .axis{padding:18px 14px 8px;background:linear-gradient(180deg,#f2f8e9,#e6f1de);
+        border-bottom:2px dashed rgba(44,53,100,.2)}
+  .wrow,.drow{display:grid}
+  .wrow{gap:0}
+  .wk{position:relative;margin:0 2.5px;padding:10px 4px 6px;border-radius:9px;background:#fff;border:2px solid #2c3564;
+      text-align:center;box-shadow:0 4px 0 rgba(44,53,100,.16)}
+  .wk::before{content:"";position:absolute;top:-2px;left:0;right:0;height:10px;background:#2c3564;border-radius:7px 7px 0 0}
+  .wk::after{content:"";position:absolute;top:2px;left:50%;transform:translateX(-50%);width:15px;height:4px;border-radius:3px;background:#eaf3e6}
+  .wk b{display:block;font-size:12px;font-weight:900;color:#2c3564;letter-spacing:1px}
+  .wk i{font-style:normal;font-size:10.5px;font-weight:700;color:#7b86a8}
+  .wk.on{background:#ffe07a}.wk.on i{color:#8a6a12}
+  .drow{margin:6px 0 0;gap:0}
+  .drow span{text-align:center;font-size:9px;font-weight:800;color:#8d9ab5;padding-top:6px}
+  .drow span.a{color:#e87f9c}.drow span.b{color:#6f8fd8}
+  .drow span.t{background:#e8483f;color:#fff;border-radius:5px}
+
+  .plot{position:relative;padding:8px 14px 10px;background:linear-gradient(180deg,#e9f3e1,#dcebd8)}
+  .grp{margin-bottom:6px}
+  .grp:last-child{margin-bottom:0}
+  .gh{display:flex;align-items:center;gap:6px;margin:0 0 3px}
+  .gt{font-size:10.5px;font-weight:900;color:#fff;background:#2c3564;border-radius:5px;padding:1px 7px;letter-spacing:1px}
+  .grp.pool .gt{background:#c93d78}.grp.ver .gt{background:#c8791c}.grp.mon .gt{background:#2c3564}
+  .gs{font-size:9.5px;font-weight:800;color:#61708f}
+  .gl{flex:1 1 auto;height:2px;background:linear-gradient(90deg,rgba(44,53,100,.28),transparent)}
+  .rows{position:relative;background:rgba(255,255,255,.34);border:2px solid rgba(44,53,100,.14);border-radius:11px;padding:4px}
+  .rows.empty{display:block;padding:5px;text-align:center;font-size:10px;font-weight:800;color:#8d9ab5;
+        background:repeating-linear-gradient(45deg,transparent,transparent 8px,rgba(44,53,100,.05) 8px,rgba(44,53,100,.05) 16px)}
+  .cell{position:absolute;top:0;bottom:0;border-left:1px solid rgba(44,53,100,.10)}
+  .cell.wk0{border-left:2px solid rgba(44,53,100,.26)}
+  /* one marker for "now": a single rule across the whole plot, placed by an inline
+     calc() that maps the day-axis percentage into the plot's box (see cells()) */
+  .nowline{position:absolute;top:-15px;bottom:0;width:0;border-left:2px solid #e8483f;z-index:4;pointer-events:none}
+  .nowline::before{content:"";position:absolute;left:-4.5px;top:0;width:7px;height:7px;border-radius:50%;
+    background:#e8483f;border:1.5px solid #fff}
+
+  .band{position:absolute;display:flex;align-items:center;overflow:hidden;background:#fff;
+    border:2.5px solid #2c3564;border-radius:12px;cursor:default;
+    box-shadow:0 3px 0 rgba(44,53,100,.15),0 6px 12px rgba(60,80,120,.18)}
+  .band.past{filter:grayscale(.6);opacity:.5}
+  .band.drop{background:#eef0f4}
+  .band.drop .nm{color:#8b93a8;text-decoration:line-through}
+  /* ends that cross the window are left unsealed: no side border, no corner radius */
+  .band.oL,.tail.oL{border-left-width:0;border-top-left-radius:0;border-bottom-left-radius:0}
+  .band.oR,.tail.oR{border-right-width:0;border-top-right-radius:0;border-bottom-right-radius:0}
+  .play{display:flex;align-items:center;flex:1 1 auto;min-width:0;height:100%}
+  .tail{position:absolute;display:flex;align-items:center;justify-content:center;
+    border:2.5px solid #2c3564;border-left:2px dashed #9fb0cc;border-radius:0 12px 12px 0;
+    background:repeating-linear-gradient(45deg,#e7ecf6,#e7ecf6 6px,#d6dded 6px,#d6dded 12px);
+    box-shadow:0 3px 0 rgba(44,53,100,.15),0 6px 12px rgba(60,80,120,.18)}
+  .stamp{font-size:10px;font-weight:900;color:#e8483f;border:2px solid #e8483f;border-radius:4px;
+    padding:0 4px;background:rgba(255,255,255,.9);margin-right:6px}
+  /* merged segments size to content and sit left; a stretched split reads as two time slots */
+  .seg-i{position:relative;display:flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0;height:100%;padding:0 7px}
+  .seg-i+.seg-i{border-left:2px solid #2c3564}
+  .ava{position:relative;flex:0 0 auto;width:56px;height:40px;border-radius:6px;overflow:hidden;
+    border:2px solid #2c3564;background:#dfeaf6}
+  .ava img{width:100%;height:100%;object-fit:cover;display:block}
+  /* no key art (record came from a maintenance notice, which has text only):
+     hatched placeholder, same visual language as the redeem tail but lighter */
+  .noart{position:absolute;inset:0;display:block;
+    background:repeating-linear-gradient(45deg,#e2e8f3 0 4px,#f4f7fc 4px 8px)}
+  /* a band squeezed into the last few days of the window: drop the avatars so the
+     name and the end date still fit side by side */
+  .band.narrow .ava{display:none}
+  .band.narrow .seg-i+.seg-i{border-left:1px solid #b9c4da}
+  .rar{position:absolute;right:2px;bottom:2px;font-size:8px;font-weight:900;color:#7b86a8;
+    width:14px;height:11px;line-height:10px;text-align:center;background:rgba(255,255,255,.92);
+    border:1.5px dashed #9fb0cc;border-radius:3px}
+  .txt{flex:1 1 auto;min-width:0;line-height:1.25}
+  .nm{font-size:12px;font-weight:900;color:#2c3564;white-space:normal}
+  .lb{display:inline-block;font-size:8px;font-weight:900;color:#fff;background:#7b86a8;border-radius:3px;padding:0 4px;white-space:nowrap}
+  .lb.t-pool{background:#e8799f}.lb.t-event{background:#f0a93a}.lb.t-mode{background:#35c8c0}.lb.t-test{background:#9aa3ac}
+  .ends{flex:0 0 auto;margin-left:auto;padding-right:7px;font-size:11px;font-weight:900;color:#2c3564;white-space:nowrap}
+  .ends.hot{color:#e8483f}
+  .cnt{flex:0 0 auto;align-self:stretch;display:flex;align-items:center;padding:0 5px;background:#ffe07a;
+       border-left:2px solid #2c3564;font-size:9.5px;font-weight:900;color:#2c3564}
+  .tags{display:flex;gap:3px;margin-right:5px}
+  .tag{position:relative;width:19px;height:26px;border-radius:4px;background:#fff;border:2px solid #2c3564}
+  .tag::before{content:"";position:absolute;top:-2px;left:-2px;right:-2px;height:6px;background:#2c3564;border-radius:3px 3px 0 0}
+  .tag::after{content:"";position:absolute;top:1px;left:50%;transform:translateX(-50%);width:7px;height:3px;border-radius:2px;background:#fff}
+
+  .foot{padding:9px 15px;background:#2c3564;color:#c9d3ee;font-size:11px}
+  .frow{display:flex;flex-wrap:wrap;align-items:center;gap:11px}
+  .frow+.frow{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.18)}
+  .foot .h{display:inline-flex;align-items:center;gap:5px;font-weight:900;color:#fff;background:#35c8c0;
+    border-radius:999px;padding:3px 10px;box-shadow:0 2px 0 rgba(0,0,0,.25)}
+  .foot .h::before{content:"\2726";color:#ffe07a}
+  .key{display:flex;align-items:center;gap:5px;font-weight:700;white-space:nowrap}
+  .sw{width:15px;height:9px;border-radius:3px;border:1.5px solid #2c3564}
+  .sw.hatch{background:repeating-linear-gradient(45deg,#e7ecf6,#e7ecf6 4px,#c9d3e6 4px,#c9d3e6 8px)}
+  .sw.open{background:#fff;border-left-color:transparent;border-right-color:transparent;border-radius:0}
+  .foot b{color:#ffe07a}
+  .foot .cr{margin-left:auto;opacity:.6;font-size:10px}
+  /* export mode (#x): the group image carries no navigation and no controls */
+  body.x .tabs,body.x .ctrl{display:none}
+  body.x .stage{padding:12px;overflow:visible}
+</style>
+
+<div class="stage">
+  <div class="win">
+    <div class="bar">
+      <span class="logo">星塔旅人</span>
+      <h1>活动<em>日历</em></h1><span class="vname" id="vname"></span>
+      <div class="tabs">
+        <span class="tab">丽都资讯</span><span class="tab new">游戏公告</span><span class="tab on">活动日历</span>
+      </div>
+      <div class="ctrl">
+        <div class="seg" id="vers"></div>
+        <div class="seg" id="dayseg"></div>
+        <button class="chip" id="tMerge">只合并招募</button>
+        <button class="chip" id="tDrop">含被过滤项</button>
+        <button class="chip" id="tSlot">素材占位</button>
+      </div>
+    </div>
+    <div class="valance"></div>
+    <div class="axis"><div class="wrow" id="weeks"></div><div class="drow" id="days"></div></div>
+    <div class="plot" id="plot"></div>
+    <div class="foot" id="foot"></div>
+  </div>
+</div>
+
+<script>
+/*__DATA__*/
+// 数据不是手抄的：由 .probe/calgen 用 v3 解析器（docs/plan/parse-v3-maintenance-split.md）
+// 跑官网全量公告正文得到，规则见那份方案文档。每条记录带 src：
+//   solo    = 独立活动公告，有海报（列表封面）
+//   summary = 从汇总公告（维护更新说明那类）正文切出来的，只有文字、没有海报
+// 版本窗口也不再人工锚：由「[XXX]活动一览」正文的「活动时间」+「活动商店与奖励兑换时间」
+// 两行自动抽取，所以 redeem（兑换截止）这次是真的从数据里来的。
+const NOW = DATA.now;
+const RECS = DATA.records;
+
+const VERSIONS = DATA.versions;
+
+// 周期玩法判据（自动，不再人工列名单）：按活动名聚合后，期数 ≥2 且存在
+// 「长度 ≥20 天 + 起点落在 1 日 04:00」的那一期。长度门槛是必要的：紧急悬赏
+// 09/01 04:00 也落在 1 日，但它是 7 天期。灾变防线没有一期落在 1 日（压的是版本日）。
+const MONTHLY = {};
+DATA.monthly.forEach(k => MONTHLY[k] = '自动判据：多期 + ≥20 天 + 起点 1 日 04:00');
+
+const LBCLS = { '招募时间':'t-pool', '活动时间':'t-event', '开放时间':'t-mode', '测试信息':'t-test' };
+const TRACKS = [
+  { k:'pool', name:'限定卡池' },
+  { k:'ver',  name:'版本活动' },
+  { k:'mon',  name:'周期玩法' },
+];
+const DAY = 86400000, H8 = 8 * 3600e3, RESET = 4 * 3600e3;
+// 库里 fuzzy 起点存 00:00 是"维护结束后"的下界占位（全量 184 条里 00:00 起点 100% 带
+// fuzzy 标记，零例外）；渲染按实测开闸时刻摆放，机器人查询/提醒口径不受影响。
+// 这个数由生成器（Go）下发，机器人与网页共用一份 —— 以前写死在这里，两边各存必漂移。
+const OPEN = DATA.openOffsetMs;
+const ROW_H = 52, ROW_GAP = 5, PITCH = ROW_H + ROW_GAP;
+// Pixels per day. The interactive page uses PPD as-is; export mode (#x) only uses
+// MIN_PPD as a floor and solves the width from the 16:9 target instead.
+// MIN_PPD = 50 is the measured knee: below it names overlap their neighbour.
+const PPD = 54, MIN_PPD = 50;
+const T = s => new Date(s.replace(' ', 'T') + ':00+08:00').getTime();
+const now = T(NOW);
+const day0 = ms => { const d = new Date(ms + H8); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - H8; };
+const dow = ms => new Date(ms + H8).getUTCDay();
+const p2 = n => String(n).padStart(2, '0');
+const fMD = ms => { const d = new Date(ms + H8); return p2(d.getUTCMonth() + 1) + '/' + p2(d.getUTCDate()); };
+const fHM = ms => { const d = new Date(ms + H8); return p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes()); };
+const CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'], DK = ['日', '一', '二', '三', '四', '五', '六'];
+const tint = r => '#' + (r.tint || 'eef3fb');
+
+// 已开闸：起点那天维护后（OPEN）才算开。库里的 act0 是 00:00 占位，别直接跟 now 比。
+const opened = i => now >= T(VERSIONS[i].act0) + OPEN;
+// 当前版本 = 已开闸的最新一个。版本交接那天新旧两窗重叠（上版本只剩兑换尾段），
+// 按"窗口含不含今天"判会同时冒出两个当前版本，那一刻该看新的。
+function curIndex() {
+  for (let i = VERSIONS.length - 1; i >= 0; i--) if (opened(i)) return i;
+  return 0;   // 一个都没开：只能画最早那个
+}
+const CUR = curIndex();
+
+const state = { vi: CUR, day: 'nat', merge: true, drop: false, slot: false };
+// 出图模式 #x[键]：去掉导航与开关行，卡片锁 16:9，画指定版本。
+// 键 = ActStart 的 UTC yyyyMMddHHmm（VERSIONS[i].key）。刻意不用"排序后的下标"：
+// 新版本一出现下标全体左移，同一张图的内容就换了。裸 #x = 当前版本。
+const EX = /^#x(\d{12})?$/.test(location.hash);
+if (EX) {
+  document.body.classList.add('x');
+  const k = /^#x(\d{12})$/.exec(location.hash);
+  if (k) {
+    const i = VERSIONS.findIndex(v => v.key === k[1]);
+    if (i >= 0) state.vi = i; else console.warn('未知版本键', k[1]);
+  }
+}
+
+function frame() {
+  const v = VERSIONS[state.vi];
+  const t0 = T(v.act0);
+  // g0/g1 = 日格标尺；w0 = 本窗判定左缘（维护后开闸估计）。终点早于 w0 的是
+  // "维护前收档"，整条不进本窗——上版本的兑换尾不会带进新版本视图。
+  const g0 = state.day === 'game' ? day0(t0) + RESET : day0(t0);
+  const n = Math.ceil((day0(T(v.redeem)) + DAY - g0) / (7 * DAY)) * 7;   // 补齐整周，不留只剩 1 天的周卡
+  return { v, g0, g1: g0 + n * DAY, w0: t0 + OPEN, n };
+}
+// 条带位置不随口径跳格：真实时刻线性映射到百分比。开关只剩标尺意义——
+// 日格边界（00:00 还是 04:00 起列）与右上角结束日期标签按哪条边界取整。
+const gday = ms => day0(ms - RESET);
+const dayOf = ms => state.day === 'game' ? gday(ms) : day0(ms);
+const pct = (ms, f) => (Math.max(f.g0, Math.min(f.g1, ms)) - f.g0) / (f.g1 - f.g0) * 100;
+
+const DAYMODES = [
+  { k: 'nat', n: '自然日', tip: '日格按 00:00 分列，结束日期标签取自然日。条带位置不受影响（本来就按真实时刻画）。' },
+  { k: 'game', n: '游戏日 04:00', tip: '日格按 04:00 分列（跟游戏内刷新一致），结束日期标签取最后一个完整游戏日，可能比官方文案早一天。条带位置不受影响。' },
+];
+
+// 按钮上"当前/上一/下一"按开闸进度定位，不写死下标 —— 否则过几天就指错了
+function vTag(i) {
+  return i === CUR && opened(i) ? '当前版本' : i < CUR ? '上一版本' : '下一版本';
+}
+
+function groups(f) {
+  // 连续时间模型：一条带 = [真实起点, 真实终点]，fuzzy 起点按开闸估计（OPEN）摆放。
+  // 进不进本窗只看一条判据：玩法段与本窗 [w0, g1) 有交集。旧的 cut 形状启发、
+  // 回看过滤、上版本残留特判全部不需要了——维护前收档的活动自然停在缝的左边。
+  let rs = RECS.map(r => {
+    const s0 = T(r.s) + (r.st === 'fuzzy' ? OPEN : 0);
+    const e0 = T(r.e);
+    return { ...r, s0, e0, cE: r.ce ? T(r.ce) : 0 };
+  })
+    .filter(r => r.e0 > f.w0 && r.s0 < f.g1)
+    .filter(r => state.drop || !r.drop);
+  if (!state.merge) rs = rs.map(r => ({ items: [r] }));
+  else {
+    const g = new Map();
+    for (const r of rs) {
+      // 只有招募时间（同版本角色池+秘纹池同档期）才允许合并；活动之间日期撞车是巧合
+      const k = (r.drop || r.lb !== '招募时间') ? 'solo:' + r.id : [r.s0, r.e0, r.lb].join('|');
+      if (!g.has(k)) g.set(k, []);
+      g.get(k).push(r);
+    }
+    rs = [...g.values()].map(items => ({ items }));
+  }
+  for (const g of rs) {
+    const it = g.items;
+    g.lb = it[0].lb;
+    g.s0 = Math.min(...it.map(r => r.s0));
+    g.e0 = Math.max(...it.map(r => r.e0));
+    g.monthly = it.some(r => MONTHLY[r.n]);
+    g.track = g.lb === '招募时间' ? 'pool' : g.monthly ? 'mon' : 'ver';
+    // 实心段=玩法档期 [s0,e0]，斜纹尾=领奖/兑换窗终点 cE；周期玩法不画尾——
+    // 排名奖能领一个月，尾巴比活动本体还长，喧宾夺主。
+    g.x1 = g.track === 'mon' ? g.e0 : Math.max(g.e0, ...it.map(r => r.cE || 0));
+    g.oL = g.s0 < f.g0;                 // 左端不封口：延续自本窗之前
+    g.oR = g.x1 > f.g1;                // 右端不封口：延续到本窗之后
+  }
+  return rs;
+}
+
+// 按真实时刻装箱：泳道占用记到右端 ms。前一条 10:59 收、后一条 17:00 开——中间
+// 天然有空隙，同一条道首尾相接；真重叠（哪怕只差半天）才另起一行。
+function pack(gs) {
+  const free = [];
+  gs.sort((a, b) => a.s0 - b.s0 || a.x1 - b.x1);
+  for (const g of gs) {
+    const i = free.findIndex(x => x <= g.s0);
+    if (i < 0) { free.push(g.x1); g.lane = free.length; }
+    else { free[i] = g.x1; g.lane = i + 1; }
+  }
+  return free.length;
+}
+
+function sizeWin(f) {
+  const win = document.querySelector('.win');
+  const clamp = w => Math.max(w, f.n * MIN_PPD + 96);      // 96 = 边框 + 内边距
+  if (!EX) { win.style.width = (f.n * PPD + 96) + 'px'; return; }
+  let w = f.n * PPD + 96;
+  for (let i = 0; i < 3; i++) {
+    w = clamp(w);
+    win.style.width = w + 'px';
+    w = clamp(win.offsetHeight * 16 / 9);
+  }
+  win.style.width = w + 'px';
+  document.title = Math.round(parseFloat(win.style.width)) + 'x' + win.offsetHeight;
+}
+
+function render() {
+  const f = frame(), cols = `repeat(${f.n},1fr)`;
+  const all = groups(f);
+
+  document.getElementById('vname').textContent = f.v.name;
+  document.getElementById('vers').innerHTML = VERSIONS.map((v, i) =>
+    `<button data-i="${i}"${i === state.vi ? ' class="on"' : ''} title="活动一览 ${v.src}｜${v.name}">${vTag(i)}</button>`).join('');
+  document.querySelectorAll('#vers button').forEach(b => b.onclick = () => { state.vi = +b.dataset.i; render(); });
+  document.getElementById('dayseg').innerHTML = DAYMODES.map(d =>
+    `<button data-k="${d.k}"${d.k === state.day ? ' class="on"' : ''} title="${d.tip}">${d.n}</button>`).join('');
+  document.querySelectorAll('#dayseg button').forEach(b => b.onclick = () => { state.day = b.dataset.k; render(); });
+
+  const tAnchor = state.day === 'game' ? gday(now) + RESET : day0(now);   // 今天落在哪一列
+  let wk = '', drow = '', c = 1, wi = 0;
+  while (c <= f.n) {
+    const span = Math.min(7, f.n - c + 1), s = f.g0 + (c - 1) * DAY, on = now >= s && now < s + span * DAY;
+    wk += `<div class="wk${on ? ' on' : ''}" style="grid-column:span ${span}"><b>第${CN[wi]}周</b><i>${fMD(s)}-${fMD(s + (span - 1) * DAY)}</i></div>`;
+    for (let k = 0; k < span; k++) {
+      const d = dow(s + k * DAY), isT = s + k * DAY === tAnchor;
+      drow += `<span class="${isT ? 't' : d === 0 ? 'a' : d === 6 ? 'b' : ''}">${DK[d]}</span>`;
+    }
+    c += span; wi++;
+  }
+  const wrow = document.getElementById('weeks'); wrow.style.gridTemplateColumns = cols; wrow.innerHTML = wk;
+  const dday = document.getElementById('days'); dday.style.gridTemplateColumns = cols; dday.innerHTML = drow;
+
+  const cw = 100 / f.n;
+  const inWin = now >= f.g0 && now < f.g1;
+  const cells = () => {
+    let s = '';
+    for (let i = 0; i < f.n; i++) {
+      const d = f.g0 + i * DAY;
+      s += `<div class="cell${i % 7 === 0 ? ' wk0' : ''}" style="left:${i * cw}%;width:${cw}%"></div>`;
+    }
+    return s;
+  };
+  // 出图时刻按真实分钟钉死，一根线贯穿三个轨道块；不在本窗内就不画。
+  // 条带的百分比是相对 .rows 的内框，这里换算成相对 .plot 的内框：16 = plot 内边距
+  // 14 + rows 边框 2，32 = 左右各那么多。
+  const nowLine = () => inWin
+    ? `<div class="nowline" style="left:calc(16px + (100% - 32px) * ${(pct(now, f) / 100).toFixed(6)})"></div>` : '';
+
+  document.getElementById('plot').innerHTML = TRACKS.map(t => {
+    const gs = all.filter(g => g.track === t.k);
+    const nL = gs.length ? Math.max(1, pack(gs)) : 0;
+    const body = gs.length
+      ? `<div class="rows" style="height:${nL * PITCH - ROW_GAP + 8}px">${cells()}${gs.map(g => band(g, f)).join('')}</div>`
+      : `<div class="rows empty">无${t.name}</div>`;
+    return `<div class="grp ${t.k}"><div class="gh"><span class="gt">${t.name}</span>
+      <span class="gs">${gs.length} 条</span><span class="gl"></span></div>${body}</div>`;
+  }).join('') + nowLine();
+
+  function band(g, f) {
+    let l = pct(g.s0, f);
+    const b = pct(g.e0, f), r = pct(g.x1, f);
+    const hasTail = r > b + 1e-9;
+    const minW = 0.8 * cw;                             // 兜底：不足一天的活动也留个能看的条
+    if (!hasTail && b - l < minW) l = Math.max(0, b - minW);
+    const past = g.e0 <= now;
+    const cls = ['band', hasTail || g.oR ? 'oR' : '', g.oL ? 'oL' : '',
+      past ? 'past' : '', (g.e0 - Math.max(g.s0, f.g0)) / DAY <= 4 ? 'narrow' : '',
+      g.items[0].drop ? 'drop' : ''].filter(Boolean).join(' ');
+    const segs = g.items.map(x => {
+      const art = x.poster || '';
+      const pos = `object-position:${(x.ax ?? 25)}% ${(x.ay ?? 45)}%`;
+      return `<span class="seg-i">
+        <span class="ava">
+          ${art ? `<img src="${art}" style="${pos}">` : '<i class="noart"></i>'}
+          ${state.slot && !x.drop ? '<span class="rar">?</span>' : ''}</span>
+        <span class="txt"><span class="nm">${x.st === 'fuzzy' ? '≈' : ''}${x.n}</span>
+        <span class="lb ${LBCLS[x.lb] || 't-test'}">${x.lb}</span></span></span>`;
+    }).join('');
+    const days = Math.round((g.e0 - now) / DAY);
+    const ends = `<span class="ends${days > 0 && days <= 2 ? ' hot' : ''}">${fMD(dayOf(g.x1))}</span>`;
+    const at = `top:${(g.lane - 1) * PITCH}px;height:${ROW_H}px`;
+    const tail = hasTail ? `<span class="tail${g.oR ? ' oR' : ''}" style="left:${b}%;width:${r - b}%;${at}"></span>` : '';
+    const cnt = g.items.length > 1 ? `<span class="cnt">${g.items.length}项</span>` : '';
+    const tags = state.slot && !g.items[0].drop ? `<span class="tags"><i class="tag"></i><i class="tag"></i></span>` : '';
+    const tip = g.items.map(r => `ID ${r.id}｜${r.lb}｜${r.st === 'fuzzy' ? 'fuzzy_start（原文"维护结束后"；库内存 00:00 下界，图上按开闸估计摆放）' : 'ok'}
+${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
+原文「${r.f}」${r.drop ? '\n已过滤：' + r.drop : ''}${r.src === 'summary' ? '\n出自汇总公告 ' + r.ref + ' 正文切分（该活动尚无独立公告，故无海报）' : r.src === 'version' ? '\n出自「活动一览」 ' + r.ref + '（版本主活动，封面即版本主视觉）' : '\n独立公告 ' + r.ref}${g.monthly ? '\n周期玩法：' + MONTHLY[r.n] : ''}`).join('\n——\n');
+    return `<div class="${cls}" style="left:${l}%;width:${(hasTail ? b : r) - l}%;${at};background:linear-gradient(90deg,${tint(g.items[0])}40,#fff 46%)" title="${tip.replace(/"/g, '&quot;')}">
+      ${g.items[0].drop ? '<span class="stamp">已过滤</span>' : ''}
+      <span class="play">${segs}${cnt}${tags}${ends}</span></div>${tail}`;
+  }
+
+  const nRec = all.reduce((s, g) => s + g.items.length, 0);
+  const live = all.filter(g => g.e0 > now && g.s0 <= now).length;
+  const mt = all.filter(g => g.items.some(r => r.src === 'summary')).length;
+  document.getElementById('foot').innerHTML = `
+    <div class="frow">
+      <span class="h">图例</span>
+      <span class="key"><span class="sw" style="background:#e8799f"></span>招募</span>
+      <span class="key"><span class="sw" style="background:#f0a93a"></span>活动</span>
+      <span class="key"><span class="sw" style="background:#35c8c0"></span>开放</span>
+      <span class="key"><span class="sw hatch"></span>领奖/兑换尾段</span>
+      <span class="key"><span class="sw open"></span>两端不封口＝跨窗口延续</span>
+      <span class="key"><span class="sw" style="background:repeating-linear-gradient(45deg,#e2e8f3 0 4px,#f4f7fc 4px 8px)"></span>无海报</span>
+      <span class="key"><span class="sw" style="background:#ffe07a"></span>N项＝一条带并排几条玩法</span>
+      <span class="key"><span class="sw" style="background:#e8799f;filter:grayscale(.6);opacity:.5"></span>淡灰＝已结束</span>
+      <span class="key"><b>≈</b>起点是估的（原文只写"维护结束后"，按 ${OPEN / 3600e3}:00 开闸摆放）</span>
+      ${inWin ? `<span class="key"><span class="sw" style="background:#e8483f;border-radius:1px;width:3px"></span>红竖线＝出图时刻 <b>${fMD(now)} ${fHM(now)}</b></span>` : ''}
+    </div>
+    <div class="frow">
+      <span>条带=<b>真实时刻</b>（10:59 收就停在 10:59，不吸附日格）· 日格=<b>${state.day === 'game' ? '游戏日 04:00' : '自然日 00:00'}</b>（只改格子边界与日期标签取整）· 尾段取活动公告的领取/兑换行 · 无海报＝该玩法没有独立公告，从维护公告正文切出 · 同名同窗才并带，复玩的两期各占一条带</span>
+      <span><b>${f.n}</b> 天 / <b>${all.length}</b> 带 · 合并掉 ${nRec - all.length} · 进行中 <b>${live}</b>${mt ? ' · 维护公告补的 <b>' + mt + '</b> 带' : ''}</span>
+      <span class="cr">版本窗口取自活动一览 ${f.v.src} · 数据 data/xingta-live.db${mt ? ' · 维护公告正文切分（库里没有这批）' : ''}</span>
+    </div>`;
+
+  ['tMerge', 'tDrop', 'tSlot'].forEach(id =>
+    document.getElementById(id).classList.toggle('on', state[id.slice(1).toLowerCase()]));
+  sizeWin(f);
+}
+
+document.getElementById('tMerge').onclick = () => { state.merge = !state.merge; render(); };
+document.getElementById('tDrop').onclick = () => { state.drop = !state.drop; render(); };
+document.getElementById('tSlot').onclick = () => { state.slot = !state.slot; render(); };
+render();
+</script>

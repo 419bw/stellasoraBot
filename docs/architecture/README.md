@@ -80,6 +80,10 @@ QQ 平台 (api.bot.qq.com)
 - **心跳 ack 判死**：连续 N 次心跳无 ACK → 判定连接死亡，断开重连。
 - **Go 1.27 硬约束**：bbolt v1.3.11 用了 `unsafe.Slice` 不兼容 1.26 以下；Go 1.27 起 `crypto/rand.Read` 签名变了。
 - **ed25519 签名**：HTTP 请求头带 `X-Tts-Signature`，格式 `Ed25519 <timestamp>;random(<6digits>);sign(<base64>)`。
+- **富媒体（图）只能分片上传**：`upload_prepare` → 逐片 `PUT` 预签名 URL → `upload_part_finish` → `files`，
+  四步之后拿 `file_info` 再 `msg_type=7` 发。`file_size`/`block_size` 按文档是**字符串**；`md5`/`sha1`/`md5_10m` 必填
+  （`md5_10m` 供秒传）。URL 直传要求文件公网可访问，我们没有公网。**`file_info` 不透明、示例 ttl 只有 300 秒、
+  且不能跨场景复用** → 不缓存，每次发送前重跑四步；队列里因此只搬"该发哪一张"的引用（见 `kernel/queue` 的 `Media`）。
 
 ## 解析器规则 v3 (stellasora/parse.go)
 
@@ -128,8 +132,14 @@ QQ 平台 (api.bot.qq.com)
 - **时间标记只剩一条**：一根红色竖线贯穿整个图区（分钟级，`calc()` 把日轴百分比换算进 `.plot` 的框），
   上端接住标尺里"今天"那一格。原先的"今天整列黄底"（整列近似，比条带粗糙）与"玩法期止红双线"
   （与每条带的右端重复，且三页签语义不一致：上一版本贴右缘、最新版本没有下一次维护数据）都删了。
-- **出图模式 `#x` / `#x0`~`#x2`**：去掉导航与开关行，卡片宽度由 16:9 反解（设宽→读高→再算宽；
-  泳道数与宽度无关，一次即收敛），下限 `MIN_PPD=50`。`bash .probe/calpng/export.sh` 一次出三张。
+- **出图模式 `#x[版本键]`**：去掉导航与开关行，卡片宽度由 16:9 反解（设宽→读高→再算宽；
+  泳道数与宽度无关，一次即收敛），下限 `MIN_PPD=50`。`bash .probe/calpng/export.sh` 按版本逐个出图，
+  产物文件名 = 版本键。**版本键 = `ActStart` 的 UTC `yyyyMMddHHmm`**（`data.json` 里 `versions[].key`）：
+  以前用"排序后的下标"（`#x0`~`#x2`、`vi0.png`），新版本一出现下标全体左移，同一个文件名下的内容就换了。
+- **当前版本 = 已开闸的最新一个**（`act0 + openOffsetMs <= now`），不是"窗口含今天"：版本交接那天新旧两窗
+  重叠（旧版本只剩兑换尾段），按窗口判会同时冒出两个"当前版本"，而且默认挑到旧的那个。
+- **开闸偏移 17:00 由数据下发**：`openOffsetMs` 写在 `data.json`（Go 侧 `openAt` 常量），模板读 `DATA.openOffsetMs`。
+  这个数以前只活在模板里，机器人出图那份要再存一份，两边必然漂移。
 - 渲染件全在 `.probe/`（不入库）：模板 `.probe/calpng/template.html`，产物
   `.probe/timetable/web/{data.json,calendar.html}`；`.probe/calgen` 的 Go 渲染器冻结在旧天格模型。
 
@@ -162,6 +172,8 @@ QQ 平台 (api.bot.qq.com)
 | 解析器回归 | `internal/stellasora/parse_test.go` (变异表) | 任何 |
 | 时间表版式回归 | `.probe/calpng/check.js`（4 模式 × 3 页签 + 定点断言） | 本机 node |
 | 时间表文字溢出 | `.probe/calpng/fit.js`（真排版量字宽 + 图例色块压字 + 出图时刻线的落点与贯穿；负对照 = 调小 PPD / 改错 inset） | 本机 node + Chrome |
+| 版本键→内容映射 | `.probe/calpng/keycheck.js`（真 Chrome 渲染 `#x<key>`，核 `#vname` 与按钮选中态；负对照 = 键命中后错一位） | 本机 node + Chrome |
+| 富媒体四步上传 | `internal/qq/media_test.go`（httptest 假平台：必填字段、`file_size`/`block_size` 是字符串、分片正文无 token、`url` 留空、`srv_send_msg=false`） | 任何 |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |
 
 ## 构建与运行

@@ -110,6 +110,22 @@ QQ 平台 (api.bot.qq.com)
 
 规则全文与决策记录：`docs/plan/parse-v3-maintenance-split.md`。
 
+## 时间表渲染（连续时间模型）
+
+排版核对用的网页/PNG 是离线复算：读 `.probe/calgen/body/` 正文缓存，走与机器人相同的生产函数
+（Parse+BuildItem+Merge），再叠渲染变换。库里 `Rec` 与查询/提醒口径一概不受渲染影响。
+
+- **一条带 = 真实起止时刻**，在 `[g0,g1]` 线性映射上绝对定位；日格只是背景标尺，不再吸附。
+  自然日/游戏日开关只改日格边界与日期标签取整，不改条带位置。
+- **fuzzy 起点**：库内存当天 00:00 下界（"维护结束后"），渲染按 `OPEN=17:00` 开闸估计摆放；
+  窗口判定左缘 `w0 = act0 + OPEN`。全量 184 条里 00:00 起点 100% 带 fuzzy 标记，零例外。
+- **可见性只剩一条判据**：玩法段与本窗 `[w0,g1)` 有交集才画。于是"维护前收档"的活动连同它的
+  兑换尾都不会带进新版本视图——原先靠 cut 形状启发 + 回看过滤两条特判，二者已删。
+- **装箱按 ms 首-fit**：前一条 10:59 收、后一条 17:00 开，中间天然有空隙 → 同排首尾相接，
+  不再各占一行（同名周期玩法的两期因此无需任何特判）。
+- 渲染件全在 `.probe/`（不入库）：模板 `.probe/calpng/template.html`，产物
+  `.probe/timetable/web/{data.json,calendar.html}`；`.probe/calgen` 的 Go 渲染器冻结在旧天格模型。
+
 ## 并发模型
 
 - **hub.Handle**：单 goroutine（WS reader 串行），所有事件处理都在这一个 goroutine 上。
@@ -137,6 +153,7 @@ QQ 平台 (api.bot.qq.com)
 | 业务路径压测 | `.probe/bizload/main.go` | 本机（开发用） |
 | 真连端到端 | `cmd/xingtabot -creds` | 本机 |
 | 解析器回归 | `internal/stellasora/parse_test.go` (变异表) | 任何 |
+| 时间表版式回归 | `.probe/calpng/check.js`（4 模式 × 3 页签 + 定点断言） | 本机 node |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |
 
 ## 构建与运行

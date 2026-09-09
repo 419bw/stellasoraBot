@@ -373,27 +373,27 @@ func (p *Poster) armPushes(recs []annsync.Rec) {
 	}
 }
 
-// push 到点了：先确认这张图画得出来，再投给每个目标。
+// push 到点了：只做一件事——把"该发哪一张"投进发送队列。
 //
-// 队列里只放媒体引用（该发哪一张），真渲染推到 Sink 要发的那一刻——file_info 的
-// ttl 只有几分钟，排队加退避一过期必发不出去。画不出来就不标记已发，下一轮
-// 重排重试；宁可晚发，也不要发一张空的或干脆不发还装作发过了。
-func (p *Poster) push(ctx context.Context, key string) error {
+// 这里绝不出图：调度器是同步跑回调的（schedule.go 的 Fn 契约），画一趟就把同期
+// 到期的提醒一起拖住了。渲染与上传都推到 Sink 真要发的那一刻——file_info 的 ttl
+// 只有几分钟，在队列里排过一轮就可能已经过期。
+//
+// 账本也不在这里写：只有 Sink 报"发出去了"才算了结（MarkPushed）。画不出来或发送
+// 失败时队列自己退避重试，最终放弃也不记账，下一轮 armPushes 会重新排上——宁可晚发，
+// 也不要发一张空的或干脆不发还装作发过了。
+func (p *Poster) push(_ context.Context, key string) error {
 	// 以账本为准再判一次：armPushes 的"查已推 → 排期"不是原子的，排期循环可能
 	// 刚越过那道检查、这个任务就触发了，于是它会被重新排上、被调度器立刻再跑一遍。
 	if p.done(key) {
 		return nil
-	}
-	// 走 Fetch 而不是 Image：这条链路在队列 worker 上，没有人在等回复，慢 40 秒
-	// 没关系；而推出去一张全是占位的图是难看且不可撤回的。命令那条路才要只读本地。
-	if _, err := p.Fetch(ctx, key); err != nil {
-		return err
 	}
 	if len(p.cfg.Targets) == 0 {
 		p.cfg.Logf("calposter: 没配推图目标，版本 %s 的图只记日志", key)
 		p.markSent(key)
 		return nil
 	}
+	var errs []error
 	for _, target := range p.cfg.Targets {
 		item := queue.Item{
 			ID:     "poster:" + key + "@" + target,
@@ -401,13 +401,25 @@ func (p *Poster) push(ctx context.Context, key string) error {
 			Media:  &queue.Media{Kind: "poster", Key: key},
 			Topic:  "poster",
 		}
+		// 每个目标都试完再汇总：中途因为队列满返回，会漏掉后面的目标。
 		if err := p.api.Submit(item); err != nil {
-			return fmt.Errorf("calposter: 投版本 %s 到 %s 失败: %w", key, target, err)
+			errs = append(errs, fmt.Errorf("投版本 %s 到 %s: %w", key, target, err))
 		}
 	}
-	p.markSent(key)
-	p.cfg.Logf("calposter: 版本 %s 已推给 %d 个目标", key, len(p.cfg.Targets))
+	if len(errs) > 0 {
+		return fmt.Errorf("calposter: %v", errors.Join(errs...))
+	}
 	return nil
+}
+
+// MarkPushed 由发送侧在"这条真的发出去了"之后调用：这是账本唯一的写入口。
+// 队列对同一批目标会重试，所以这里要幂等（markSent 自己覆盖时间戳）。
+func (p *Poster) MarkPushed(key string) {
+	if key == "" || p.done(key) {
+		return
+	}
+	p.markSent(key)
+	p.cfg.Logf("calposter: 版本 %s 已发给目标，记为已推", key)
 }
 
 // loadSent 捞回上一次进程的推图记录。值解不开时按"已推过"处理，与 calexpiry

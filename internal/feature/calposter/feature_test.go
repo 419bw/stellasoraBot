@@ -178,7 +178,9 @@ func featureFor(t *testing.T, recs *recBox, cap Capturer, doc store.Doc, now tim
 func TestPushArmedAtOpenMoment(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
 	// 早上 8 点：新版本还没过开闸，排期应当排在 17:00。
-	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 08:00"), "g:grp")
+	// 到点：只投一条只带媒体引用的队列项。
+	cap := &fakeCap{}
+	p, api := featureFor(t, recs, cap, storetest.NewMem(), at("2026-09-08 08:00"), "g:grp")
 	p.round(context.Background())
 
 	want := "poster:202609071600"
@@ -193,9 +195,13 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 		t.Error("没排上期")
 	}
 
-	// 到点：投一条只带媒体引用的队列项，并记下已推。
 	if err := api.fire(want); err != nil {
 		t.Fatal(err)
+	}
+	// 这条断言钉的是"回调不占调度线程"：调度器同步跑 Fn，在这儿画一趟就把同期
+	// 到期的提醒一起拖住了。出图只能发生在发送 worker 上。
+	if n := cap.count(); n != 0 {
+		t.Errorf("到点触发画了 %d 趟图，投递必须与渲染解耦", n)
 	}
 	items := api.items()
 	if len(items) != 1 {
@@ -208,9 +214,10 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 		t.Error("图不能被并进文字 batch（队列的合并判据要求 Media 为空时才可合并）")
 	}
 
-	// 再跑几轮：已推过的版本不该再投第二条。
+	// 发送侧报"发出去了"之后，再跑几轮都不该投第二条。
 	// 这里断言的是"发出去几次"而不是"有没有被重新排上"——排期检查与触发之间
 	// 本来就允许重排，只要 push 以账本为准，就不会真发第二遍。
+	p.MarkPushed("202609071600")
 	for i := 0; i < 3; i++ {
 		p.round(context.Background())
 		_ = api.fire(want)
@@ -253,6 +260,7 @@ func TestRestartDoesNotResend(t *testing.T) {
 	if len(api.items()) != 1 {
 		t.Fatalf("第一次该投 1 条，%d 条", len(api.items()))
 	}
+	p.MarkPushed("202609071600") // 模拟发送 worker 真把它发出去了
 
 	// 换一个 Poster 实例（= 重启），账本还在库里。
 	p2, api2 := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:06"), "g:grp")
@@ -265,31 +273,48 @@ func TestRestartDoesNotResend(t *testing.T) {
 	}
 }
 
+// 画不出来 / 发不出去都不能被记成"已推"，否则这一版永远不会补发。
+// 投递与渲染解耦之后，失败点从"到点那一刻"挪到了"worker 要图那一刻"。
 func TestBrokenImageIsNotMarkedSent(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
 	doc := storetest.NewMem()
 	bad := &flakyCap{bad: true}
 	p, api := featureFor(t, recs, bad, doc, at("2026-09-08 17:05"), "g:grp")
 	p.round(context.Background())
-	if err := api.fire("poster:202609071600"); err == nil {
-		t.Fatal("画不出来必须往上报错，否则就当发过了")
+
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatalf("投递本身不该失败（渲染不在这一趟）: %v", err)
 	}
-	if len(api.items()) != 0 {
-		t.Errorf("图都没画出来就投递了 %d 条", len(api.items()))
+	if len(api.items()) != 1 {
+		t.Fatalf("该投 1 条，%d 条", len(api.items()))
+	}
+	// worker 去要图：画不出来 → 不调 MarkPushed → 账本必须还是空的。
+	if _, err := p.Fetch(context.Background(), "202609071600"); err == nil {
+		t.Fatal("画不出来必须往上报错，否则就当发过了")
 	}
 	var raw []byte
 	if ok, _ := doc.Get(NS, "202609071600", &raw); ok {
-		t.Error("失败的一轮被记成已推，之后永远不会补发")
+		t.Error("没发出去的一轮被记成已推，之后永远不会补发")
 	}
 
-	// 下一轮（浏览器修好了）应当重排并真的投出去。
+	// 下一轮（浏览器修好了）重新排上、再投，发出去之后记账，此后不再重投。
 	bad.fix()
 	p.round(context.Background())
 	if err := api.fire("poster:202609071600"); err != nil {
 		t.Fatalf("修好后重投失败: %v", err)
 	}
-	if len(api.items()) != 1 {
-		t.Errorf("修好后该投 1 条，%d 条", len(api.items()))
+	if got := len(api.items()); got != 2 {
+		t.Fatalf("修好后该再投 1 条（累计 2 条），实际 %d 条", got)
+	}
+	if _, err := p.Fetch(context.Background(), "202609071600"); err != nil {
+		t.Fatalf("修好后要图还失败: %v", err)
+	}
+	p.MarkPushed("202609071600")
+
+	p.round(context.Background())
+	_ = api.fire("poster:202609071600")
+	if got := len(api.items()); got != 2 {
+		t.Errorf("记账之后又投了，累计 %d 条, want 停在 2", got)
 	}
 }
 

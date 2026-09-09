@@ -206,10 +206,16 @@ func run() error {
 // 只可能是代码问题。
 type activeSink struct {
 	client *qq.Client
-	// poster 是"给版本键要一张图"的能力。渲染与上传都推到这里、推到真要发的
-	// 那一刻：file_info 的 ttl 只有几分钟，在队列里排过一轮就可能已经过期。
+	// poster 是"给版本键要一张图 + 报一声发出去了"两件事。渲染与上传都推到这里、
+	// 推到真要发的这一刻：file_info 的 ttl 只有几分钟，在队列里排过一轮就可能过期。
+	//
+	// 这里要的是 Fetch 不是 Image：队列里的每一条都是主动推送，没人在等回复，
+	// 慢几十秒没关系，而推出去一张全是占位的图不可撤回。命令回图才走零网络的 Image。
 	poster interface {
-		Image(ctx context.Context, key string) ([]byte, error)
+		Fetch(ctx context.Context, key string) ([]byte, error)
+		// MarkPushed 是账本唯一的写入口：只有真发出去了才算推过。失败时不调它，
+		// 队列退避重试、最终放弃也不记账，功能下一轮会重新排上这张。
+		MarkPushed(key string)
 	}
 }
 
@@ -223,7 +229,7 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 		if s.poster == nil {
 			return fmt.Errorf("队列里有媒体项（%s/%s）但没接出图能力：检查 -chrome", b.Media.Kind, b.Media.Key)
 		}
-		raw, err := s.poster.Image(ctx, b.Media.Key)
+		raw, err := s.poster.Fetch(ctx, b.Media.Key)
 		if err != nil {
 			return fmt.Errorf("出 %s 的图失败: %w", b.Media.Key, err)
 		}
@@ -245,7 +251,14 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 	} else {
 		_, err = s.client.SendC2CMessage(ctx, openID, req)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// 发出去了才算推过：调度回调只负责投递，"推没推过"以这里为准。
+	if b.Media != nil {
+		s.poster.MarkPushed(b.Media.Key)
+	}
+	return nil
 }
 
 // artDir 是海报落盘的位置：紧挨着数据库放，换 -db 就换一套缓存，

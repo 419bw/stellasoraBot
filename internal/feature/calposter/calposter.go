@@ -21,8 +21,10 @@ import (
 	"time"
 
 	"xingta/internal/annsync"
+	"xingta/internal/command"
 	"xingta/internal/kernel"
 	"xingta/internal/kernel/queue"
+	"xingta/internal/qq"
 	"xingta/internal/render"
 	"xingta/internal/store"
 )
@@ -51,10 +53,15 @@ type Config struct {
 	Warm   time.Duration // 多久看一次数据有没有变，变了就去预热海报，默认 5m
 	// Targets 是版本开启日主动推图的目标，形如 "g:<群 openid>" / "u:<用户 openid>"，
 	// 前缀由发送侧解释。空 = 只记日志不发送。
+	// ArtDir 非空时海报字节落盘：海报 CDN 会掐反复整窗拉取的客户端，
+	// 只放内存等于每次重启都重新捶一遍。
+	ArtDir   string
 	Template []byte // nil = 用 render 内嵌的那一份模板
 	Targets  []string
-	Now      func() time.Time
-	Logf     func(format string, args ...any)
+	// Reg 非空就注册「日历」命令；留空表示这个功能只负责主动推图。
+	Reg  command.Registrar
+	Now  func() time.Time
+	Logf func(format string, args ...any)
 }
 
 func (c Config) withDefaults() Config {
@@ -114,7 +121,7 @@ func New(cfg Config) *Poster {
 		panic("calposter: Records 与 Capturer 都不能为空")
 	}
 	return &Poster{
-		cfg: cfg.withDefaults(), art: NewArtCache(0), sent: map[string]time.Time{},
+		cfg: cfg.withDefaults(), art: NewArtCache(cfg.ArtDir, 0), sent: map[string]time.Time{},
 		shots: map[string]shot{}, calls: map[string]*call{},
 	}
 }
@@ -253,11 +260,31 @@ func (p *Poster) Start(ctx context.Context, api kernel.API) error {
 		return errors.New("calposter: 需要 kernel.API 才能排期与投递")
 	}
 	p.api = api
+	if p.cfg.Reg != nil {
+		if err := p.cfg.Reg.Add(command.Cmd{
+			Name: "日历", Aliases: []string{"日曆", "calendar", "活动日历"},
+			Usage: "当前版本的活动日历图", Run: p.calendar,
+		}); err != nil {
+			return err
+		}
+	}
 	if err := p.loadSent(); err != nil {
 		return fmt.Errorf("calposter: 读已推图记录: %w", err)
 	}
 	go p.loop(ctx)
 	return nil
+}
+
+// calendar 是「日历」命令：一条命令一条回复，这里回的就是那一张图。
+//
+// 图与文字二选一，所以画不出来时不做"降级成文字列表"——那等于把同一件事用
+// 两种口径各说一遍，而文字口径刚刚才被这个功能废掉。
+func (p *Poster) calendar(ctx context.Context, m *qq.Message, args []string) (command.Reply, error) {
+	raw, err := p.Image(ctx, "")
+	if err != nil {
+		return command.Reply{}, err
+	}
+	return command.Reply{Image: raw}, nil
 }
 
 func (p *Poster) loop(ctx context.Context) {
@@ -285,11 +312,20 @@ func (p *Poster) round(ctx context.Context) {
 		p.cfg.Logf("calposter: 本轮读不到活动记录: %v", err)
 		return
 	}
-	if fp := fingerprint(recs); fp != p.lastFP {
-		p.lastFP = fp
+	if fp := fingerprint(recs); p.dataChanged(fp) {
 		p.warmArt(ctx, recs)
 	}
 	p.armPushes(recs)
+}
+
+// dataChanged 记下这轮的指纹并回答"与上一轮不同吗"。循环 goroutine 与显式调用
+// 都可能进来，所以这把锁不是摆设。
+func (p *Poster) dataChanged(fp string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	changed := fp != p.lastFP
+	p.lastFP = fp
+	return changed
 }
 
 // warmArt 把当前版本窗里每条记录的海报捞进缓存；画出来的数据集丢掉。
@@ -341,6 +377,11 @@ func (p *Poster) armPushes(recs []annsync.Rec) {
 // ttl 只有几分钟，排队加退避一过期必发不出去。画不出来就不标记已发，下一轮
 // 重排重试；宁可晚发，也不要发一张空的或干脆不发还装作发过了。
 func (p *Poster) push(ctx context.Context, key string) error {
+	// 以账本为准再判一次：armPushes 的"查已推 → 排期"不是原子的，排期循环可能
+	// 刚越过那道检查、这个任务就触发了，于是它会被重新排上、被调度器立刻再跑一遍。
+	if p.done(key) {
+		return nil
+	}
 	if _, err := p.Image(ctx, key); err != nil {
 		return err
 	}

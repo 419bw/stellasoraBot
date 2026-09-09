@@ -15,8 +15,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,11 +28,13 @@ import (
 	"xingta/internal/command"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
+	"xingta/internal/feature/calposter"
 	"xingta/internal/feature/calquery"
 	"xingta/internal/kernel"
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
 	"xingta/internal/qq"
+	"xingta/internal/render"
 	"xingta/internal/stellasora"
 	"xingta/internal/store"
 )
@@ -51,7 +55,9 @@ func run() error {
 		refresh   = flag.Duration("refresh", 30*time.Minute, "公告刷新间隔")
 		lead      = flag.Duration("lead", 48*time.Hour, "活动结束前多久开始提醒")
 		scan      = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
-		remind    = flag.String("remind", "", "提醒目标，逗号分隔：g:<群 openid> / u:<用户 openid>；留空只记日志")
+		push      = flag.String("push", "", "主动消息目标，逗号分隔：g:<群 openid> / u:<用户 openid>；留空只记日志。到期提醒与版本日历图共用这一份")
+		chrome    = flag.String("chrome", "", "出日历图用的无头浏览器可执行文件；留空 = 不启用日历图功能")
+		warm      = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
 		admins    = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
 		apiBase   = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
 		intents   = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
@@ -66,7 +72,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	targets, err := parseTargets(*remind)
+	targets, err := parseTargets(*push)
 	if err != nil {
 		return err
 	}
@@ -101,7 +107,29 @@ func run() error {
 
 	// ---- 功能：一行一个，删掉即关掉 ---------------------------------------
 
-	rt := kernel.NewRuntime(activeSink{client: client}, queue.DefaultPolicy(), cal)
+	// 日历图要先造出来：activeSink 得出图，所以它得在 Runtime 之前存在。
+	// 没给 -chrome 就是不启用这个功能——本机没有浏览器时，到期提醒与运维命令照常跑，
+	// 而不是启动后每次发图都失败。
+	var poster *calposter.Poster
+	if *chrome != "" {
+		poster = calposter.New(calposter.Config{
+			Doc:     doc,
+			Records: func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
+			Cap:     &render.Browser{Bin: *chrome},
+			ArtDir:  artDir(*dbPath),
+			Label:   stellasora.ProvVersion,
+			Zone:    zone,
+			Warm:    *warm,
+			Client:  &http.Client{Timeout: 30 * time.Second},
+			Targets: targets,
+			Reg:     reg,
+			Logf:    logf,
+		})
+	} else {
+		logf("没给 -chrome，日历图功能不启用（「日历」命令与版本推图都不会有；到期提醒照常）")
+	}
+
+	rt := kernel.NewRuntime(activeSink{client: client, poster: poster}, queue.DefaultPolicy(), cal)
 	rt.Register(sync)
 	rt.Register(calquery.New(reg, cal, calquery.Config{
 		Zone:   zone,
@@ -114,6 +142,9 @@ func run() error {
 	rt.Register(calops.New(doc, reg, calops.Config{
 		Source: src.Name(), Zone: zone, Refresh: sync, Logf: logf,
 	}))
+	if poster != nil {
+		rt.Register(poster)
+	}
 
 	// ---- QQ 接入：命令机制挂在事件入口上 ----------------------------------
 
@@ -135,10 +166,10 @@ func run() error {
 		Logf:    func(format string, args ...any) { logf("[网关] "+format, args...) },
 	})
 
-	logf("数据库: %s｜时区: %s｜刷新: %s｜提醒: 提前 %s，每 %s 扫一次，%d 个目标",
-		*dbPath, zone.String(), *refresh, *lead, *scan, len(targets))
+	logf("数据库: %s｜时区: %s｜刷新: %s｜提醒: 提前 %s，每 %s 扫一次｜主动消息 %d 个目标｜日历图: %s",
+		*dbPath, zone.String(), *refresh, *lead, *scan, len(targets), map[bool]string{true: *chrome, false: "未启用"}[poster != nil])
 	if len(targets) == 0 {
-		logf("没配 -remind，到期提醒只写日志不发送")
+		logf("没配 -push，主动消息只写日志不发送")
 	}
 	logf("命令: %s", strings.ReplaceAll(reg.HelpText(), "\n", "／"))
 	logf("开始监听，Ctrl-C 退出。去 @ 机器人发「帮助」看看。")
@@ -173,7 +204,14 @@ func run() error {
 // Target 里的前缀（g: / u:）是投递约定：功能只写字符串，不认识 QQ 的两个通道，
 // 解释前缀是接入层的事。启动时已经用 parseTargets 校验过，所以这里再遇到坏前缀
 // 只可能是代码问题。
-type activeSink struct{ client *qq.Client }
+type activeSink struct {
+	client *qq.Client
+	// poster 是"给版本键要一张图"的能力。渲染与上传都推到这里、推到真要发的
+	// 那一刻：file_info 的 ttl 只有几分钟，在队列里排过一轮就可能已经过期。
+	poster interface {
+		Image(ctx context.Context, key string) ([]byte, error)
+	}
+}
 
 func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 	openID, group, err := splitTarget(b.Target)
@@ -181,12 +219,42 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 		return err
 	}
 	req := qq.SendRequest{MsgType: qq.MsgTypeText, Content: b.Text}
+	if b.Media != nil {
+		if s.poster == nil {
+			return fmt.Errorf("队列里有媒体项（%s/%s）但没接出图能力：检查 -chrome", b.Media.Kind, b.Media.Key)
+		}
+		raw, err := s.poster.Image(ctx, b.Media.Key)
+		if err != nil {
+			return fmt.Errorf("出 %s 的图失败: %w", b.Media.Key, err)
+		}
+		name := b.Media.Key + ".png"
+		var ref qq.MediaRef
+		if group {
+			ref, err = s.client.UploadGroupImage(ctx, openID, name, raw)
+		} else {
+			ref, err = s.client.UploadC2CImage(ctx, openID, name, raw)
+		}
+		if err != nil {
+			return fmt.Errorf("上传 %s 失败: %w", name, err)
+		}
+		req = qq.SendRequest{MsgType: qq.MsgTypeMedia, Media: &qq.MediaInfo{FileInfo: ref.FileInfo}}
+	}
+
 	if group {
 		_, err = s.client.SendGroupMessage(ctx, openID, req)
 	} else {
 		_, err = s.client.SendC2CMessage(ctx, openID, req)
 	}
 	return err
+}
+
+// artDir 是海报落盘的位置：紧挨着数据库放，换 -db 就换一套缓存，
+// 不需要再多一个旋钮。
+func artDir(dbPath string) string {
+	if d := parentDir(dbPath); d != "" {
+		return d + string(filepath.Separator) + "art"
+	}
+	return "art"
 }
 
 // splitTarget 拆 "g:<group_openid>" / "u:<user_openid>"。

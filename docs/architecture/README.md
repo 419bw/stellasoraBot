@@ -46,16 +46,16 @@ internal/
 | calendar | `View` (Active/EndingSoon/StartingSoon/All) | calquery |
 | calendar | `Writer` (BulkUpsert/Upsert/Remove) | annsync |
 | kernel | `API` (Submit/Schedule/Cancel/Calendar) | Feature.Start() 参数 |
-| command | `Registrar` (Add) | calquery, calops |
+| command | `Registrar` (Add)、`Text(fn)` 适配 | calquery, calops, calposter |
 | stellasora | `Source` (Name/List/Fetch) | annsync |
-| render | `Shotter`（版本键 → PNG 字节；Chrome 可执行路径由调用方注入） | feature 层 |
+| render | `Page(Dataset, 模板)` + `Browser.Capture(页面, 锚点)` | feature 层 |
 
 **基础设施的名字里不许出现业务词。** 队列搬图不叫 `PosterSpec{VersionKey}`，叫 `Media{Kind, Key}`——`Kind`
 的取值由接线的 Sink 认领，队列不枚举；也不带平台给的 `file_info`（ttl 只有几分钟，排队加退避一过期必发不出去），
 只带"该发哪一张"的引用，上传与生成推到 Sink 真要发的那一刻。同理，`annsync` 不认识 `"version"` 这个源自述的
 取值：版本列表由功能自己 `ReadRecs` 后过滤 `Provenance`，那个字面量在 `main.go` 从 `stellasora.ProvVersion` 传进去。
-`render` 是叶子服务，只被功能调用，自己不 import 任何业务包：它只回答"给我版本键，还你一张 PNG"，
-哪个版本该发、什么时候发、发过没有，全在功能层。
+`render` 只给两件基础件：把数据集注进模板、把一页 HTML 截成 PNG。它不认识版本键，也不回答"该发哪一张"——
+那是 `calposter.Poster.Image(ctx, key)` 的脸，住在功能层。哪个版本该发、什么时候发、发过没有，全在功能层。
 （Go 原生绘制实现过——纯几何 + 字体 + 逐像素画，还与模板做过逐条带对账门——但观感明显不如浏览器、
 且要背一份字体子集与绘制代码，已撤。几何真相只留 `internal/render/template.html` 这一份。）
 
@@ -74,17 +74,29 @@ annsync.round()
   ├─ saveRecs() → bbolt "activity/<src>:<id>:<n>"
   └─ reproject() → calendar.Store (内存)
        ↓
-calquery.active() / ending() / upcoming()
+calquery.active() / ending() / upcoming()      ← 旧的文字口径，日历图跑通后删
        ↓ calendar.View 二分查询
 格式化 → command.dispatch → SendGroupReply
        ↓
 QQ 平台 (api.bot.qq.com)
+
+版本日历图（calposter）：
+
+annsync 投影出的 []Rec（ReadRecs，功能自己按 Provenance 过滤版本窗口）
+       ↓ 每 -warm 一轮：数据指纹变了才往下
+calposter.warmArt → 拉海报字节进缓存（实测冷 41s / 命中 50ms）
+       ↓
+calposter.Image(key) → Build 数据集 → render.Page → render.Browser.Capture → PNG
+       ↓ 「日历」命令走 command.Reply{Image}；版本开闸走 queue.Item{Media{poster,key}}
+qq.UploadGroupImage 四步 → file_info → msg_type=7
 ```
 
 ## QQ 平台硬约束
 
 - **openid 体系**：群内成员用 `member_openid`，单聊用 `user_openid`；每个 bot 对同一用户的 openid 不同。
 - **被动回复上限**：群 5 次 / 单聊 4 次 per msg_id。超限直接 403。设计铁律：一条命令 = 一条回复。
+  命令的返回是 `command.Reply{Text | Image}`——图与文字二选一：带图时机制层先上传拿 `file_info`
+  再按 `msg_type=7` 发，不会另外补一段文字；上传失败只回一句说明，绝不把日历降级成文字列表。
 - **主动消息配额**：群每用户每天有限条。发送队列 (`kernel/queue`) 负责节流和合并。
 - **WS 有 seq 补发**：断线重连后平台会补发历史事件，可能重复 → **必须 msg_id 去重**。
 - **重连分 resume/identify 两段**：resume 带 session_id + last_seq；失败后走 identify 重新握手。
@@ -186,6 +198,8 @@ QQ 平台 (api.bot.qq.com)
 | 时间表文字溢出 | `.probe/calpng/fit.js`（真排版量字宽 + 图例色块压字 + 出图时刻线的落点与贯穿；负对照 = 调小 PPD / 改错 inset） | 本机 node + Chrome |
 | 版本键→内容映射 | `.probe/calpng/keycheck.js`（真 Chrome 渲染 `#x<key>`，核 `#vname` 与按钮选中态；负对照 = 键命中后错一位） | 本机 node + Chrome |
 | 富媒体四步上传 | `internal/qq/media_test.go`（httptest 假平台：必填字段、`file_size`/`block_size` 是字符串、分片正文无 token、`url` 留空、`srv_send_msg=false`） | 任何 |
+| 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG 与海报两级缓存、singleflight、推图排期与账本；负对照 = 去掉宽限期 / 去掉已推判定 / 先记账再画图） | 任何 |
+| 真库真浏览器出图 | `go run ./cmd/calshot -db .probe/livesync.db -repeat 3`（三段耗时打进日志；-noart 只核结构） | 本机 Chrome |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |
 
 ## 构建与运行
@@ -194,8 +208,10 @@ QQ 平台 (api.bot.qq.com)
 # 开发（本机 Windows）
 go run ./cmd/xingtabot -db data/xingta-live.db -scan 1m
 
-# 带提醒发送
-go run ./cmd/xingtabot -db data/xingta-live.db -scan 1m -remind g:<group_openid> -lead 80h
+# 带主动发送（到期提醒与版本日历图共用这一份目标）+ 启用日历图
+go run ./cmd/xingtabot -db data/xingta-live.db -scan 1m -lead 80h \
+  -push g:<group_openid> -chrome "C:/Program Files/Google/Chrome/Application/chrome.exe"
+# 不给 -chrome 就是不启用日历图功能：命令表里没有「日历」，也不会推图，其余照常。
 
 # 容器压测（从 WSL）
 bash scripts/container-verify.sh

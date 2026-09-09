@@ -3,13 +3,17 @@ package calposter
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"image"
 	_ "image/jpeg" // 海报是 JPEG，取色要能解
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -231,25 +235,40 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset
 // 免得一个死链在每次出图时都被再捶一遍。
 //
 // 它跨的是"同一份数据、不同分钟"这一次重画：PNG 缓存按分钟失效，
-// 但海报内容不会一分钟一变，重新下载 20 多秒纯属白给。
+// 但海报内容不会一分钟一变，重新下载 40 多秒纯属白给。
+//
+// dir 非空时同时落盘。这不是性能洁癖：海报 CDN 在反复整窗拉取之后会直接掐连接
+// （实测 16 张全被 reset），只放内存等于每次重启都重新捶一遍。
+// 失败只记在内存里——一次网络抖动不该被固化到盘上，永远取不到。
 type ArtCache struct {
 	mu  sync.Mutex
 	m   map[string][]byte
 	cap int
+	dir string
 }
 
-func NewArtCache(maxEntries int) *ArtCache {
+func NewArtCache(dir string, maxEntries int) *ArtCache {
 	if maxEntries <= 0 {
 		maxEntries = 256
 	}
-	return &ArtCache{m: map[string][]byte{}, cap: maxEntries}
+	return &ArtCache{m: map[string][]byte{}, cap: maxEntries, dir: dir}
 }
 
 func (c *ArtCache) get(url string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b, ok := c.m[url]
-	return b, ok
+	if b, ok := c.m[url]; ok {
+		return b, true
+	}
+	if c.dir == "" {
+		return nil, false
+	}
+	b, err := os.ReadFile(c.fileOf(url))
+	if err != nil {
+		return nil, false
+	}
+	c.m[url] = b
+	return b, true
 }
 
 func (c *ArtCache) put(url string, b []byte) {
@@ -261,6 +280,19 @@ func (c *ArtCache) put(url string, b []byte) {
 		c.m = map[string][]byte{}
 	}
 	c.m[url] = b
+	if c.dir == "" || len(b) == 0 {
+		return
+	}
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		return // 落不了盘就只吃内存：出图不该因为缓存写不进去而失败
+	}
+	_ = os.WriteFile(c.fileOf(url), b, 0o600)
+}
+
+// fileOf 用 URL 的 sha1 当文件名：URL 里带路径与查询串，直接拼会跑到目录外面去。
+func (c *ArtCache) fileOf(url string) string {
+	s := sha1.Sum([]byte(url))
+	return filepath.Join(c.dir, hex.EncodeToString(s[:])+".img")
 }
 
 // inlineArt 下载本窗要画的海报，转成 data URI 内联，并按海报本身取淡底色。

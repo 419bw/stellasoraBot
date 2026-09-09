@@ -69,6 +69,7 @@ func main() {
 		Label:   stellasora.ProvVersion,
 		Client:  client,
 		Now:     func() time.Time { return now },
+		ArtDir:  filepath.Join(filepath.Dir(*dbPath), "art"),
 		Cap:     &render.Browser{Bin: bin, WorkDir: work, Budget: *budget, Logf: logf},
 		Logf:    logf,
 	})

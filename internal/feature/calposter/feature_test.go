@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"xingta/internal/annsync"
+	"xingta/internal/command"
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
 	"xingta/internal/kernel/schedule"
+	"xingta/internal/qq"
 	"xingta/internal/store"
 	"xingta/internal/store/storetest"
 )
@@ -27,15 +29,13 @@ type fakeAPI struct {
 	mu        sync.Mutex
 	submitted []queue.Item
 	tasks     map[string]func(context.Context) error
-	schedules map[string]int
 	at        map[string]time.Time
 }
 
 func newAPI() *fakeAPI {
 	return &fakeAPI{
 		cal: calendar.NewStore(), sched: schedule.New(),
-		tasks:     map[string]func(context.Context) error{},
-		schedules: map[string]int{}, at: map[string]time.Time{},
+		tasks: map[string]func(context.Context) error{}, at: map[string]time.Time{},
 	}
 }
 
@@ -51,16 +51,17 @@ func (a *fakeAPI) Schedule(id string, at time.Time, fn func(context.Context) err
 	defer a.mu.Unlock()
 	a.tasks[id] = fn
 	a.at[id] = at
-	a.schedules[id]++
 }
 
 func (a *fakeAPI) Cancel(string) bool            { return false }
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
 
+// fire 触发并消费掉一个排期，与真调度器一致：跑完就不再排着。
 func (a *fakeAPI) fire(id string) error {
 	a.mu.Lock()
 	fn := a.tasks[id]
+	delete(a.tasks, id)
 	a.mu.Unlock()
 	if fn == nil {
 		return fmt.Errorf("没有 %s 这个排期任务", id)
@@ -68,10 +69,23 @@ func (a *fakeAPI) fire(id string) error {
 	return fn(context.Background())
 }
 
-func (a *fakeAPI) count(id string) int {
+// armed 是"此刻还排着期吗"。断言这个而不是数 Schedule 被调用几次：Start 会立刻
+// 跑一轮预热，与测试里显式调的 round 天然并发，数调用次数必然抖。
+func (a *fakeAPI) taskIDs() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.schedules[id]
+	var out []string
+	for k := range a.tasks {
+		out = append(out, k)
+	}
+	return out
+}
+
+func (a *fakeAPI) armed(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.tasks[id]
+	return ok
 }
 
 func (a *fakeAPI) atOf(id string) (time.Time, bool) {
@@ -117,8 +131,8 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 	if !gotAt.Equal(at("2026-09-08 17:00")) {
 		t.Errorf("触发时刻应是开闸估计 17:00，得到 %s", gotAt)
 	}
-	if got := api.count(want); got != 1 {
-		t.Errorf("排了 %d 次", got)
+	if !api.armed(want) {
+		t.Error("没排上期")
 	}
 
 	// 到点：投一条只带媒体引用的队列项，并记下已推。
@@ -136,12 +150,15 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 		t.Error("图不能被并进文字 batch（队列的合并判据要求 Media 为空时才可合并）")
 	}
 
-	// 再跑几轮：已推过的不再排。
+	// 再跑几轮：已推过的版本不该再投第二条。
+	// 这里断言的是"发出去几次"而不是"有没有被重新排上"——排期检查与触发之间
+	// 本来就允许重排，只要 push 以账本为准，就不会真发第二遍。
 	for i := 0; i < 3; i++ {
 		p.round(context.Background())
+		_ = api.fire(want)
 	}
-	if got := api.count(want); got != 1 {
-		t.Errorf("已推过的版本还在重排，共 %d 次", got)
+	if got := len(api.items()); got != 1 {
+		t.Errorf("同一个版本投了 %d 条, want 1", got)
 	}
 }
 
@@ -156,12 +173,12 @@ func TestHistoryIsNotPushedOnFirstRun(t *testing.T) {
 	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:30"), "g:grp")
 	p.round(context.Background())
 
-	if got := api.count("poster:202609071600"); got != 1 {
-		t.Errorf("刚开闸的那个版本该排上期，排了 %d 次", got)
+	if !api.armed("poster:202609071600") {
+		t.Error("刚开闸的那个版本没排上期")
 	}
 	for _, old := range []string{"poster:202607201600", "poster:202608171600"} {
-		if got := api.count(old); got != 0 {
-			t.Errorf("历史版本 %s 被排上了期（%d 次），上线即刷屏", old, got)
+		if api.armed(old) {
+			t.Errorf("历史版本 %s 被排上了期，上线即刷屏", old)
 		}
 	}
 }
@@ -182,8 +199,8 @@ func TestRestartDoesNotResend(t *testing.T) {
 	// 换一个 Poster 实例（= 重启），账本还在库里。
 	p2, api2 := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:06"), "g:grp")
 	p2.round(context.Background())
-	if got := api2.count("poster:202609071600"); got != 0 {
-		t.Errorf("重启后又不排期了（重排 %d 次），会重发", got)
+	if api2.armed("poster:202609071600") {
+		t.Error("重启后又排上期了，会重发")
 	}
 	if len(api2.items()) != 0 {
 		t.Errorf("重启后立刻又投了 %d 条", len(api2.items()))
@@ -286,7 +303,90 @@ func TestUnreadableLedgerCountsAsSent(t *testing.T) {
 	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
 	p, api := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:05"), "g:grp")
 	p.round(context.Background())
-	if got := api.count("poster:202609071600"); got != 0 {
-		t.Errorf("解不开的账本该按已推处理，却排了 %d 次", got)
+	if api.armed("poster:202609071600") {
+		t.Error("解不开的账本该按已推处理，却还是排上了期")
+	}
+}
+
+// ---------- 「日历」命令 ----------
+
+func TestCalendarCommandRepliesWithImage(t *testing.T) {
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	cap := &fakeCap{}
+	api := newAPI()
+	reg := command.NewRegistry()
+	p := New(Config{
+		Doc: storetest.NewMem(), Records: func() ([]annsync.Rec, error) { return recs, nil },
+		Cap: cap, Label: "version", Zone: zone, Reg: reg, Now: func() time.Time { return at("2026-09-08 20:00") },
+	})
+	if err := p.Start(context.Background(), api); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := reg.Lookup("日历")
+	if !ok {
+		t.Fatal("「日历」没注册上")
+	}
+	rep, err := c.Run(context.Background(), &qq.Message{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rep.Image) != "PNG:#x202609071600" {
+		t.Errorf("回的不是当前版本那张图: %q", rep.Image)
+	}
+	if rep.Text != "" {
+		t.Errorf("回图时不该带文字: %q", rep.Text)
+	}
+	if cap.count() != 1 {
+		t.Errorf("画了 %d 次", cap.count())
+	}
+}
+
+// 没给 Reg 就只推图不接命令：关掉命令面不该连带关掉推图。
+func TestNoRegistrarMeansNoCommand(t *testing.T) {
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"), "g:grp")
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatalf("没注册命令时推图照常要能跑: %v", err)
+	}
+}
+
+// 海报落盘是为了"重启不重新捶 CDN"（实测反复整窗拉取之后会被直接掐连接）。
+// 所以这里断言的是第二个进程一次网络都不该碰。
+func TestArtCacheSurvivesRestart(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Write([]byte(strings.Repeat("y", 600)))
+	}))
+	defer cdn.Close()
+
+	recs := []annsync.Rec{
+		verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"),
+		{ID: "stellasora:4565:0", RefID: "4565", Title: "有海报的活动", Label: "活动时间",
+			Start: at("2026-09-09 00:00"), End: at("2026-09-12 03:59"),
+			Status: annsync.StatusOK, Provenance: "solo", Poster: cdn.URL + "/a.jpg"},
+	}
+	dir := t.TempDir()
+	for round := 0; round < 2; round++ {
+		// 每轮换一个新 Poster 实例 = 重启：内存清空，只剩盘上那份。
+		p := New(Config{
+			Doc: storetest.NewMem(), Records: func() ([]annsync.Rec, error) { return recs, nil },
+			Cap: &fakeCap{}, Label: "version", Zone: zone, ArtDir: dir,
+			Client: cdn.Client(), Now: func() time.Time { return at("2026-09-08 20:00") },
+		})
+		if err := p.Start(context.Background(), newAPI()); err != nil {
+			t.Fatal(err)
+		}
+		p.round(context.Background())
+		mu.Lock()
+		got := hits
+		mu.Unlock()
+		if got != 1 {
+			t.Fatalf("第 %d 次启动拉了 %d 次, want 只有第一次拉", round+1, got)
+		}
 	}
 }

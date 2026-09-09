@@ -153,7 +153,6 @@ func TestCaptureWithRealBrowser(t *testing.T) {
 				ClaimEnd: "2026-09-20 10:59", Tint: "fdeef2", Source: "solo", Ref: "2"},
 		},
 		Repeating: []string{},
-		Stats:     map[string]int{"records": 2},
 	}, Template)
 	if err != nil {
 		t.Fatal(err)

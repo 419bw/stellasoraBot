@@ -72,15 +72,15 @@ func (f *feature) Name() string { return "calops" }
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
 		{Name: "待确认", Aliases: []string{"待確認", "存疑", "review"}, Admin: true,
-			Usage: "列出解析不出来或有歧义的活动，可加页码", Run: f.review},
+			Usage: "列出解析不出来或有歧义的活动，可加页码", Run: command.Text(f.review)},
 		{Name: "覆盖", Aliases: []string{"覆蓋", "改期", "override"}, Admin: true,
-			Usage: "改时间：覆盖 <id> <开始> <结束> [备注]，时间写 2026-09-08 10:59", Run: f.override},
+			Usage: "改时间：覆盖 <id> <开始> <结束> [备注]，时间写 2026-09-08 10:59", Run: command.Text(f.override)},
 		{Name: "确认", Aliases: []string{"確認", "固化", "confirm"}, Admin: true,
-			Usage: "把当前解析值固化下来，之后刷新不再改它：确认 <id>", Run: f.confirm},
+			Usage: "把当前解析值固化下来，之后刷新不再改它：确认 <id>", Run: command.Text(f.confirm)},
 		{Name: "隐藏", Aliases: []string{"隱藏", "屏蔽", "hide"}, Admin: true,
-			Usage: "把一条记录从日历里撤下：隐藏 <id> [备注]", Run: f.hide},
+			Usage: "把一条记录从日历里撤下：隐藏 <id> [备注]", Run: command.Text(f.hide)},
 		{Name: "显示", Aliases: []string{"顯示", "恢复", "show"}, Admin: true,
-			Usage: "撤销隐藏：显示 <id>", Run: f.show},
+			Usage: "撤销隐藏：显示 <id>", Run: command.Text(f.show)},
 	}
 	for _, c := range cmds {
 		if err := f.reg.Add(c); err != nil {

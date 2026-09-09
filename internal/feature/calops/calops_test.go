@@ -141,11 +141,11 @@ func (r *rig) run(t *testing.T, name string, args ...string) string {
 		Kind: qq.EventGroupAtMessage, ID: "M1", GroupOpenID: "G1", Content: name,
 		Author: qq.Author{MemberOpenID: "ADMIN1", Username: "魔王大人", MemberRole: "owner"},
 	}
-	text, err := c.Run(context.Background(), m, args)
+	rep, err := c.Run(context.Background(), m, args)
 	if err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
-	return text
+	return rep.Text
 }
 
 // seed 灌三条公告：一条干净、一条解析不出起止（pending）、一条整条可疑（一个区间都没有）。
@@ -558,8 +558,8 @@ func TestWorksWithoutRefreshHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("覆蓋: %v", err)
 	}
-	if !strings.Contains(text, "已覆盖") {
-		t.Fatalf("覆蓋没写成：%q", text)
+	if !strings.Contains(text.Text, "已覆盖") {
+		t.Fatalf("覆蓋没写成：%q", text.Text)
 	}
 
 	deadline = time.Now().Add(3 * time.Second)

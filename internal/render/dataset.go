@@ -53,8 +53,7 @@ type Dataset struct {
 	Windows []Window `json:"versions"`
 	// Repeating 是模板里键名为 monthly 的那份名单：落在其中的名字画在第三条轨道、
 	// 且不画尾段。名单怎么判出来是调用方的事。
-	Repeating []string       `json:"monthly"`
-	Stats     map[string]int `json:"stats"`
+	Repeating []string `json:"monthly"`
 }
 
 // TimeLayout 是数据集里所有时间字段的格式（同一时区，由调用方保证）。

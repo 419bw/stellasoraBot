@@ -249,12 +249,22 @@ func (s *syncer) reproject() error {
 	return nil
 }
 
-// buildRecs 把条目快照摊平成一行一个子活动。标题缺失用条目标题兜底；
+// buildRecs 是投影侧的入口：映射交给 RecsOf，这里只补"这一轮是什么时候算的"。
+func (s *syncer) buildRecs(items []Item) []Rec {
+	recs := RecsOf(s.src.Name(), items)
+	now := s.cfg.Now()
+	for i := range recs {
+		recs[i].ParsedAt = now
+	}
+	return recs
+}
+
+// RecsOf 把条目快照摊平成一行一个子活动：投影用的就是这条映射，展示侧读到的
+// Rec 形状也由它定义，两边不是各写一遍。标题缺失用条目标题兜底；
 // 海报不兜底——维护公告的列表封面是通用运营图，填给切分条目等于给每个
 // 活动配同一张假海报，比没有更糟（方案 §3.4），没有就让展示层画占位。
-func (s *syncer) buildRecs(items []Item) []Rec {
-	src := s.src.Name()
-	now := s.cfg.Now()
+// ParsedAt 留零值，由调用方决定要不要打戳。
+func RecsOf(src string, items []Item) []Rec {
 	var out []Rec
 	for _, it := range items {
 		for i, ev := range it.Events {
@@ -278,7 +288,6 @@ func (s *syncer) buildRecs(items []Item) []Rec {
 				URL:        ev.URL,
 				Provenance: ev.Provenance,
 				TwinRef:    ev.TwinRef,
-				ParsedAt:   now,
 			})
 		}
 	}

@@ -1,0 +1,292 @@
+package calposter
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"xingta/internal/annsync"
+	"xingta/internal/kernel/calendar"
+	"xingta/internal/kernel/queue"
+	"xingta/internal/kernel/schedule"
+	"xingta/internal/store"
+	"xingta/internal/store/storetest"
+)
+
+// ---------- 内核侧假件（与 calexpiry 那份同形） ----------
+
+type fakeAPI struct {
+	cal   calendar.View
+	sched schedule.Scheduler
+
+	mu        sync.Mutex
+	submitted []queue.Item
+	tasks     map[string]func(context.Context) error
+	schedules map[string]int
+	at        map[string]time.Time
+}
+
+func newAPI() *fakeAPI {
+	return &fakeAPI{
+		cal: calendar.NewStore(), sched: schedule.New(),
+		tasks:     map[string]func(context.Context) error{},
+		schedules: map[string]int{}, at: map[string]time.Time{},
+	}
+}
+
+func (a *fakeAPI) Submit(it queue.Item) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.submitted = append(a.submitted, it)
+	return nil
+}
+
+func (a *fakeAPI) Schedule(id string, at time.Time, fn func(context.Context) error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.tasks[id] = fn
+	a.at[id] = at
+	a.schedules[id]++
+}
+
+func (a *fakeAPI) Cancel(string) bool            { return false }
+func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
+func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
+
+func (a *fakeAPI) fire(id string) error {
+	a.mu.Lock()
+	fn := a.tasks[id]
+	a.mu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("没有 %s 这个排期任务", id)
+	}
+	return fn(context.Background())
+}
+
+func (a *fakeAPI) count(id string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.schedules[id]
+}
+
+func (a *fakeAPI) atOf(id string) (time.Time, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.at[id]
+	return t, ok
+}
+
+func (a *fakeAPI) items() []queue.Item {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]queue.Item(nil), a.submitted...)
+}
+
+// ---------- 推图排期 ----------
+
+func featureFor(t *testing.T, recs []annsync.Rec, cap Capturer, doc store.Doc, now time.Time, targets ...string) (*Poster, *fakeAPI) {
+	t.Helper()
+	api := newAPI()
+	p := New(Config{
+		Doc: doc, Records: func() ([]annsync.Rec, error) { return recs, nil },
+		Cap: cap, Label: "version", Zone: zone, Targets: targets,
+		Now: func() time.Time { return now },
+	})
+	if err := p.Start(context.Background(), api); err != nil {
+		t.Fatal(err)
+	}
+	return p, api
+}
+
+func TestPushArmedAtOpenMoment(t *testing.T) {
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	// 早上 8 点：新版本还没过开闸，排期应当排在 17:00。
+	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 08:00"), "g:grp")
+	p.round(context.Background())
+
+	want := "poster:202609071600"
+	gotAt, ok := api.atOf(want)
+	if !ok {
+		t.Fatalf("没排上期，任务表 %+v", api.tasks)
+	}
+	if !gotAt.Equal(at("2026-09-08 17:00")) {
+		t.Errorf("触发时刻应是开闸估计 17:00，得到 %s", gotAt)
+	}
+	if got := api.count(want); got != 1 {
+		t.Errorf("排了 %d 次", got)
+	}
+
+	// 到点：投一条只带媒体引用的队列项，并记下已推。
+	if err := api.fire(want); err != nil {
+		t.Fatal(err)
+	}
+	items := api.items()
+	if len(items) != 1 {
+		t.Fatalf("该投 1 条，投了 %d 条", len(items))
+	}
+	if items[0].Media == nil || items[0].Media.Kind != "poster" || items[0].Media.Key != "202609071600" {
+		t.Errorf("队列项没带对媒体引用: %+v", items[0])
+	}
+	if items[0].Mergeable {
+		t.Error("图不能被并进文字 batch（队列的合并判据要求 Media 为空时才可合并）")
+	}
+
+	// 再跑几轮：已推过的不再排。
+	for i := 0; i < 3; i++ {
+		p.round(context.Background())
+	}
+	if got := api.count(want); got != 1 {
+		t.Errorf("已推过的版本还在重排，共 %d 次", got)
+	}
+}
+
+func TestHistoryIsNotPushedOnFirstRun(t *testing.T) {
+	// 库里三个版本都已开闸。功能第一次上线时只有"刚过开闸不到宽限期"的那个能排上，
+	// 否则一上线就把历史上每个版本都推一遍，是刷屏。
+	recs := []annsync.Rec{
+		verRec("3994", "晴风碧海", "2026-07-21 00:00", "2026-08-04 03:59", "2026-08-11 10:59"),
+		verRec("4356", "欢歌劲浪", "2026-08-18 00:00", "2026-09-01 03:59", "2026-09-08 10:59"),
+		verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"),
+	}
+	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:30"), "g:grp")
+	p.round(context.Background())
+
+	if got := api.count("poster:202609071600"); got != 1 {
+		t.Errorf("刚开闸的那个版本该排上期，排了 %d 次", got)
+	}
+	for _, old := range []string{"poster:202607201600", "poster:202608171600"} {
+		if got := api.count(old); got != 0 {
+			t.Errorf("历史版本 %s 被排上了期（%d 次），上线即刷屏", old, got)
+		}
+	}
+}
+
+func TestRestartDoesNotResend(t *testing.T) {
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	doc := storetest.NewMem()
+	now := at("2026-09-08 17:05")
+	p, api := featureFor(t, recs, &fakeCap{}, doc, now, "g:grp")
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.items()) != 1 {
+		t.Fatalf("第一次该投 1 条，%d 条", len(api.items()))
+	}
+
+	// 换一个 Poster 实例（= 重启），账本还在库里。
+	p2, api2 := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:06"), "g:grp")
+	p2.round(context.Background())
+	if got := api2.count("poster:202609071600"); got != 0 {
+		t.Errorf("重启后又不排期了（重排 %d 次），会重发", got)
+	}
+	if len(api2.items()) != 0 {
+		t.Errorf("重启后立刻又投了 %d 条", len(api2.items()))
+	}
+}
+
+func TestBrokenImageIsNotMarkedSent(t *testing.T) {
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	doc := storetest.NewMem()
+	bad := &errCap{}
+	p, api := featureFor(t, recs, bad, doc, at("2026-09-08 17:05"), "g:grp")
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err == nil {
+		t.Fatal("画不出来必须往上报错，否则就当发过了")
+	}
+	if len(api.items()) != 0 {
+		t.Errorf("图都没画出来就投递了 %d 条", len(api.items()))
+	}
+	var raw []byte
+	if ok, _ := doc.Get(NS, "202609071600", &raw); ok {
+		t.Error("失败的一轮被记成已推，之后永远不会补发")
+	}
+
+	// 下一轮（浏览器修好了）应当重排并真的投出去。
+	p.cfg.Cap = &fakeCap{}
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatalf("修好后重投失败: %v", err)
+	}
+	if len(api.items()) != 1 {
+		t.Errorf("修好后该投 1 条，%d 条", len(api.items()))
+	}
+}
+
+func TestNoTargetsLogsOnly(t *testing.T) {
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"))
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.items()) != 0 {
+		t.Errorf("没配目标却投了 %d 条", len(api.items()))
+	}
+	var v time.Time
+	if ok, _ := p.cfg.Doc.Get(NS, "202609071600", &v); !ok {
+		t.Error("只记日志的一轮也要落账，否则每轮都重排")
+	}
+}
+
+// ---------- 预热 ----------
+
+func TestRoundFetchesArtOncePerFingerprint(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Write([]byte(strings.Repeat("x", 600))) // 够大即可，解不出图只会退回哈希底色
+	}))
+	defer cdn.Close()
+
+	recs := []annsync.Rec{
+		verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"),
+		{ID: "stellasora:4565:0", RefID: "4565", Title: "有海报的活动", Label: "活动时间",
+			Start: at("2026-09-09 00:00"), End: at("2026-09-12 03:59"),
+			Status: annsync.StatusOK, Provenance: "solo", Poster: cdn.URL + "/a.jpg"},
+	}
+	p, _ := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 20:00"))
+	p.cfg.Client = cdn.Client()
+
+	for i := 0; i < 3; i++ {
+		p.round(context.Background())
+	}
+	mu.Lock()
+	got := hits
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("数据没变时海报只该拉一次，拉了 %d 次", got)
+	}
+
+	// 数据一变（海报 URL 换了）就该重拉。
+	recs[1].Poster = cdn.URL + "/b.jpg"
+	p.round(context.Background())
+	mu.Lock()
+	got = hits
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("数据变了没重拉，共 %d 次", got)
+	}
+}
+
+// 账本值的容错：库里那条解不开时按"已推"处理（与 calexpiry 同一条取舍）。
+func TestUnreadableLedgerCountsAsSent(t *testing.T) {
+	doc := storetest.NewMem()
+	if err := doc.Put(NS, "202609071600", "不是时间"); err != nil {
+		t.Fatal(err)
+	}
+	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
+	p, api := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:05"), "g:grp")
+	p.round(context.Background())
+	if got := api.count("poster:202609071600"); got != 0 {
+		t.Errorf("解不开的账本该按已推处理，却排了 %d 次", got)
+	}
+}

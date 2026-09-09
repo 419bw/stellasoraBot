@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 // Template 是日历卡片的版式与几何，唯一一份真相。机器人自己出图要用它，所以入库；
@@ -32,6 +33,15 @@ type Browser struct {
 	WorkDir string
 	// Env 追加到子进程环境（Linux 上跑 headless 常要补变量；测试也用它注入假浏览器）。
 	Env []string
+	// Logf 可选：两趟浏览器各自的耗时与尺寸记在这儿。出图慢的时候要先分清
+	// 是量尺寸那趟慢还是截图那趟慢，两者都是独立起一个浏览器进程。
+	Logf func(format string, args ...any)
+}
+
+func (b *Browser) logf(format string, args ...any) {
+	if b.Logf != nil {
+		b.Logf(format, args...)
+	}
 }
 
 func (b *Browser) command(args ...string) *exec.Cmd {
@@ -55,18 +65,36 @@ func (b *Browser) Capture(page []byte, route string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "xingta-cal.html")
-	if err := os.WriteFile(path, page, 0o644); err != nil {
+	// 临时文件必须唯一：同一目录里两个版本并发出图时，固定名会让后写的那份
+	// 页面顶掉前一份，截出来就不是调用方要的那张。
+	pageFile, err := os.CreateTemp(dir, "xingta-cal-*.html")
+	if err != nil {
+		return nil, fmt.Errorf("render: 建临时页面失败: %w", err)
+	}
+	path := pageFile.Name()
+	defer os.Remove(path)
+	if _, err := pageFile.Write(page); err != nil {
+		pageFile.Close()
 		return nil, fmt.Errorf("render: 写临时页面失败: %w", err)
 	}
-	defer os.Remove(path)
+	if err := pageFile.Close(); err != nil {
+		return nil, fmt.Errorf("render: 写临时页面失败: %w", err)
+	}
 
+	mStart := time.Now()
 	w, h, err := b.measure(path, route)
 	if err != nil {
 		return nil, err
 	}
-	shot := filepath.Join(dir, "xingta-cal.png")
-	_ = os.Remove(shot)
+	b.logf("render: 量尺寸 %s → %dx%d", time.Since(mStart).Round(10*time.Millisecond), w, h)
+	shotFile, err := os.CreateTemp(dir, "xingta-cal-*.png")
+	if err != nil {
+		return nil, fmt.Errorf("render: 建临时截图失败: %w", err)
+	}
+	shot := shotFile.Name()
+	shotFile.Close()
+	_ = os.Remove(shot) // Chrome 要求目标不存在或可覆盖，先让位给它
+	cStart := time.Now()
 	cmd := b.command(b.captureArgs(path, route, w, h, shot)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("render: 截图失败: %v（%s）", err, tail(out))
@@ -75,6 +103,7 @@ func (b *Browser) Capture(page []byte, route string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("render: 浏览器没产出截图: %w", err)
 	}
+	b.logf("render: 截图 %s → %d KB", time.Since(cStart).Round(10*time.Millisecond), len(raw)/1024)
 	os.Remove(shot)
 	return raw, nil
 }

@@ -64,11 +64,11 @@ func run(t *testing.T, reg *command.Registry, name string, args ...string) strin
 		t.Fatalf("命令 %q 没注册上", name)
 	}
 	m := &qq.Message{Kind: qq.EventGroupAtMessage, ID: "M1", GroupOpenID: "G1", Content: name}
-	text, err := c.Run(context.Background(), m, args)
+	rep, err := c.Run(context.Background(), m, args)
 	if err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
-	return text
+	return rep.Text
 }
 
 func TestRegistersAllQueryCommands(t *testing.T) {

@@ -88,15 +88,15 @@ func (f *feature) Name() string { return "calquery" }
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
 		{Name: "活动", Aliases: []string{"進行中", "进行中", "活動", "events"},
-			Usage: "正在进行的活动，可加页码：活动 2", Run: f.active},
+			Usage: "正在进行的活动，可加页码：活动 2", Run: command.Text(f.active)},
 		{Name: "快结束", Aliases: []string{"快結束", "快結束了", "快结束了", "ending"},
 			Usage: fmt.Sprintf("默认 %d 小时内结束的活动，可加小时数：快结束 12", int(f.cfg.DefaultEndLead.Hours())),
-			Run:   f.ending},
+			Run:   command.Text(f.ending)},
 		{Name: "即将", Aliases: []string{"即將", "預告", "预告", "upcoming"},
 			Usage: fmt.Sprintf("默认 %d 天内开始的活动，可加天数：即将 3", f.cfg.DefaultSoonDays),
-			Run:   f.upcoming},
+			Run:   command.Text(f.upcoming)},
 		{Name: "帮助", Aliases: []string{"幫助", "help", "命令"},
-			Usage: "列出所有命令", Run: f.help},
+			Usage: "列出所有命令", Run: command.Text(f.help)},
 	}
 	for _, c := range cmds {
 		if err := f.reg.Add(c); err != nil {

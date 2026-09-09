@@ -25,7 +25,29 @@ type Cmd struct {
 	Aliases []string // 别名，如 "進行中"
 	Admin   bool     // 只给群主/管理员（单聊里则要求发送者在 Config.AdminOpenIDs 里）
 	Usage   string   // 一行用法，进「帮助」列表
-	Run     func(ctx context.Context, m *qq.Message, args []string) (string, error)
+	Run     func(ctx context.Context, m *qq.Message, args []string) (Reply, error)
+}
+
+// Reply 是一条命令的回复。Text 与 Image 二选一，非此即彼——不设并行的第二个入口
+// 是"一条命令 = 一条被动回复"这条铁律的另一面：两个入口一定漂移。
+//
+// 图给的是字节而不是 file_info：file_info 的 ttl 只有几分钟，从命令开跑可能就
+// 过期了。上传由机制层在真要发的那一刻做。
+type Reply struct {
+	Text  string
+	Image []byte
+	Name  string // 图片的文件名（平台侧只拿它做记录），空则用默认
+}
+
+// Text 把"只回文字"的命令函数适配成 Reply 面。
+//
+// 入口仍然只有一个：Cmd.Run 返回 Reply。这里只是省掉十几处 return Reply{Text: ...}
+// 的噪音——运维命令、帮助这类永远不会发图，写 string 更清楚。
+func Text(fn func(ctx context.Context, m *qq.Message, args []string) (string, error)) func(context.Context, *qq.Message, []string) (Reply, error) {
+	return func(ctx context.Context, m *qq.Message, args []string) (Reply, error) {
+		s, err := fn(ctx, m, args)
+		return Reply{Text: s}, err
+	}
 }
 
 // Registrar 是机制层给功能包的注册面。功能只拿得到这个，拿不到 Registry 的内部。
@@ -116,6 +138,8 @@ func (r *Registry) HelpText() string {
 type SendAPI interface {
 	SendGroupReply(ctx context.Context, groupOpenID, msgID string, req qq.SendRequest) (*qq.SendResult, error)
 	SendC2CReply(ctx context.Context, userOpenID, msgID string, req qq.SendRequest) (*qq.SendResult, error)
+	UploadGroupImage(ctx context.Context, groupOpenID, fileName string, data []byte) (qq.MediaRef, error)
+	UploadC2CImage(ctx context.Context, userOpenID, fileName string, data []byte) (qq.MediaRef, error)
 }
 
 // Config 的零值必须可用。
@@ -163,19 +187,19 @@ func dispatch(ctx context.Context, reg *Registry, send SendAPI, cfg Config, m *q
 	}
 
 	if c.Admin && !isAdmin(m, cfg) {
-		reply(ctx, send, cfg, m, "「"+c.Name+"」只给群主与管理员用")
+		reply(ctx, send, cfg, m, Reply{Text: "「" + c.Name + "」只给群主与管理员用"})
 		return
 	}
 
-	text, err := c.Run(ctx, m, fields[1:])
+	rep, err := c.Run(ctx, m, fields[1:])
 	if err != nil {
 		cfg.Logf("command: %s 执行失败: %v", c.Name, err)
-		text = "「" + c.Name + "」执行失败：" + err.Error()
+		rep = Reply{Text: "「" + c.Name + "」执行失败：" + err.Error()}
 	}
-	if strings.TrimSpace(text) == "" {
+	if strings.TrimSpace(rep.Text) == "" && len(rep.Image) == 0 {
 		return // 命令明确表示不回话（例如后台任务已受理）
 	}
-	reply(ctx, send, cfg, m, text)
+	reply(ctx, send, cfg, m, rep)
 }
 
 // isAdmin 群里看角色，单聊看白名单：单聊报文里没有 member_role。
@@ -195,13 +219,37 @@ func isAdmin(m *qq.Message, cfg Config) bool {
 	return false
 }
 
-func reply(ctx context.Context, send SendAPI, cfg Config, m *qq.Message, text string) {
+func reply(ctx context.Context, send SendAPI, cfg Config, m *qq.Message, rep Reply) {
 	target, isGroup := m.ReplyTarget()
 	if target == "" {
 		cfg.Logf("command: 消息 %s 没有可回复的 openid", m.ID)
 		return
 	}
-	req := qq.SendRequest{MsgType: qq.MsgTypeText, Content: clamp(text, cfg.MaxRunes)}
+	req := qq.SendRequest{MsgType: qq.MsgTypeText, Content: clamp(rep.Text, cfg.MaxRunes)}
+	if len(rep.Image) > 0 {
+		name := rep.Name
+		if name == "" {
+			name = "calendar.png"
+		}
+		var (
+			ref qq.MediaRef
+			err error
+		)
+		if isGroup {
+			ref, err = send.UploadGroupImage(ctx, target, name, rep.Image)
+		} else {
+			ref, err = send.UploadC2CImage(ctx, target, name, rep.Image)
+		}
+		if err != nil {
+			// 只报"传不上去"，不把图换成文字版发出去：那是另一份内容，
+			// 玩家看到的会是"图没了但多了一大段字"。
+			cfg.Logf("command: 回复 %s 的配图上传失败: %v", m.ID, err)
+			req = qq.SendRequest{MsgType: qq.MsgTypeText,
+				Content: "图传不上去：" + err.Error()}
+		} else {
+			req = qq.SendRequest{MsgType: qq.MsgTypeMedia, Media: &qq.MediaInfo{FileInfo: ref.FileInfo}}
+		}
+	}
 
 	var err error
 	if isGroup {

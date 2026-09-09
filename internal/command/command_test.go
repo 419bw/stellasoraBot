@@ -16,16 +16,29 @@ import (
 // ---- 假件 ----------------------------------------------------------------
 
 type sent struct {
-	target  string
-	msgID   string
-	content string
+	target   string
+	msgID    string
+	content  string
+	msgType  int
+	fileInfo string
+}
+
+// upload 是一次图片上传调用的记录：图应当由机制层在真要发的那一刻才上传，
+// 功能只交字节，不碰 file_info。
+type upload struct {
+	scene  string // "group" / "c2c"
+	target string
+	name   string
+	size   int
 }
 
 type fakeSend struct {
-	mu       sync.Mutex
-	group    []sent
-	c2c      []sent
-	failWith error
+	mu        sync.Mutex
+	group     []sent
+	c2c       []sent
+	uploads   []upload
+	failWith  error
+	uploadErr error
 }
 
 func (f *fakeSend) SendGroupReply(ctx context.Context, target, msgID string, req qq.SendRequest) (*qq.SendResult, error) {
@@ -34,7 +47,7 @@ func (f *fakeSend) SendGroupReply(ctx context.Context, target, msgID string, req
 	if f.failWith != nil {
 		return nil, f.failWith
 	}
-	f.group = append(f.group, sent{target: target, msgID: msgID, content: req.Content})
+	f.group = append(f.group, sentOf(target, msgID, req))
 	return &qq.SendResult{}, nil
 }
 
@@ -44,8 +57,34 @@ func (f *fakeSend) SendC2CReply(ctx context.Context, target, msgID string, req q
 	if f.failWith != nil {
 		return nil, f.failWith
 	}
-	f.c2c = append(f.c2c, sent{target: target, msgID: msgID, content: req.Content})
+	f.c2c = append(f.c2c, sentOf(target, msgID, req))
 	return &qq.SendResult{}, nil
+}
+
+func sentOf(target, msgID string, req qq.SendRequest) sent {
+	s := sent{target: target, msgID: msgID, content: req.Content, msgType: req.MsgType}
+	if req.Media != nil {
+		s.fileInfo = req.Media.FileInfo
+	}
+	return s
+}
+
+func (f *fakeSend) UploadGroupImage(ctx context.Context, target, name string, data []byte) (qq.MediaRef, error) {
+	return f.upload("group", target, name, data)
+}
+
+func (f *fakeSend) UploadC2CImage(ctx context.Context, target, name string, data []byte) (qq.MediaRef, error) {
+	return f.upload("c2c", target, name, data)
+}
+
+func (f *fakeSend) upload(scene, target, name string, data []byte) (qq.MediaRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.uploadErr != nil {
+		return qq.MediaRef{}, f.uploadErr
+	}
+	f.uploads = append(f.uploads, upload{scene: scene, target: target, name: name, size: len(data)})
+	return qq.MediaRef{FileInfo: "FI:" + name}, nil
 }
 
 func (f *fakeSend) all() []sent {
@@ -124,8 +163,10 @@ func (h *harness) say(t *testing.T, kind string, payload map[string]any) {
 	}
 }
 
-func echo(text string) func(context.Context, *qq.Message, []string) (string, error) {
-	return func(context.Context, *qq.Message, []string) (string, error) { return text, nil }
+func echo(text string) func(context.Context, *qq.Message, []string) (command.Reply, error) {
+	return func(context.Context, *qq.Message, []string) (command.Reply, error) {
+		return command.Reply{Text: text}, nil
+	}
 }
 
 func mustAdd(t *testing.T, reg *command.Registry, c command.Cmd) {
@@ -201,8 +242,8 @@ func TestAliasAndCaseInsensitiveLookup(t *testing.T) {
 func TestSlashPrefixedCommandMatches(t *testing.T) {
 	h := newHarness(t, command.Config{})
 	mustAdd(t, h.reg, command.Cmd{Name: "活動", Aliases: []string{"events"},
-		Run: func(_ context.Context, _ *qq.Message, args []string) (string, error) {
-			return "页 " + strings.Join(args, ","), nil
+		Run: func(_ context.Context, _ *qq.Message, args []string) (command.Reply, error) {
+			return command.Reply{Text: "页 " + strings.Join(args, ",")}, nil
 		}})
 
 	h.sayGroup(t, "M1", "/events", "member")
@@ -282,8 +323,8 @@ func TestLongReplyIsTruncated(t *testing.T) {
 
 func TestRunErrorBecomesOneReply(t *testing.T) {
 	h := newHarness(t, command.Config{})
-	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: func(context.Context, *qq.Message, []string) (string, error) {
-		return "", errors.New("日历读不出来")
+	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+		return command.Reply{}, errors.New("日历读不出来")
 	}})
 
 	h.sayGroup(t, "M1", "活動", "member")
@@ -327,8 +368,8 @@ func TestEmptyReplyIsNotSent(t *testing.T) {
 
 func TestArgsArePassedAfterCommandName(t *testing.T) {
 	h := newHarness(t, command.Config{})
-	mustAdd(t, h.reg, command.Cmd{Name: "快結束", Run: func(_ context.Context, _ *qq.Message, args []string) (string, error) {
-		return strings.Join(args, "|"), nil
+	mustAdd(t, h.reg, command.Cmd{Name: "快結束", Run: func(_ context.Context, _ *qq.Message, args []string) (command.Reply, error) {
+		return command.Reply{Text: strings.Join(args, "|")}, nil
 	}})
 
 	h.sayGroup(t, "M1", "快結束 12 2  .extra", "member")
@@ -389,5 +430,91 @@ func TestHelpTextListsCommandsInOrder(t *testing.T) {
 func TestEmptyRegistryHelpText(t *testing.T) {
 	if got := command.NewRegistry().HelpText(); got != "" {
 		t.Errorf("空注册表的帮助 = %q, want 空串", got)
+	}
+}
+
+// ---- 回图 ----
+
+func TestImageReplyUploadsThenSendsMedia(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Image: []byte("PNGPNG"), Name: "202609071600.png"}, nil
+		}})
+
+	h.sayGroup(t, "M1", "日历", "member")
+
+	if len(h.send.uploads) != 1 {
+		t.Fatalf("上传了 %d 次, want 1", len(h.send.uploads))
+	}
+	u := h.send.uploads[0]
+	if u.scene != "group" || u.target != "GROUP1" || u.name != "202609071600.png" || u.size != 6 {
+		t.Errorf("上传参数不对: %+v", u)
+	}
+	got := h.send.all()
+	if len(got) != 1 {
+		t.Fatalf("回复了 %d 条, want 1", len(got))
+	}
+	if got[0].msgType != qq.MsgTypeMedia || got[0].fileInfo != "FI:202609071600.png" || got[0].content != "" {
+		t.Errorf("没按图发出去: %+v", got[0])
+	}
+}
+
+func TestImageReplyInC2CUsesUserChannel(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Image: []byte("PNG")}, nil
+		}})
+
+	h.sayC2C(t, "M1", "日历", "USER1")
+
+	if len(h.send.uploads) != 1 || h.send.uploads[0].scene != "c2c" {
+		t.Fatalf("单聊的图走了错的通道: %+v", h.send.uploads)
+	}
+	if h.send.uploads[0].name != "calendar.png" {
+		t.Errorf("没给文件名时该用默认名，得到 %q", h.send.uploads[0].name)
+	}
+}
+
+// 图与文字同时给出时只发图：一条命令一条回复，不许变成两条。
+func TestImageWinsOverTextInOneReply(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Text: "这是日历", Image: []byte("PNG")}, nil
+		}})
+
+	h.sayGroup(t, "M1", "日历", "member")
+
+	got := h.send.all()
+	if len(got) != 1 {
+		t.Fatalf("回复了 %d 条, want 1", len(got))
+	}
+	if got[0].msgType != qq.MsgTypeMedia || got[0].content != "" {
+		t.Errorf("文字混进了图的回复: %+v", got[0])
+	}
+}
+
+// 上传失败不能悄悄什么都不发，也不能降级成"把日历写成文字"。
+func TestUploadFailureRepliesNoticeNotCalendarText(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Text: "本不该发出去的文字", Image: []byte("PNG")}, nil
+		}})
+	h.send.uploadErr = errors.New("CDN 拒了")
+
+	h.sayGroup(t, "M1", "日历", "member")
+
+	got := h.send.all()
+	if len(got) != 1 {
+		t.Fatalf("回复了 %d 条, want 1", len(got))
+	}
+	if got[0].msgType != qq.MsgTypeText || !strings.Contains(got[0].content, "CDN 拒了") {
+		t.Errorf("上传失败该回一句说明: %+v", got[0])
+	}
+	if strings.Contains(got[0].content, "本不该发出去") {
+		t.Error("上传失败时把功能的文字兜底发出去了，等于悄悄降级")
 	}
 }

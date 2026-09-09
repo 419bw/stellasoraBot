@@ -202,7 +202,7 @@ func posterFor(t *testing.T, recs []annsync.Rec, cap Capturer, now time.Time) *P
 	})
 }
 
-func TestImageCachesUntilDataOrMinuteChanges(t *testing.T) {
+func TestImageCachesUntilDataOrBucketChanges(t *testing.T) {
 	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
 	cap := &fakeCap{}
 	now := at("2026-09-08 20:00")
@@ -214,24 +214,31 @@ func TestImageCachesUntilDataOrMinuteChanges(t *testing.T) {
 		}
 	}
 	if got := cap.count(); got != 1 {
-		t.Errorf("同一份数据同一分钟只该画一次，画了 %d 次", got)
+		t.Errorf("同一份数据同一个桶只该画一次，画了 %d 次", got)
 	}
 	if hits, _ := p.Stats(); hits != 2 {
 		t.Errorf("命中计数该是 2，得到 %d", hits)
 	}
 
-	// 只过一分钟：底图重画一次（浏览器出图不分层，等价保证就是按分钟去重），
-	// 出图时刻线要跟着走。
-	p.cfg.Now = func() time.Time { return at("2026-09-08 20:01") }
+	// 同一 5 分钟桶内过几分钟：出图时刻线只亚像素位移，字节不变，不该重画。
+	p.cfg.Now = func() time.Time { return at("2026-09-08 20:04") }
+	if _, err := p.Image(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := cap.count(); got != 1 {
+		t.Errorf("同一桶内不该重画，画了 %d 次", got)
+	}
+
+	// 跨桶：重画一次。
+	p.cfg.Now = func() time.Time { return at("2026-09-08 20:05") }
 	if _, err := p.Image(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := cap.count(); got != 2 {
-		t.Errorf("换了一分钟应该重画，画了 %d 次", got)
+		t.Errorf("跨桶应该重画，画了 %d 次", got)
 	}
 
-	// 数据变了（活动结束时刻挪一分钟）：同一分钟也必须重画，否则就是拿旧图糊弄新数据。
-	p.cfg.Now = func() time.Time { return at("2026-09-08 20:01") }
+	// 数据变了（活动结束时刻挪一分钟）：同一桶也必须重画，否则就是拿旧图糊弄新数据。
 	recs[0].End = recs[0].End.Add(time.Minute)
 	if _, err := p.Image(context.Background(), ""); err != nil {
 		t.Fatal(err)

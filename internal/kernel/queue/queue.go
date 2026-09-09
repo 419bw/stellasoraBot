@@ -16,9 +16,10 @@ var ErrExpired = errors.New("queue: 消息超过投递截止时间")
 // Media 表示"这一条要发的不是文字，而是一个待解析的非文字载荷"。
 //
 // 队列只搬运一个引用，不解释它：Kind 由 Sink 自己认领，Key 是不透明标识。
-// 这里刻意不放已经上传好的 file_info——平台给的 file_info ttl 只有几分钟
-// （文档响应示例 ttl=300）且不能跨场景复用，排队加退避一过期就必发不出去，
-// 所以上传与生成都推迟到 Sink 真要发的那一刻。
+// 这里刻意不放已经上传好的 file_info——平台说不许跨场景复用、作废时机不可预知
+// （文档示例 ttl=300s，实测返回 24h），一份可能在退避里作废的引用只会让重试
+// 一路撞死；上传与生成推迟到 Sink 真要发的那一刻，重复字节的便宜由发送侧那层
+// MediaCache 去占（qq.MediaCache），队列不背它。
 type Media struct {
 	Kind string // 取值由接线处与 Sink 约定，队列不枚举
 	Key  string // 该 Kind 内的不透明键

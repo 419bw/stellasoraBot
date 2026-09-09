@@ -88,7 +88,10 @@ calposter.warmArt → 只补本窗缺的海报字节：每张先问公告里的�
        ↓            端点补一次；失败的 URL 进 10 分钟冷却，同一 URL 并发只抓一次
        ↓            （实测：CDN 边缘全拒那一轮 6.4s / 32 请求 / 16 张靠候选域补齐；
        ↓             海报缓存命中后一轮 50ms / 0 请求）
-calposter.Image(key)   ← 「日历」命令走这条：只读本地字节，零网络，缺海报就画占位（实测 1.9s）
+calposter.Image(key)   ← 「日历」命令走这条：只读本地字节，零网络，缺海报就画占位。
+                       出图按 5 分钟桶量化（渲染时钟与 PNG 缓存令牌都用桶起点，桶内字节
+                       实测严格一致——出图时刻戳删掉后 sha1 连续 ~9 分钟不变），
+                       同桶第二次问就是 0 渲染、直接命中
 calposter.Fetch(key)   ← 发送队列的 Sink 在 worker 上走这条：允许现抓，宁可慢也不推一张全是占位的图
        ↓ Build 数据集 → render.Page → render.Browser.Capture → PNG
 「日历」命令回 command.Reply{Image}；版本开闸只投 queue.Item{Media{poster,key}}——
@@ -96,6 +99,8 @@ calposter.Fetch(key)   ← 发送队列的 Sink 在 worker 上走这条：允许
 由 Sink 现取；账本是 Sink 发送成功后回调 MarkPushed 写的，失败一律不记，下一轮重排补发。
        ↓
 qq.UploadGroupImage 四步 → file_info → msg_type=7
+       命令通道包一层 qq.MediaCache：同字节命中就跳过四步（只付发送那一下），
+       缓存那份被平台拒 → Forget + 就地重传再发一次
 ```
 
 ## QQ 平台硬约束
@@ -112,8 +117,10 @@ qq.UploadGroupImage 四步 → file_info → msg_type=7
 - **ed25519 签名**：HTTP 请求头带 `X-Tts-Signature`，格式 `Ed25519 <timestamp>;random(<6digits>);sign(<base64>)`。
 - **富媒体（图）只能分片上传**：`upload_prepare` → 逐片 `PUT` 预签名 URL → `upload_part_finish` → `files`，
   四步之后拿 `file_info` 再 `msg_type=7` 发。`file_size`/`block_size` 按文档是**字符串**；`md5`/`sha1`/`md5_10m` 必填
-  （`md5_10m` 供秒传）。URL 直传要求文件公网可访问，我们没有公网。**`file_info` 不透明、示例 ttl 只有 300 秒、
-  且不能跨场景复用** → 不缓存，每次发送前重跑四步；队列里因此只搬"该发哪一张"的引用（见 `kernel/queue` 的 `Media`）。
+  （`md5_10m` 供秒传）。URL 直传要求文件公网可访问，我们没有公网。**`file_info` 不透明、文档示例 ttl 只有 300 秒
+  但实测本 bot 上传返回 24h、且不能跨场景复用** → 不落盘、不排队携带，命令通道由 `qq.MediaCache` 按
+  `场景|目标|sha1(字节)` 在内存里复用（命中跳过整段四步；被平台判死时 Forget + 就地重传再发一次），
+  队列照旧只搬"该发哪一张"的引用（见 `kernel/queue` 的 `Media`），发送侧现上传。
 
 ## 解析器规则 v3 (stellasora/parse.go)
 
@@ -159,9 +166,11 @@ qq.UploadGroupImage 四步 → file_info → msg_type=7
   不再各占一行（同名周期玩法的两期因此无需任何特判）。
 - **名字可换行，行高 52**：`.nm` 是内联 span，`text-overflow` 对它无效，长名字过去是直接压到相邻
   段的海报上；改成换行后由行高吸收（合并带里两个名字各缺 40+px，靠加宽整表不划算）。
-- **时间标记只剩一条**：一根红色竖线贯穿整个图区（分钟级，`calc()` 把日轴百分比换算进 `.plot` 的框），
-  上端接住标尺里"今天"那一格。原先的"今天整列黄底"（整列近似，比条带粗糙）与"玩法期止红双线"
-  （与每条带的右端重复，且三页签语义不一致：上一版本贴右缘、最新版本没有下一次维护数据）都删了。
+- **时间标记只剩一条**：一根红色竖线贯穿整个图区（画布按 5 分钟桶起点摆放，桶内字节严格稳定；
+  `calc()` 把日轴百分比换算进 `.plot` 的框），上端接住标尺里"今天"那一格。原先的"今天整列黄底"（整列近似，
+  比条带粗糙）与"玩法期止红双线"（与每条带的右端重复，且三页签语义不一致：上一版本贴右缘、最新版本没有
+  下一次维护数据）都删了。页脚曾有一串"出图时刻 MM/DD HH:MM"，是每分钟唯一在变的像素（sha1 实测每分钟
+  都翻），已删——图例只留"红竖线＝出图时刻"，不再写具体分钟。
 - **出图模式 `#x[版本键]`**：去掉导航与开关行，卡片宽度由 16:9 反解（设宽→读高→再算宽；
   泳道数与宽度无关，一次即收敛），下限 `MIN_PPD=50`。`bash .probe/calpng/export.sh` 按版本逐个出图，
   产物文件名 = 版本键。**版本键 = `ActStart` 的 UTC `yyyyMMddHHmm`**（`data.json` 里 `versions[].key`）：
@@ -205,7 +214,8 @@ qq.UploadGroupImage 四步 → file_info → msg_type=7
 | 时间表文字溢出 | `.probe/calpng/fit.js`（真排版量字宽 + 图例色块压字 + 出图时刻线的落点与贯穿；负对照 = 调小 PPD / 改错 inset） | 本机 node + Chrome |
 | 版本键→内容映射 | `.probe/calpng/keycheck.js`（真 Chrome 渲染 `#x<key>`，核 `#vname` 与按钮选中态；负对照 = 键命中后错一位） | 本机 node + Chrome |
 | 富媒体四步上传 | `internal/qq/media_test.go`（httptest 假平台：必填字段、`file_size`/`block_size` 是字符串、分片正文无 token、`url` 留空、`srv_send_msg=false`） | 任何 |
-| 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG 与海报两级缓存、singleflight、推图排期与账本；负对照 `python .probe/mutate/pushmutate.py` = 把渲染搬回到点回调 / 投递完就记已推 / 去掉宽限期 / 去掉已推判定。Sink 侧"发送成功才记账"的时机在 main.go，靠 #43 沙箱真连验，不在单测里） | 任何 |
+| file_info 内容缓存 | `internal/qq/mediacache_test.go`（同字节只合并一次、异字节各传、ttl 上限过期重传、群/单聊与不同目标隔离、Forget 后重传；`IsPlatformRejection` 只认平台明确回拒）+ `internal/command/command_test.go`（命中缓存被拒→Forget+重传再发一次；网络错不重试；新上传那份被拒不重传）；负对照 `python .probe/mutate/cachemutate.py` = 打掉命中判定 / 拿掉 `ref.Cached` 限定 / 令牌退回真分钟 / 重启测试自身不取消 ctx 该复现偶发 | 任何 |
+| 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG（5 分钟桶）与海报两级缓存、singleflight、推图排期与账本；负对照 `python .probe/mutate/pushmutate.py` = 把渲染搬回到点回调 / 投递完就记已推 / 去掉宽限期 / 去掉已推判定。Sink 侧"发送成功才记账"的时机在 main.go，靠 #43 沙箱真连验，不在单测里） | 任何 |
 | 抓取只在后台 | 同上（命令路径零网络请求、缺海报照常出图、预热抓到才带图、失败按 RetryAfter 冷却、并发预热同 URL 只抓一次；海报取字节先问原地址、被拒才换候选域、两边都失败才画占位、多张并发抓取计数与收尾日志要等于真实值；负对照 `python .probe/mutate/artmutate.py` = 把 Image 的 Fetch 打反 / 去掉冷却判定 / 去掉在飞表 / 关掉兜底 / 抢先问候选域 / 换域改成子串匹配 / 新抓数报错） | 任何 |
 | 入口阻塞压测 | `go run ./.probe/posterload -mode=stall\|ws\|warm\|chrome`（真 Hub + 真命令表 + 真 calposter，画布是可控耗时假件；量排队等待、心跳间隔、判死、预热开销、并发浏览器进程数） | 本机 |
 | 真库真浏览器出图 | `go run ./cmd/calshot -db .probe/livesync.db -repeat 3`（三段耗时打进日志；-noart 只核结构） | 本机 Chrome |

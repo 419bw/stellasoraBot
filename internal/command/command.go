@@ -31,8 +31,9 @@ type Cmd struct {
 // Reply 是一条命令的回复。Text 与 Image 二选一，非此即彼——不设并行的第二个入口
 // 是"一条命令 = 一条被动回复"这条铁律的另一面：两个入口一定漂移。
 //
-// 图给的是字节而不是 file_info：file_info 的 ttl 只有几分钟，从命令开跑可能就
-// 过期了。上传由机制层在真要发的那一刻做。
+// 图给的是字节而不是 file_info：file_info 的作废时机不可预知（实测 ttl 24h 但文档
+// 示例只写 300s、不能跨场景复用），从命令开跑到真要发之间还可能跨过几次回复。
+// 上传由机制层在发的那一刻做，重复字节经 SendAPI 背后的 MediaCache 免掉四步。
 type Reply struct {
 	Text  string
 	Image []byte
@@ -133,13 +134,16 @@ func (r *Registry) HelpText() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// SendAPI 是回复一条消息所需的最小面，*qq.Client 天然满足。
+// SendAPI 是回复一条消息所需的最小面。实现者是 `qq.MediaCache`（内嵌 *qq.Client 再叠
+// 一层 file_info 复用）——裸 *qq.Client 不再满足本面，它没有 Forget。
 // 只要被动回复：主动消息有配额限制，走 kernel 的发送队列，不在命令这条路上。
 type SendAPI interface {
 	SendGroupReply(ctx context.Context, groupOpenID, msgID string, req qq.SendRequest) (*qq.SendResult, error)
 	SendC2CReply(ctx context.Context, userOpenID, msgID string, req qq.SendRequest) (*qq.SendResult, error)
 	UploadGroupImage(ctx context.Context, groupOpenID, fileName string, data []byte) (qq.MediaRef, error)
 	UploadC2CImage(ctx context.Context, userOpenID, fileName string, data []byte) (qq.MediaRef, error)
+	// Forget 把一份被平台判死的 file_info 从上传缓存里摘掉。没缓存时是空操作。
+	Forget(qq.MediaRef)
 }
 
 // Config 的零值必须可用。
@@ -225,21 +229,30 @@ func reply(ctx context.Context, send SendAPI, cfg Config, m *qq.Message, rep Rep
 		cfg.Logf("command: 消息 %s 没有可回复的 openid", m.ID)
 		return
 	}
-	req := qq.SendRequest{MsgType: qq.MsgTypeText, Content: clamp(rep.Text, cfg.MaxRunes)}
-	if len(rep.Image) > 0 {
+	upload := func(data []byte) (qq.MediaRef, error) {
 		name := rep.Name
 		if name == "" {
 			name = "calendar.png"
 		}
-		var (
-			ref qq.MediaRef
-			err error
-		)
 		if isGroup {
-			ref, err = send.UploadGroupImage(ctx, target, name, rep.Image)
-		} else {
-			ref, err = send.UploadC2CImage(ctx, target, name, rep.Image)
+			return send.UploadGroupImage(ctx, target, name, data)
 		}
+		return send.UploadC2CImage(ctx, target, name, data)
+	}
+	sendOnce := func(req qq.SendRequest) error {
+		if isGroup {
+			_, err := send.SendGroupReply(ctx, target, m.ID, req)
+			return err
+		}
+		_, err := send.SendC2CReply(ctx, target, m.ID, req)
+		return err
+	}
+
+	req := qq.SendRequest{MsgType: qq.MsgTypeText, Content: clamp(rep.Text, cfg.MaxRunes)}
+	var ref qq.MediaRef
+	if len(rep.Image) > 0 {
+		var err error
+		ref, err = upload(rep.Image)
 		if err != nil {
 			// 只报"传不上去"，不把图换成文字版发出去：那是另一份内容，
 			// 玩家看到的会是"图没了但多了一大段字"。
@@ -247,15 +260,25 @@ func reply(ctx context.Context, send SendAPI, cfg Config, m *qq.Message, rep Rep
 			req = qq.SendRequest{MsgType: qq.MsgTypeText,
 				Content: "图传不上去：" + err.Error()}
 		} else {
+			if ref.Cached {
+				cfg.Logf("command: 回复 %s 命中 file_info 缓存，跳过四步上传", m.ID)
+			}
 			req = qq.SendRequest{MsgType: qq.MsgTypeMedia, Media: &qq.MediaInfo{FileInfo: ref.FileInfo}}
 		}
 	}
 
-	var err error
-	if isGroup {
-		_, err = send.SendGroupReply(ctx, target, m.ID, req)
-	} else {
-		_, err = send.SendC2CReply(ctx, target, m.ID, req)
+	err := sendOnce(req)
+	// 命中缓存的那份 file_info 被平台判死：摘掉、就地重传、再发一次。
+	// 只在平台明确回拒时重试——网络错或 5xx 可能其实已送达，重试就是重发。
+	if err != nil && ref.Cached && qq.IsPlatformRejection(err) {
+		cfg.Logf("command: 缓存 file_info 被平台拒（%v），重传再发一次", err)
+		send.Forget(ref)
+		fresh, uerr := upload(rep.Image)
+		if uerr != nil {
+			err = fmt.Errorf("重传配图失败: %w", uerr)
+		} else {
+			err = sendOnce(qq.SendRequest{MsgType: qq.MsgTypeMedia, Media: &qq.MediaInfo{FileInfo: fresh.FileInfo}})
+		}
 	}
 	if err != nil {
 		// client.replier 的次数闸门是最后防线：触闸只记日志，绝不降级成主动消息

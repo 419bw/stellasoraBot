@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,15 @@ func (e *APIError) Error() string {
 // IsTokenRejected 表示凭证不被接受，调用方可丢弃缓存凭证后重试一次。
 func (e *APIError) IsTokenRejected() bool {
 	return e.HTTPStatus == http.StatusUnauthorized || e.ErrCode == CodeTokenInvalid || e.Code == CodeTokenInvalid
+}
+
+// IsPlatformRejection 表示平台明确拒了这条请求（拿到了 HTTP 响应且判为失败），
+// 消息一定没发出去；网络错与 5xx 不算——那些可能已经送达，重试就是重发。
+// HTTP 200 但带 err_code 的也算（token 场景实测过平台这么回），decodeError 里
+// 只要 code 非零就进 APIError，所以这里按 HTTPStatus<500 一网打尽。
+func IsPlatformRejection(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.HTTPStatus < 500
 }
 
 func decodeError(status int, body []byte, out any) *APIError {

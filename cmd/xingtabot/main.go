@@ -95,6 +95,10 @@ func run() error {
 	cal := calendar.NewStore() // 同时满足 calendar.View（给功能）与 calendar.Writer（给同步引擎）
 
 	client := qq.NewClientAt(creds.AppID, creds.AppSecret, *apiBase)
+	// 命令回图走带 file_info 缓存的发送器：同字节命中就跳过四步上传；缓存那份被平台
+	// 判死时 command.reply 会 Forget + 就地重传。主动推送那条路仍用裸 client——
+	// 队列自己带退避重试，缓存摘除那套兜底不该重复两份。
+	sender := qq.NewMediaCache(client, 0)
 	profile, err := client.Me(ctx)
 	if err != nil {
 		return fmt.Errorf("获取机器人身份失败（先查凭据与 -api）: %w", err)
@@ -149,7 +153,7 @@ func run() error {
 	// ---- QQ 接入：命令机制挂在事件入口上 ----------------------------------
 
 	hub := qq.NewHub(nil, logf)
-	command.Attach(reg, hub, client, command.Config{
+	command.Attach(reg, hub, sender, command.Config{
 		AdminOpenIDs: splitList(*admins),
 		Logf:         logf,
 	})
@@ -207,7 +211,8 @@ func run() error {
 type activeSink struct {
 	client *qq.Client
 	// poster 是"给版本键要一张图 + 报一声发出去了"两件事。渲染与上传都推到这里、
-	// 推到真要发的这一刻：file_info 的 ttl 只有几分钟，在队列里排过一轮就可能过期。
+	// 推到真要发的这一刻：file_info 的作废时机不可预知（实测 ttl 24h、文档示例
+	// 300s，不能跨场景复用），队列里排过一轮的引用不保险。
 	//
 	// 这里要的是 Fetch 不是 Image：队列里的每一条都是主动推送，没人在等回复，
 	// 慢几十秒没关系，而推出去一张全是占位的图不可撤回。命令回图才走零网络的 Image。

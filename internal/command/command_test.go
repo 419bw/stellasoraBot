@@ -37,15 +37,40 @@ type fakeSend struct {
 	group     []sent
 	c2c       []sent
 	uploads   []upload
+	forgets   []string
 	failWith  error
 	uploadErr error
+	// uploadCached 让上传结果带 Cached 标记：模拟 MediaCache 命中。
+	uploadCached bool
+	// oneShot 是"失败 N 次后恢复正常"的队列，模拟缓存 file_info 被平台拒一次。
+	oneShot []error
+}
+
+func (f *fakeSend) setErr(err error) { f.mu.Lock(); f.failWith = err; f.mu.Unlock() }
+
+func (f *fakeSend) failNext(err error) {
+	f.mu.Lock()
+	f.oneShot = append(f.oneShot, err)
+	f.mu.Unlock()
+}
+
+func (f *fakeSend) nextErr() error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	if len(f.oneShot) > 0 {
+		err := f.oneShot[0]
+		f.oneShot = f.oneShot[1:]
+		return err
+	}
+	return nil
 }
 
 func (f *fakeSend) SendGroupReply(ctx context.Context, target, msgID string, req qq.SendRequest) (*qq.SendResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.failWith != nil {
-		return nil, f.failWith
+	if err := f.nextErr(); err != nil {
+		return nil, err
 	}
 	f.group = append(f.group, sentOf(target, msgID, req))
 	return &qq.SendResult{}, nil
@@ -54,8 +79,8 @@ func (f *fakeSend) SendGroupReply(ctx context.Context, target, msgID string, req
 func (f *fakeSend) SendC2CReply(ctx context.Context, target, msgID string, req qq.SendRequest) (*qq.SendResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.failWith != nil {
-		return nil, f.failWith
+	if err := f.nextErr(); err != nil {
+		return nil, err
 	}
 	f.c2c = append(f.c2c, sentOf(target, msgID, req))
 	return &qq.SendResult{}, nil
@@ -84,19 +109,23 @@ func (f *fakeSend) upload(scene, target, name string, data []byte) (qq.MediaRef,
 		return qq.MediaRef{}, f.uploadErr
 	}
 	f.uploads = append(f.uploads, upload{scene: scene, target: target, name: name, size: len(data)})
-	return qq.MediaRef{FileInfo: "FI:" + name}, nil
+	// 模拟 MediaCache：命中标记只在第一次带，重传回来就是真·新上传。
+	cached := f.uploadCached
+	f.uploadCached = false
+	return qq.MediaRef{FileInfo: "FI:" + name, Cached: cached}, nil
+}
+
+// Forget 记录被摘掉的 file_info，让测试能断言兜底真的走了 Forget。
+func (f *fakeSend) Forget(ref qq.MediaRef) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgets = append(f.forgets, ref.FileInfo)
 }
 
 func (f *fakeSend) all() []sent {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append(append([]sent(nil), f.group...), f.c2c...)
-}
-
-func (f *fakeSend) setErr(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failWith = err
 }
 
 // ---- 驱动 ----------------------------------------------------------------
@@ -516,5 +545,78 @@ func TestUploadFailureRepliesNoticeNotCalendarText(t *testing.T) {
 	}
 	if strings.Contains(got[0].content, "本不该发出去") {
 		t.Error("上传失败时把功能的文字兜底发出去了，等于悄悄降级")
+	}
+}
+
+// 命中缓存的 file_info 被平台明确回拒：摘缓存、就地重传、再发一次，用户仍拿到图。
+func TestCachedFileInfoRejectedForcesReuploadOnce(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Image: []byte("PNG")}, nil
+		}})
+	h.send.uploadCached = true // 第一次上传来自 MediaCache 命中
+	h.send.failNext(&qq.APIError{HTTPStatus: 400, Message: "file_info 已失效"})
+
+	h.sayGroup(t, "M1", "日历", "member")
+
+	if len(h.send.uploads) != 2 {
+		t.Fatalf("被拒后该重传一次，上传了 %d 次", len(h.send.uploads))
+	}
+	if len(h.send.forgets) != 1 {
+		t.Fatalf("被拒的引用该 Forget，记录了 %d 条", len(h.send.forgets))
+	}
+	if h.send.forgets[0] != "FI:calendar.png" {
+		t.Errorf("Forget 的不是被拒的那份 file_info: %q", h.send.forgets[0])
+	}
+	got := h.send.all()
+	if len(got) != 1 {
+		t.Fatalf("最终回复了 %d 条, want 1", len(got))
+	}
+	if got[0].msgType != qq.MsgTypeMedia || got[0].fileInfo != "FI:calendar.png" {
+		t.Errorf("兜底后该用新传的图发出，发成了 %+v", got[0])
+	}
+}
+
+// 缓存那份只是网络错/5xx：不确定送没送达，不许重试——重试就是给人群发两遍。
+func TestCachedFileInfoNetworkErrorDoesNotRetry(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Image: []byte("PNG")}, nil
+		}})
+	h.send.uploadCached = true
+	h.send.failNext(errors.New("connection reset"))
+
+	h.sayGroup(t, "M1", "日历", "member")
+
+	if len(h.send.uploads) != 1 {
+		t.Fatalf("网络错不该重传，上传了 %d 次", len(h.send.uploads))
+	}
+	if len(h.send.forgets) != 0 {
+		t.Fatalf("网络错不该 Forget，记录了 %d 条", len(h.send.forgets))
+	}
+	if got := h.send.all(); len(got) != 0 {
+		t.Fatalf("发送失败不该有消息落出去: %v", got)
+	}
+}
+
+// 刚上传那份（没走缓存）被平台回拒：重传一遍拿不到不同结果，不该白捶一次上传再占一个回复槽。
+// ref.Cached 这个限定就是守这条的。
+func TestFreshImageRejectedDoesNotReupload(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "日历",
+		Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+			return command.Reply{Image: []byte("PNG")}, nil
+		}})
+	h.send.failNext(&qq.APIError{HTTPStatus: 400, ErrCode: 400005, Message: "被动回复超出次数"})
+
+	h.sayGroup(t, "M1", "日历", "member")
+
+	if len(h.send.uploads) != 1 {
+		t.Fatalf("非缓存那份被拒不该重传，上传了 %d 次", len(h.send.uploads))
+	}
+	if len(h.send.forgets) != 0 {
+		t.Fatalf("没走缓存不该 Forget，记录了 %d 条", len(h.send.forgets))
 	}
 }

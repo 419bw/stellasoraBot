@@ -21,8 +21,9 @@ import (
 //	upload_prepare → 逐片 PUT 预签名 URL → upload_part_finish → files(upload_id)
 //
 // 返回的 file_info 是不透明字符串，发消息时原样塞进 media.file_info（msg_type=7）。
-// 它带 ttl（文档示例 300 秒）且**不能跨场景复用**（群上传的只能发群），所以调用方
-// 必须"上传完立刻发"，不要把 file_info 排队或缓存。
+// 它带 ttl（实测本 bot 上传返回 24h，官方文档示例只写 300 秒）且**不能跨场景复用**
+// （群上传的只能发群）。同场景、没过期就能重复拿去发——MediaCache 就是干这个的。
+// 谁用谁传的调用方仍要"拿到就发"，不要在队列里排队等过期。
 
 // file_type 取值，来自「文件类型与限制」。
 const (
@@ -41,6 +42,9 @@ type MediaRef struct {
 	FileUUID string
 	FileInfo string
 	TTL      time.Duration // 0 = 平台说可长期使用
+	// Cached 由 MediaCache 填：这份引用来自本地缓存而不是刚走完四步上传。
+	// 平台侧没有这个字段，发送逻辑靠它决定"被拒后要不要摘缓存重传"。
+	Cached bool
 }
 
 type preparePart struct {

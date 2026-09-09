@@ -425,7 +425,7 @@ ${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
       <span class="key"><span class="sw" style="background:#ffe07a"></span>N项＝一条带并排几条玩法</span>
       <span class="key"><span class="sw" style="background:#e8799f;filter:grayscale(.6);opacity:.5"></span>淡灰＝已结束</span>
       <span class="key"><b>≈</b>起点是估的（原文只写"维护结束后"，按 ${OPEN / 3600e3}:00 开闸摆放）</span>
-      ${inWin ? `<span class="key"><span class="sw" style="background:#e8483f;border-radius:1px;width:3px"></span>红竖线＝出图时刻 <b>${fMD(now)} ${fHM(now)}</b></span>` : ''}
+      ${inWin ? `<span class="key"><span class="sw" style="background:#e8483f;border-radius:1px;width:3px"></span>红竖线＝出图时刻</span>` : ''}
     </div>
     <div class="frow">
       <span>条带=<b>真实时刻</b>（10:59 收就停在 10:59，不吸附日格）· 日格=<b>${state.day === 'game' ? '游戏日 04:00' : '自然日 00:00'}</b>（只改格子边界与日期标签取整）· 尾段取活动公告的领取/兑换行 · 无海报＝该玩法没有独立公告，从维护公告正文切出 · 同名同窗才并带，复玩的两期各占一条带</span>

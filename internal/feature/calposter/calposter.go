@@ -100,10 +100,10 @@ type Poster struct {
 	built int
 }
 
-// shot 每个版本只留一份：数据变了指纹就变、时间走到新的一分钟也变，旧的直接作废。
+// shot 每个版本只留一份：数据变了指纹就变、时钟跨过 5 分钟桶也变，旧的直接作废。
 // 版本总共个位数，不需要 LRU。
 type shot struct {
-	token string // 指纹 + 分钟，两个都一样才算同一张图
+	token string // 指纹 + 桶起点，两个都一样才算同一张图
 	data  []byte
 }
 
@@ -147,8 +147,8 @@ func (p *Poster) CurrentKey() (string, error) {
 
 // Image 要一张版本日历图，**只读本地字节**，一个网络请求都不发。key 为空表示当前版本。
 //
-// 缓存的边界落在"公告数据变了吗 + 这一分钟画过吗"上：底图与时间层没法像原生
-// 绘制那样分层叠，所以等价的保证是——同一份数据在同一分钟内只画一次。
+// 缓存的边界落在"公告数据变了吗 + 这个 5 分钟桶画过吗"上：桶内任何一刻的画布输入
+// 相同（出图时刻线亚像素移动，肉眼不可见），等价保证就是同数据同桶只画一次。
 //
 // 海报没预热到就是没预热到：这一趟画占位，快而可预期。抓与重试是 Fetch 的活。
 func (p *Poster) Image(ctx context.Context, key string) ([]byte, error) {
@@ -176,7 +176,10 @@ func (p *Poster) image(ctx context.Context, key string, fetch bool) ([]byte, err
 		}
 		key = VersionKey(r.Start)
 	}
-	token := fp + "|" + now.In(p.cfg.Zone).Format(render.TimeLayout)
+	// 画布与令牌共用桶起点：同一桶内画两次，字节一样，只画一次；红线一桶一跳，
+	// 亚像素级，肉眼不可见。Current 判开闸仍用真 now，版本切换不受桶影响。
+	bucket := now.Truncate(renderBucket)
+	token := fp + "|" + bucket.In(p.cfg.Zone).Format(render.TimeLayout)
 
 	p.mu.Lock()
 	if s, ok := p.shots[key]; ok && s.token == token {
@@ -194,7 +197,7 @@ func (p *Poster) image(ctx context.Context, key string, fetch bool) ([]byte, err
 	p.calls[key] = c
 	p.mu.Unlock()
 
-	c.out, c.err = p.draw(ctx, recs, key, now, fetch)
+	c.out, c.err = p.draw(ctx, recs, key, bucket, fetch)
 
 	p.mu.Lock()
 	delete(p.calls, key)
@@ -250,6 +253,11 @@ func fingerprint(recs []annsync.Rec) string {
 	fmt.Fprintf(h, "#%d", len(recs))
 	return strconv.FormatUint(h.Sum64(), 16)
 }
+
+// renderBucket 是出图的时钟量化粒度：同桶内任何一刻画的图字节都相同
+// （实测：出图分钟戳删掉后连续 ~9 分钟 sha1 不变，红线亚像素级移动），
+// 所以桶就是等价类，令牌与画布输入都用桶起点，跨分钟不再白渲一遍。
+const renderBucket = 5 * time.Minute
 
 // ---------- 作为 kernel.Feature：预热 + 到点主动推图 ----------
 

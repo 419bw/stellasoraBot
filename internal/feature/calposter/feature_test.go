@@ -595,15 +595,19 @@ func TestArtCacheSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	for round := 0; round < 2; round++ {
 		// 每轮换一个新 Poster 实例 = 重启：内存清空，只剩盘上那份。
+		// ctx 每轮都停掉：真重启时旧进程死透，这里不能留着一个旧 loop 的
+		// 预热轮在后台和"新实例"抢同一块缓存目录。
+		ctx, stop := context.WithCancel(context.Background())
 		p := New(Config{
 			Doc: storetest.NewMem(), Records: recs.recs,
 			Cap: &fakeCap{}, Label: "version", Zone: zone, ArtDir: dir,
 			Client: cdn.Client(), Now: func() time.Time { return at("2026-09-08 20:00") },
 		})
-		if err := p.Start(context.Background(), newAPI()); err != nil {
+		if err := p.Start(ctx, newAPI()); err != nil {
 			t.Fatal(err)
 		}
-		p.round(context.Background())
+		p.round(ctx)
+		stop()
 		mu.Lock()
 		got := hits
 		mu.Unlock()

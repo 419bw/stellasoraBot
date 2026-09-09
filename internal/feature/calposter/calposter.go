@@ -90,15 +90,14 @@ func (c Config) withDefaults() Config {
 type Poster struct {
 	cfg Config
 
-	mu     sync.Mutex
-	api    kernel.API // Start 之后才有：推图要排期与投递
-	sent   map[string]time.Time
-	lastFP string           // 上一轮看到的记录指纹，用来判断"数据变了没"
-	art    *ArtCache        // 海报字节，跨分钟复用
-	shots  map[string]shot  // 版本键 → 当前数据下画好的那一张
-	calls  map[string]*call // 同一个键并发的取图请求合成一次画布
-	hits   int
-	built  int
+	mu    sync.Mutex
+	api   kernel.API // Start 之后才有：推图要排期与投递
+	sent  map[string]time.Time
+	art   *ArtCache        // 海报字节，跨分钟复用
+	shots map[string]shot  // 版本键 → 当前数据下画好的那一张
+	calls map[string]*call // 同一个键并发的取图请求合成一次画布
+	hits  int
+	built int
 }
 
 // shot 每个版本只留一份：数据变了指纹就变、时间走到新的一分钟也变，旧的直接作废。
@@ -146,11 +145,23 @@ func (p *Poster) CurrentKey() (string, error) {
 	return VersionKey(r.Start), nil
 }
 
-// Image 要一张版本日历图。key 为空表示当前版本。
+// Image 要一张版本日历图，**只读本地字节**，一个网络请求都不发。key 为空表示当前版本。
 //
 // 缓存的边界落在"公告数据变了吗 + 这一分钟画过吗"上：底图与时间层没法像原生
 // 绘制那样分层叠，所以等价的保证是——同一份数据在同一分钟内只画一次。
+//
+// 海报没预热到就是没预热到：这一趟画占位，快而可预期。抓与重试是 Fetch 的活。
 func (p *Poster) Image(ctx context.Context, key string) ([]byte, error) {
+	return p.image(ctx, key, false)
+}
+
+// Fetch 与 Image 同义，但允许现抓缺的海报。给版本推图用：那条路在队列 worker
+// 上，不在用户等回复的那一次上，宁可慢 40 秒也不要推一张全是占位的图。
+func (p *Poster) Fetch(ctx context.Context, key string) ([]byte, error) {
+	return p.image(ctx, key, true)
+}
+
+func (p *Poster) image(ctx context.Context, key string, fetch bool) ([]byte, error) {
 	recs, err := p.cfg.Records()
 	if err != nil {
 		return nil, fmt.Errorf("calposter: 读活动记录: %w", err)
@@ -183,7 +194,7 @@ func (p *Poster) Image(ctx context.Context, key string) ([]byte, error) {
 	p.calls[key] = c
 	p.mu.Unlock()
 
-	c.out, c.err = p.draw(ctx, recs, key, now)
+	c.out, c.err = p.draw(ctx, recs, key, now, fetch)
 
 	p.mu.Lock()
 	delete(p.calls, key)
@@ -197,9 +208,9 @@ func (p *Poster) Image(ctx context.Context, key string) ([]byte, error) {
 }
 
 // draw 是真的走一遍：组数据集 → 注模板 → 叫浏览器画。
-func (p *Poster) draw(ctx context.Context, recs []annsync.Rec, key string, now time.Time) ([]byte, error) {
+func (p *Poster) draw(ctx context.Context, recs []annsync.Rec, key string, now time.Time, fetch bool) ([]byte, error) {
 	started := time.Now()
-	d, err := Build(ctx, recs, p.options(key, now))
+	d, err := Build(ctx, recs, p.options(key, now, fetch))
 	if err != nil {
 		return nil, err
 	}
@@ -301,52 +312,43 @@ func (p *Poster) loop(ctx context.Context) {
 	}
 }
 
-// round 每轮做两件事：数据变了就去预热海报；把每个版本的推图排上期。
+// round 每轮做两件事：把当前版本窗缺的海报补进缓存；把每个版本的推图排上期。
 //
 // 预热是这条链路的性价比所在——海报是唯一"贵而与时间无关"的部分（实测 16 张
-// 海报串行拉完要 40 秒，缓存命中后组数据只剩 50 毫秒）。把它挂在"公告数据更新"
-// 这个真实分界上，用户要图时就只剩浏览器那 3 秒。
+// 海报串行拉完要 40 秒，缓存命中后组数据只剩 50 毫秒）。把它放在后台轮里，
+// 用户要图那一次就只剩浏览器那 3 秒。
+//
+// 每轮都过一遍，不限"数据变了"：上一轮没抓到的这一轮要能补，而反复捶同一个
+// 域名的风险已经由 ArtCache 的失败冷却挡住了。
 func (p *Poster) round(ctx context.Context) {
 	recs, err := p.cfg.Records()
 	if err != nil {
 		p.cfg.Logf("calposter: 本轮读不到活动记录: %v", err)
 		return
 	}
-	if fp := fingerprint(recs); p.dataChanged(fp) {
-		p.warmArt(ctx, recs)
-	}
+	p.warmArt(ctx, recs)
 	p.armPushes(recs)
 }
 
-// dataChanged 记下这轮的指纹并回答"与上一轮不同吗"。循环 goroutine 与显式调用
-// 都可能进来，所以这把锁不是摆设。
-func (p *Poster) dataChanged(fp string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	changed := fp != p.lastFP
-	p.lastFP = fp
-	return changed
-}
-
-// warmArt 把当前版本窗里每条记录的海报捞进缓存；画出来的数据集丢掉。
+// warmArt 把当前版本窗里每条记录的海报补进缓存；画出来的数据集丢掉。
 func (p *Poster) warmArt(ctx context.Context, recs []annsync.Rec) {
 	if p.cfg.Client == nil {
 		return // 没配 HTTP 客户端 = 明确不要海报，不预热
 	}
 	started := time.Now()
-	if _, err := Build(ctx, recs, p.options("", p.cfg.Now())); err != nil {
+	if _, err := Build(ctx, recs, p.options("", p.cfg.Now(), true)); err != nil {
 		p.cfg.Logf("calposter: 预热海报没走完: %v", err)
 		return
 	}
-	p.cfg.Logf("calposter: 数据变了，预热海报 %s", time.Since(started).Round(100*time.Millisecond))
+	p.cfg.Logf("calposter: 预热轮 %s", time.Since(started).Round(10*time.Millisecond))
 }
 
 // options 把 Config 翻成 Build 的口径；key 为空表示当前版本。
-func (p *Poster) options(key string, now time.Time) Options {
+func (p *Poster) options(key string, now time.Time, fetch bool) Options {
 	return Options{
 		Zone: p.cfg.Zone, OpenAt: p.cfg.OpenAt, Label: p.cfg.Label,
 		Key: key, Now: now, HTTPClient: p.cfg.Client,
-		Art: p.art, Logf: p.cfg.Logf,
+		Fetch: fetch, Art: p.art, Logf: p.cfg.Logf,
 	}
 }
 
@@ -382,7 +384,9 @@ func (p *Poster) push(ctx context.Context, key string) error {
 	if p.done(key) {
 		return nil
 	}
-	if _, err := p.Image(ctx, key); err != nil {
+	// 走 Fetch 而不是 Image：这条链路在队列 worker 上，没有人在等回复，慢 40 秒
+	// 没关系；而推出去一张全是占位的图是难看且不可撤回的。命令那条路才要只读本地。
+	if _, err := p.Fetch(ctx, key); err != nil {
 		return err
 	}
 	if len(p.cfg.Targets) == 0 {

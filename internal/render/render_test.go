@@ -7,6 +7,7 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -66,8 +67,11 @@ func TestURLOfEscapesNonASCII(t *testing.T) {
 		t.Errorf("「星塔」的 UTF-8 百分号编码不对: %s", got)
 	}
 	// 盘符里的冒号必须留着，否则 Chrome 解不出文件。
-	if win := urlOf(`J:\学习\cal.html`); !strings.Contains(win, "/J:/") {
-		t.Errorf("Windows 路径没变成 file:///J:/…: %s", win)
+	// 只在 Windows 上验：Linux 的 filepath.Abs 把反斜杠当普通字符，路径根本不会被认成盘符。
+	if runtime.GOOS == "windows" {
+		if win := urlOf(`J:\学习\cal.html`); !strings.Contains(win, "/J:/") {
+			t.Errorf("Windows 路径没变成 file:///J:/…: %s", win)
+		}
 	}
 }
 

@@ -15,7 +15,7 @@ type recordedSend struct {
 	target string
 	ids    []string
 	text   string
-	media string // 非空表示这一条发的是图，值是版本键
+	media  string // 非空表示这一条发的是图，值是版本键
 }
 
 type recSink struct {

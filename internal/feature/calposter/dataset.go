@@ -12,6 +12,7 @@ import (
 	_ "image/jpeg" // 海报是 JPEG，取色要能解
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,9 +48,22 @@ type Options struct {
 	Now   time.Time
 	// HTTPClient 非空才下载海报并内联；nil 表示只出结构，海报位画斜纹占位。
 	HTTPClient *http.Client
+	// Fetch 表示这一趟允许现抓海报。默认 false：请求路径（用户点「日历」）只读
+	// 本地字节，抓与重试归后台预热轮。海报 CDN 派到国内网络这些边缘上实测要么
+	// 15KB/s、要么一发 TLS 握手就被断，把它放在用户等待的那一次里就是 44 秒起。
+	Fetch bool
+	// RetryAfter 是"这张海报上次没抓到，隔多久再试"。0 = 用默认 10 分钟。
+	// 不设冷却就等于每轮都去捶一个正在拒我们的域名。
+	RetryAfter time.Duration
 	// Art 是海报字节的缓存，跨次出图复用（同一份数据过一分钟重画时不必再下一遍）。
 	// nil = 每次都现取。
-	Art      *ArtCache
+	Art *ArtCache
+	// AltArt 是"原地址没拿到时换哪个地址再试一次"的策略，nil = 用 acceleratedPoster。
+	// 存在的理由：海报域是 CDN 前置域，实测它轮换到的那批边缘节点会在我方发出
+	// ClientHello 后立刻 RST（Go/curl/Chrome 三家一致），而同一批 key 在 OSS
+	// 传输加速端点上能直读到、字节与 CDN 那份逐字节相同。它是兜底不是首选：
+	// 加速端点没有边缘缓存，每一次都回源，走多了是在替对方多掏回源与加速流量。
+	AltArt   func(url string) string
 	Workers  int // 下载海报的并发，默认 4
 	PerImage time.Duration
 	Logf     func(format string, args ...any)
@@ -64,6 +78,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.PerImage <= 0 {
 		o.PerImage = 20 * time.Second
+	}
+	if o.RetryAfter <= 0 {
+		o.RetryAfter = 10 * time.Minute
+	}
+	if o.AltArt == nil {
+		o.AltArt = acceleratedPoster
 	}
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
@@ -231,47 +251,113 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset
 	}, nil
 }
 
-// ArtCache 是海报字节的缓存：URL → 图片正文，取不到的也记一笔（空值），
-// 免得一个死链在每次出图时都被再捶一遍。
+// ArtCache 是海报字节的缓存：URL → 图片正文。抓失败的只记一个"上次失败时刻"，
+// 供重试冷却用——不把它当成一种缓存值，否则一次抖动就变成永远不再试。
 //
 // 它跨的是"同一份数据、不同分钟"这一次重画：PNG 缓存按分钟失效，
 // 但海报内容不会一分钟一变，重新下载 40 多秒纯属白给。
 //
-// dir 非空时同时落盘。这不是性能洁癖：海报 CDN 在反复整窗拉取之后会直接掐连接
-// （实测 16 张全被 reset），只放内存等于每次重启都重新捶一遍。
-// 失败只记在内存里——一次网络抖动不该被固化到盘上，永远取不到。
+// dir 非空时同时落盘。这不是性能洁癖：海报图床是 CDN 前置域，能不能通取决于 DNS
+// 当下给的那台边缘（实测有的 15KB/s、有的一发 TLS 握手就被断），只放内存等于每次重启赌一遍。
 type ArtCache struct {
-	mu  sync.Mutex
-	m   map[string][]byte
-	cap int
-	dir string
+	mu       sync.Mutex
+	m        map[string][]byte
+	fail     map[string]time.Time // URL → 上次没抓到的时刻，用来做重试冷却
+	inflight map[string]*artCall  // URL → 正在进行中的那次抓取
+	cap      int
+	dir      string
 }
 
 func NewArtCache(dir string, maxEntries int) *ArtCache {
 	if maxEntries <= 0 {
 		maxEntries = 256
 	}
-	return &ArtCache{m: map[string][]byte{}, cap: maxEntries, dir: dir}
+	return &ArtCache{m: map[string][]byte{}, fail: map[string]time.Time{}, cap: maxEntries, dir: dir}
 }
 
+// get 只认真正有字节的条目。失败不是一种"缓存值"——把它缓存下来就等于永远不再
+// 试，而对方拒不拒我们是要换时间的（实测同一 key：一台边缘 15KB/s、另一台直接拒，
+// 隔天还可能反过来）。
 func (c *ArtCache) get(url string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if b, ok := c.m[url]; ok {
+	if b, ok := c.m[url]; ok && len(b) > 0 {
 		return b, true
 	}
 	if c.dir == "" {
 		return nil, false
 	}
 	b, err := os.ReadFile(c.fileOf(url))
-	if err != nil {
+	if err != nil || len(b) == 0 {
 		return nil, false
 	}
 	c.m[url] = b
 	return b, true
 }
 
+// cooling 回答"这张上次没抓到，现在还不到再试的时候吗"。
+func (c *ArtCache) cooling(url string, now time.Time, after time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.fail[url]
+	return ok && now.Sub(at) < after
+}
+
+func (c *ArtCache) noteFail(url string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fail == nil {
+		c.fail = map[string]time.Time{}
+	}
+	c.fail[url] = now
+}
+
+func (c *ArtCache) noteOK(url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.fail, url)
+}
+
+// artCall 是一次正在进行中的抓取，别人可以等它的结果而不是再发一遍。
+type artCall struct {
+	wg  sync.WaitGroup
+	b   []byte
+	err error
+}
+
+// begin 问"这个 URL 有人正在抓吗"。没人抓就把令牌给我（mine=true）；
+// 有人抓就返回那份在飞的活，调用方等它。
+//
+// 这不是性能洁癖：后台预热轮和到点推图可能同时缺同一张图，各抓一次就是对着
+// 一个正在拒我们的域名翻倍发请求。
+func (c *ArtCache) begin(url string) (call *artCall, mine bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inflight == nil {
+		c.inflight = map[string]*artCall{}
+	}
+	if busy, ok := c.inflight[url]; ok {
+		return busy, false
+	}
+	call = &artCall{}
+	call.wg.Add(1)
+	c.inflight[url] = call
+	return call, true
+}
+
+// end 交还令牌：成功的字节就地入账，失败的记一个时刻供冷却用。
+func (c *ArtCache) end(url string, call *artCall, b []byte, err error) {
+	c.mu.Lock()
+	delete(c.inflight, url)
+	c.mu.Unlock()
+	call.b, call.err = b, err
+	call.wg.Done()
+}
+
 func (c *ArtCache) put(url string, b []byte) {
+	if len(b) == 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, dup := c.m[url]; !dup && len(c.m) >= c.cap {
@@ -280,7 +366,7 @@ func (c *ArtCache) put(url string, b []byte) {
 		c.m = map[string][]byte{}
 	}
 	c.m[url] = b
-	if c.dir == "" || len(b) == 0 {
+	if c.dir == "" {
 		return
 	}
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
@@ -295,16 +381,21 @@ func (c *ArtCache) fileOf(url string) string {
 	return filepath.Join(c.dir, hex.EncodeToString(s[:])+".img")
 }
 
-// inlineArt 下载本窗要画的海报，转成 data URI 内联，并按海报本身取淡底色。
+// inlineArt 把本窗要画的海报转成 data URI 内联，并按海报本身取淡底色。
 //
 // 为什么内联而不是让浏览器去拉 URL：出图那一刻不该依赖 CDN 可达（机器人跑在
-// 手机上），而且取色要拿到字节。取不到图的记录清空 Poster，模板画斜纹占位——
-// 这不是失败，维护公告切出来的条目本来就没有自己的海报。
+// 手机上），而且取色要拿到字节。
+//
+// 为什么默认不在这儿抓：图床是海外桶，一次整窗拉取实测 41 秒、被拒时是 16 个
+// RST。发生在谁等回复的那一次上，就是几十秒的入口阻塞。所以请求路径只读本地，
+// 抓与重试由后台预热轮（opt.Fetch=true）负责。真要抓时先问公告里给的原地址，
+// 被拒了才换候选地址再试一次（见 fetchArt）。取不到图的记录清空 Poster，
+// 模板画斜纹占位——这不是失败，维护公告切出来的条目本来就没有自己的海报。
 func inlineArt(ctx context.Context, list []render.Record, opt Options) {
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	done, miss := 0, 0
+	done, miss, fetched, altN := 0, 0, 0, 0
 	for w := 0; w < opt.Workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -313,34 +404,52 @@ func inlineArt(ctx context.Context, list []render.Record, opt Options) {
 				url := list[i].Poster
 				var b []byte
 				fromCache := false
+				var viaAlt bool
+				var fail error
 				if opt.Art != nil {
 					if cached, ok := opt.Art.get(url); ok {
 						b, fromCache = cached, true
+					} else if opt.Fetch && !opt.Art.cooling(url, opt.Now, opt.RetryAfter) {
+						if call, mine := opt.Art.begin(url); !mine {
+							call.wg.Wait()
+							b, fromCache, fail = call.b, call.err == nil, call.err
+						} else {
+							cctx, cancel := context.WithTimeout(ctx, opt.PerImage)
+							got, alt, err := fetchArt(cctx, opt.HTTPClient, url, opt.AltArt)
+							cancel()
+							opt.Art.end(url, call, got, err)
+							b, viaAlt, fail = got, alt, err
+							switch {
+							case err != nil:
+								opt.Art.noteFail(url, opt.Now) // 下一轮要等冷却才再捶它
+							default:
+								opt.Art.put(url, b)
+								opt.Art.noteOK(url)
+							}
+						}
 					}
 				}
-				if !fromCache {
-					cctx, cancel := context.WithTimeout(ctx, opt.PerImage)
-					got, err := get(cctx, opt.HTTPClient, url)
-					cancel()
-					if err != nil {
-						got = nil
-						opt.Logf("calposter: %s 的海报取不到，画占位: %v", list[i].ID, err)
-					}
-					b = got
-					if opt.Art != nil {
-						opt.Art.put(url, b)
-					}
-				}
+				// 计数和写 list 都在 mu 里：四个 worker 同时 ++ 会互相吞掉，
+				// 而这里报出去的数是要拿去对账的。
 				mu.Lock()
 				switch {
 				case len(b) < 512:
 					miss++
 					list[i].Poster = ""
-					if !fromCache {
+					switch {
+					case fail != nil:
+						opt.Logf("calposter: %s 的海报取不到，画占位并等冷却重试: %v", list[i].ID, fail)
+					case !fromCache && len(b) > 0:
 						opt.Logf("calposter: %s 的海报只有 %d 字节，当没有", list[i].ID, len(b))
 					}
 				default:
 					done++
+					if !fromCache {
+						fetched++
+						if viaAlt {
+							altN++
+						}
+					}
 					if t, ok := washFromImage(b); ok {
 						list[i].Tint = t
 					}
@@ -357,9 +466,66 @@ func inlineArt(ctx context.Context, list []render.Record, opt Options) {
 	}
 	close(jobs)
 	wg.Wait()
-	if miss > 0 {
-		opt.Logf("calposter: 海报内联 %d 张，%d 张退化为占位", done, miss)
+	if fetched > 0 || miss > 0 {
+		opt.Logf("calposter: 海报 本地图 %d 张｜新抓 %d 张｜占位 %d 张%s",
+			done-fetched, fetched, miss, altNote(altN))
 	}
+}
+
+// altNote 只在真用到兜底时说话：一轮里几张靠候选域补齐，说明 CDN 那条路此刻不通。
+func altNote(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("｜其中 %d 张走的候选域", n)
+}
+
+// fetchArt 取一张海报：先按公告里给的原地址，没拿到才换候选地址再试一次。
+//
+// 顺序不能反：原地址是对方花钱放在边缘缓存上的，绝大多数访客走的就是它；
+// 候选地址（OSS 传输加速）没有缓存，每问一次都真的回一次源。
+func fetchArt(ctx context.Context, client *http.Client, url string, alt func(string) string) (b []byte, viaAlt bool, err error) {
+	b, err = get(ctx, client, url)
+	if err == nil && len(b) >= 512 {
+		return b, false, nil
+	}
+	first := err
+	if first == nil {
+		first = fmt.Errorf("只有 %d 字节", len(b))
+	}
+	if alt == nil {
+		return b, false, err
+	}
+	to := alt(url)
+	if to == "" || to == url {
+		return b, false, err
+	}
+	b2, err2 := get(ctx, client, to)
+	switch {
+	case err2 != nil:
+		return nil, false, fmt.Errorf("%v（候选域也不行: %v）", first, err2)
+	case len(b2) < 512:
+		return nil, false, fmt.Errorf("%v（候选域只有 %d 字节）", first, len(b2))
+	}
+	return b2, true, nil
+}
+
+// posterCDNHost 是海报的 CDN 前置域；accelerateHost 是同一个桶的 OSS 传输加速端点。
+const (
+	posterCDNHost  = "webusstatic.yo-star.com"
+	accelerateHost = "webusstatic.oss-accelerate.aliyuncs.com"
+)
+
+// acceleratedPoster 把海报 URL 换到 OSS 传输加速端点。只有 host 正好是那个海报域
+// 才改写，其余一律返回空串表示"没有候选地址"——按子串换会把路径里长出同样字样的
+// 地址也送到别的服务器上去。key 原样保留，实测两边同一 key 的字节 sha256 相同。
+func acceleratedPoster(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host != posterCDNHost {
+		return ""
+	}
+	u.Host = accelerateHost
+	return u.String()
 }
 
 func get(ctx context.Context, client *http.Client, url string) ([]byte, error) {

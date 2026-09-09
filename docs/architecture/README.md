@@ -83,11 +83,16 @@ QQ 平台 (api.bot.qq.com)
 版本日历图（calposter）：
 
 annsync 投影出的 []Rec（ReadRecs，功能自己按 Provenance 过滤版本窗口）
-       ↓ 每 -warm 一轮：数据指纹变了才往下
-calposter.warmArt → 拉海报字节进缓存（实测冷 41s / 命中 50ms）
+       ↓ 每 -warm 一轮（启动立刻先跑一轮）
+calposter.warmArt → 只补本窗缺的海报字节：每张先问公告里的原地址，被拒才换 OSS 传输加速
+       ↓            端点补一次；失败的 URL 进 10 分钟冷却，同一 URL 并发只抓一次
+       ↓            （实测：CDN 边缘全拒那一轮 6.4s / 32 请求 / 16 张靠候选域补齐；
+       ↓             海报缓存命中后一轮 50ms / 0 请求）
+calposter.Image(key)   ← 「日历」命令走这条：只读本地字节，零网络，缺海报就画占位（实测 1.9s）
+calposter.Fetch(key)   ← 版本开闸推图走这条：允许现抓，宁可慢也不推一张全是占位的图
+       ↓ Build 数据集 → render.Page → render.Browser.Capture → PNG
+「日历」命令回 command.Reply{Image}；版本开闸投 queue.Item{Media{poster,key}}
        ↓
-calposter.Image(key) → Build 数据集 → render.Page → render.Browser.Capture → PNG
-       ↓ 「日历」命令走 command.Reply{Image}；版本开闸走 queue.Item{Media{poster,key}}
 qq.UploadGroupImage 四步 → file_info → msg_type=7
 ```
 
@@ -199,6 +204,8 @@ qq.UploadGroupImage 四步 → file_info → msg_type=7
 | 版本键→内容映射 | `.probe/calpng/keycheck.js`（真 Chrome 渲染 `#x<key>`，核 `#vname` 与按钮选中态；负对照 = 键命中后错一位） | 本机 node + Chrome |
 | 富媒体四步上传 | `internal/qq/media_test.go`（httptest 假平台：必填字段、`file_size`/`block_size` 是字符串、分片正文无 token、`url` 留空、`srv_send_msg=false`） | 任何 |
 | 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG 与海报两级缓存、singleflight、推图排期与账本；负对照 = 去掉宽限期 / 去掉已推判定 / 先记账再画图） | 任何 |
+| 抓取只在后台 | 同上（命令路径零网络请求、缺海报照常出图、预热抓到才带图、失败按 RetryAfter 冷却、并发预热同 URL 只抓一次；海报取字节先问原地址、被拒才换候选域、两边都失败才画占位、多张并发抓取计数与收尾日志要等于真实值；负对照 `python .probe/mutate/artmutate.py` = 把 Image 的 Fetch 打反 / 去掉冷却判定 / 去掉在飞表 / 关掉兜底 / 抢先问候选域 / 换域改成子串匹配 / 新抓数报错） | 任何 |
+| 入口阻塞压测 | `go run ./.probe/posterload -mode=stall\|ws\|warm\|chrome`（真 Hub + 真命令表 + 真 calposter，画布是可控耗时假件；量排队等待、心跳间隔、判死、预热开销、并发浏览器进程数） | 本机 |
 | 真库真浏览器出图 | `go run ./cmd/calshot -db .probe/livesync.db -repeat 3`（三段耗时打进日志；-noart 只核结构） | 本机 Chrome |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |
 

@@ -162,10 +162,11 @@ func TestBuildRejectsUnknownKey(t *testing.T) {
 // ---------- 缓存与并发 ----------
 
 type fakeCap struct {
-	mu    sync.Mutex
-	calls int
-	block chan struct{}
-	last  string
+	mu       sync.Mutex
+	calls    int
+	block    chan struct{}
+	last     string
+	lastPage []byte
 }
 
 func (f *fakeCap) Capture(page []byte, route string) ([]byte, error) {
@@ -176,7 +177,15 @@ func (f *fakeCap) Capture(page []byte, route string) ([]byte, error) {
 	defer f.mu.Unlock()
 	f.calls++
 	f.last = route
+	f.lastPage = append([]byte(nil), page...)
 	return []byte("PNG:" + route), nil
+}
+
+// inlined 回答"这一趟页面里有没有内联的海报字节"。
+func (f *fakeCap) inlined() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Contains(string(f.lastPage), "data:image")
 }
 
 func (f *fakeCap) count() int {

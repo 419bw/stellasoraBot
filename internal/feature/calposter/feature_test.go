@@ -413,9 +413,9 @@ func TestCalendarCommandRepliesWithImage(t *testing.T) {
 	if err := p.Start(context.Background(), api); err != nil {
 		t.Fatal(err)
 	}
-	c, ok := reg.Lookup("日历")
+	c, ok := reg.Lookup("calendar")
 	if !ok {
-		t.Fatal("「日历」没注册上")
+		t.Fatal("「calendar」没注册上")
 	}
 	rep, err := c.Run(context.Background(), &qq.Message{}, nil)
 	if err != nil {

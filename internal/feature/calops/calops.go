@@ -71,16 +71,16 @@ func (f *feature) Name() string { return "calops" }
 
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
-		{Name: "待确认", Aliases: []string{"待確認", "存疑", "review"}, Admin: true,
-			Usage: "列出解析不出来或有歧义的活动，可加页码", Run: command.Text(f.review)},
-		{Name: "覆盖", Aliases: []string{"覆蓋", "改期", "override"}, Admin: true,
-			Usage: "改时间：覆盖 <id> <开始> <结束> [备注]，时间写 2026-09-08 10:59", Run: command.Text(f.override)},
-		{Name: "确认", Aliases: []string{"確認", "固化", "confirm"}, Admin: true,
-			Usage: "把当前解析值固化下来，之后刷新不再改它：确认 <id>", Run: command.Text(f.confirm)},
-		{Name: "隐藏", Aliases: []string{"隱藏", "屏蔽", "hide"}, Admin: true,
-			Usage: "把一条记录从日历里撤下：隐藏 <id> [备注]", Run: command.Text(f.hide)},
-		{Name: "显示", Aliases: []string{"顯示", "恢复", "show"}, Admin: true,
-			Usage: "撤销隐藏：显示 <id>", Run: command.Text(f.show)},
+		{Name: "review", Admin: true,
+			Usage: "列出解析存疑的活动，可加页码：review 2", Run: command.Text(f.review)},
+		{Name: "override", Admin: true,
+			Usage: "改时间：override <id> <开始> <结束> [备注]，时间写 2026-09-08 10:59", Run: command.Text(f.override)},
+		{Name: "confirm", Admin: true,
+			Usage: "把当前解析值固化下来：confirm <id>", Run: command.Text(f.confirm)},
+		{Name: "hide", Admin: true,
+			Usage: "把一条记录从日历里撤下：hide <id> [备注]", Run: command.Text(f.hide)},
+		{Name: "show", Admin: true,
+			Usage: "撤销隐藏：show <id>", Run: command.Text(f.show)},
 	}
 	for _, c := range cmds {
 		if err := f.reg.Add(c); err != nil {
@@ -149,7 +149,7 @@ func (f *feature) review(ctx context.Context, m *qq.Message, args []string) (str
 		}
 		return "待确认桶是空的：所有活动都解析干净了", nil
 	}
-	out := renderPaged("待确认", rows, page, f.cfg.PageSize, "待确认")
+	out := renderPaged("待确认", rows, page, f.cfg.PageSize, "review")
 	if len(ancient) > 0 {
 		out += fmt.Sprintf("\n更早未采信的 %d 条没列出来（超过 30 天的旧公告）", len(ancient))
 	}
@@ -171,11 +171,11 @@ func (f *feature) override(ctx context.Context, m *qq.Message, args []string) (s
 
 	start, rest, err := takeTime(rest, f.cfg.Now(), f.cfg.Zone, false)
 	if err != nil {
-		return "开始时间没看懂：" + err.Error() + "\n写法：覆盖 " + id + " 2026-09-08 10:59 2026-09-22 10:59", nil
+		return "开始时间没看懂：" + err.Error() + "\n写法：override " + id + " 2026-09-08 10:59 2026-09-22 10:59", nil
 	}
 	end, rest, err := takeTime(rest, f.cfg.Now(), f.cfg.Zone, true)
 	if err != nil {
-		return "结束时间没看懂：" + err.Error() + "\n写法：覆盖 " + id + " 2026-09-08 10:59 2026-09-22 10:59", nil
+		return "结束时间没看懂：" + err.Error() + "\n写法：override " + id + " 2026-09-08 10:59 2026-09-22 10:59", nil
 	}
 	if !end.After(start) {
 		return fmt.Sprintf("结束时间 %s 不在开始时间 %s 之后，这样写日历上会显示不出来",
@@ -212,7 +212,7 @@ func (f *feature) confirm(ctx context.Context, m *qq.Message, args []string) (st
 		return f.notFound(id), nil
 	}
 	if rec.Start.IsZero() || rec.End.IsZero() {
-		return "这条记录还没有解析出时间，没法固化；用「覆盖」直接写时间", nil
+		return "这条记录还没有解析出时间，没法固化；用「override」直接写时间", nil
 	}
 
 	old, _, _ := f.ov.Get(id)
@@ -253,7 +253,7 @@ func (f *feature) hide(ctx context.Context, m *qq.Message, args []string) (strin
 		return "", fmt.Errorf("写覆盖: %w", err)
 	}
 	f.touch()
-	return fmt.Sprintf("已隐藏 %s（%s）\n发「显示 %s」可以撤销", id, text.OneLine(rec.Title), id), nil
+	return fmt.Sprintf("已隐藏 %s（%s）\n发「show %s」可以撤销", id, text.OneLine(rec.Title), id), nil
 }
 
 func (f *feature) show(ctx context.Context, m *qq.Message, args []string) (string, error) {
@@ -287,7 +287,7 @@ func (f *feature) touch() {
 }
 
 func (f *feature) notFound(id string) string {
-	return fmt.Sprintf("找不到 %s：先用「待确认」看看有哪些 ID", id)
+	return fmt.Sprintf("找不到 %s：先用「review」看看有哪些 ID", id)
 }
 
 // takeID 取第一个参数当记录 ID，并要求它带源前缀（"stellasora:4432:0"）。

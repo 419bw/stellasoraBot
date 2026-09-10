@@ -73,7 +73,7 @@ func run(t *testing.T, reg *command.Registry, name string, args ...string) strin
 
 func TestRegistersAllQueryCommands(t *testing.T) {
 	reg := start(t, fixture(), calquery.Config{Now: func() time.Time { return now }})
-	for _, name := range []string{"活动", "活動", "進行中", "进行中", "events", "快结束", "快結束", "即将", "即將", "帮助", "幫助"} {
+	for _, name := range []string{"events", "ending", "upcoming", "help"} {
 		if _, ok := reg.Lookup(name); !ok {
 			t.Errorf("命令 %q 没注册上", name)
 		}
@@ -83,7 +83,7 @@ func TestRegistersAllQueryCommands(t *testing.T) {
 // 问"现在有什么活动"，真正要紧的是快跑掉的那几个，所以按结束时间升序。
 func TestActiveListsSoonestEndingFirst(t *testing.T) {
 	reg := start(t, fixture(), calquery.Config{Now: func() time.Time { return now }})
-	got := run(t, reg, "活动")
+	got := run(t, reg, "events")
 
 	if !strings.Contains(got, "3 条") {
 		t.Errorf("头部计数不对：%q", got)
@@ -117,18 +117,18 @@ func TestPagingKeepsOneReplyPerPage(t *testing.T) {
 	}
 	reg := start(t, cal, calquery.Config{Now: func() time.Time { return now }, PageSize: 3})
 
-	page1 := run(t, reg, "活动")
+	page1 := run(t, reg, "events")
 	if n := strings.Count(page1, "\n· "); n != 3 {
 		t.Errorf("第 1 页有 %d 行, want 3：%q", n, page1)
 	}
 	if !strings.Contains(page1, "7 条，第 1/3 页") {
 		t.Errorf("头部没写清总数与页码：%q", page1)
 	}
-	if !strings.Contains(page1, "发「活动 2」看下一页") {
+	if !strings.Contains(page1, "发「events 2」看下一页") {
 		t.Errorf("没有翻页提示：%q", page1)
 	}
 
-	page3 := run(t, reg, "活动", "3")
+	page3 := run(t, reg, "events", "3")
 	if n := strings.Count(page3, "\n· "); n != 1 {
 		t.Errorf("末页有 %d 行, want 1（7 条 / 每页 3）：%q", n, page3)
 	}
@@ -137,10 +137,10 @@ func TestPagingKeepsOneReplyPerPage(t *testing.T) {
 	}
 
 	// 页码超出范围不该报错，退回最后一页：用户多打一位数字而已
-	if beyond := run(t, reg, "活动", "99"); !strings.Contains(beyond, "第 3/3 页") {
+	if beyond := run(t, reg, "events", "99"); !strings.Contains(beyond, "第 3/3 页") {
 		t.Errorf("超范围页码没退回末页：%q", beyond)
 	}
-	if junk := run(t, reg, "活动", "二"); !strings.Contains(junk, "第 1/3 页") {
+	if junk := run(t, reg, "events", "二"); !strings.Contains(junk, "第 1/3 页") {
 		t.Errorf("非数字页码没退回第 1 页：%q", junk)
 	}
 }
@@ -148,7 +148,7 @@ func TestPagingKeepsOneReplyPerPage(t *testing.T) {
 func TestEndingWithinHonorsHoursArg(t *testing.T) {
 	reg := start(t, fixture(), calquery.Config{Now: func() time.Time { return now }})
 
-	def := run(t, reg, "快结束")
+	def := run(t, reg, "ending")
 	if !strings.Contains(def, "緊急懸賞") || strings.Contains(def, "悠悠漫時") {
 		t.Errorf("默认 48 小时窗口不对：%q", def)
 	}
@@ -156,7 +156,7 @@ func TestEndingWithinHonorsHoursArg(t *testing.T) {
 		t.Errorf("没说清窗口多长：%q", def)
 	}
 
-	narrow := run(t, reg, "快结束", "6")
+	narrow := run(t, reg, "ending", "6")
 	if strings.Contains(narrow, "緊急懸賞") {
 		t.Errorf("6 小时窗口把 16 小时后结束的也列进来了：%q", narrow)
 	}
@@ -164,7 +164,7 @@ func TestEndingWithinHonorsHoursArg(t *testing.T) {
 		t.Errorf("6 小时内确实没有活动该说暂无：%q", narrow)
 	}
 
-	wide := run(t, reg, "快结束", "24", "2") // 小时数 + 页码混着写也要认
+	wide := run(t, reg, "ending", "24", "2") // 小时数 + 页码混着写也要认
 	if !strings.Contains(wide, "緊急懸賞") {
 		t.Errorf("24 小时窗口该列出一条：%q", wide)
 	}
@@ -173,7 +173,7 @@ func TestEndingWithinHonorsHoursArg(t *testing.T) {
 func TestUpcomingHonorsDaysArg(t *testing.T) {
 	reg := start(t, fixture(), calquery.Config{Now: func() time.Time { return now }})
 
-	def := run(t, reg, "即将")
+	def := run(t, reg, "upcoming")
 	if !strings.Contains(def, "雪融時分新芽綻") {
 		t.Errorf("默认 7 天该列出两天后开始的活动：%q", def)
 	}
@@ -184,11 +184,11 @@ func TestUpcomingHonorsDaysArg(t *testing.T) {
 		t.Errorf("倒计时没说成人话：%q", def)
 	}
 
-	if one := run(t, reg, "即将", "1"); !strings.Contains(one, "暂无") {
+	if one := run(t, reg, "upcoming", "1"); !strings.Contains(one, "暂无") {
 		t.Errorf("1 天内确实没有新活动该说暂无：%q", one)
 	}
 	// 上限夹住：写 9999 天也不该让日历把上千条一次性吐进一条回复
-	if clamped := run(t, reg, "即将", "9999"); !strings.Contains(clamped, "60 天内") {
+	if clamped := run(t, reg, "upcoming", "9999"); !strings.Contains(clamped, "60 天内") {
 		t.Errorf("天数没被夹到上限：%q", clamped)
 	}
 }
@@ -198,7 +198,7 @@ func TestEmptyCalendarExplainsSyncState(t *testing.T) {
 
 	// 没接同步状况依赖：只说暂无，不编理由
 	plain := start(t, empty, calquery.Config{Now: func() time.Time { return now }})
-	if got := run(t, plain, "活动"); !strings.Contains(got, "暂无") || strings.Contains(got, "同步") {
+	if got := run(t, plain, "events"); !strings.Contains(got, "暂无") || strings.Contains(got, "同步") {
 		t.Errorf("没接 Status 依赖时不该提同步：%q", got)
 	}
 
@@ -207,7 +207,7 @@ func TestEmptyCalendarExplainsSyncState(t *testing.T) {
 		Now:    func() time.Time { return now },
 		Status: fakeStatus{st: annsync.Status{Source: "s"}},
 	})
-	got := run(t, syncing, "活动")
+	got := run(t, syncing, "events")
 	if !strings.Contains(got, "还在同步中") {
 		t.Errorf("首轮未完成时该说还在同步中：%q", got)
 	}
@@ -219,7 +219,7 @@ func TestEmptyCalendarExplainsSyncState(t *testing.T) {
 			Source: "s", LastSuccess: now.Add(-2 * time.Hour), Fails: 3, LastError: "HTTP 429",
 		}},
 	})
-	got = run(t, failing, "活动")
+	got = run(t, failing, "events")
 	if !strings.Contains(got, "数据截至 09-02 10:00") || !strings.Contains(got, "失败 3 次") || !strings.Contains(got, "HTTP 429") {
 		t.Errorf("源侧失败没体现在尾注里：%q", got)
 	}
@@ -227,8 +227,8 @@ func TestEmptyCalendarExplainsSyncState(t *testing.T) {
 
 func TestHelpListsEveryCommand(t *testing.T) {
 	reg := start(t, fixture(), calquery.Config{Now: func() time.Time { return now }})
-	got := run(t, reg, "帮助")
-	for _, want := range []string{"活动", "快结束", "即将", "帮助"} {
+	got := run(t, reg, "help")
+	for _, want := range []string{"events", "ending", "upcoming", "help"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("帮助里缺 %q：%q", want, got)
 		}
@@ -243,7 +243,7 @@ func TestCrossYearTimesShowYear(t *testing.T) {
 	cal.Upsert(calendar.Activity{ID: "s:9:0", Title: "跨年活动", Start: at(9, 1, 0, 0), End: time.Date(2027, 1, 5, 12, 0, 0, 0, zone)})
 	reg := start(t, cal, calquery.Config{Now: func() time.Time { return now }})
 
-	got := run(t, reg, "活动")
+	got := run(t, reg, "events")
 	if !strings.Contains(got, "2027-01-05 12:00") {
 		t.Errorf("跨年的时间没带年份，会被读成今年：%q", got)
 	}

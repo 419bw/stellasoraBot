@@ -21,8 +21,8 @@ import (
 
 // Cmd 是一条命令。功能包构造它并交给 Registrar。
 type Cmd struct {
-	Name    string   // 主名，如 "活动"
-	Aliases []string // 别名，如 "進行中"
+	Name    string   // 命令名，如 "events"
+	Aliases []string // 别名，可选
 	Admin   bool     // 只给群主/管理员（单聊里则要求发送者在 Config.AdminOpenIDs 里）
 	Usage   string   // 一行用法，进「帮助」列表
 	Run     func(ctx context.Context, m *qq.Message, args []string) (Reply, error)

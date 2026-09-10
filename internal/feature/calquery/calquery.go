@@ -87,16 +87,12 @@ func (f *feature) Name() string { return "calquery" }
 // Start 只注册命令，非阻塞（kernel.Feature 契约）。重名会报错，内核整体退出。
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
-		{Name: "活动", Aliases: []string{"進行中", "进行中", "活動", "events"},
-			Usage: "正在进行的活动，可加页码：活动 2", Run: command.Text(f.active)},
-		{Name: "快结束", Aliases: []string{"快結束", "快結束了", "快结束了", "ending"},
-			Usage: fmt.Sprintf("默认 %d 小时内结束的活动，可加小时数：快结束 12", int(f.cfg.DefaultEndLead.Hours())),
-			Run:   command.Text(f.ending)},
-		{Name: "即将", Aliases: []string{"即將", "預告", "预告", "upcoming"},
-			Usage: fmt.Sprintf("默认 %d 天内开始的活动，可加天数：即将 3", f.cfg.DefaultSoonDays),
-			Run:   command.Text(f.upcoming)},
-		{Name: "帮助", Aliases: []string{"幫助", "help", "命令"},
-			Usage: "列出所有命令", Run: command.Text(f.help)},
+		{Name: "events", Usage: "正在进行的活动，可加页码：events 2", Run: command.Text(f.active)},
+		{Name: "ending", Usage: fmt.Sprintf("即将结束的活动，可加小时数：ending 12（默认 %d 小时）", int(f.cfg.DefaultEndLead.Hours())),
+			Run: command.Text(f.ending)},
+		{Name: "upcoming", Usage: fmt.Sprintf("即将开始的活动，可加天数：upcoming 3（默认 %d 天）", f.cfg.DefaultSoonDays),
+			Run: command.Text(f.upcoming)},
+		{Name: "help", Usage: "列出所有可用命令", Run: command.Text(f.help)},
 	}
 	for _, c := range cmds {
 		if err := f.reg.Add(c); err != nil {
@@ -117,7 +113,7 @@ func (f *feature) active(ctx context.Context, m *qq.Message, args []string) (str
 		rows = append(rows, fmt.Sprintf("· %s → %s 结束（剩 %s）",
 			a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
 	}
-	return f.render("进行中的活动", rows, pageArg(args, 1), "活动"), nil
+	return f.render("进行中的活动", rows, pageArg(args, 1), "events"), nil
 }
 
 func (f *feature) ending(ctx context.Context, m *qq.Message, args []string) (string, error) {
@@ -131,7 +127,7 @@ func (f *feature) ending(ctx context.Context, m *qq.Message, args []string) (str
 		rows = append(rows, fmt.Sprintf("· %s → %s 结束（剩 %s）",
 			a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
 	}
-	return f.render(fmt.Sprintf("%d 小时内结束的活动", int(lead.Hours())), rows, pageArg(rest, 1), "快结束"), nil
+	return f.render(fmt.Sprintf("%d 小时内结束的活动", int(lead.Hours())), rows, pageArg(rest, 1), "ending"), nil
 }
 
 func (f *feature) upcoming(ctx context.Context, m *qq.Message, args []string) (string, error) {
@@ -144,7 +140,7 @@ func (f *feature) upcoming(ctx context.Context, m *qq.Message, args []string) (s
 		rows = append(rows, fmt.Sprintf("· %s → %s 开始（还有 %s）",
 			a.Title, f.fmtTime(a.Start, now), text.Human(a.Start.Sub(now))))
 	}
-	return f.render(fmt.Sprintf("%d 天内开始的活动", days), rows, pageArg(rest, 1), "即将"), nil
+	return f.render(fmt.Sprintf("%d 天内开始的活动", days), rows, pageArg(rest, 1), "upcoming"), nil
 }
 
 func (f *feature) help(ctx context.Context, m *qq.Message, args []string) (string, error) {
@@ -152,7 +148,7 @@ func (f *feature) help(ctx context.Context, m *qq.Message, args []string) (strin
 	if text == "" {
 		return "现在还没有可用命令", nil
 	}
-	return "可用命令（@我 + 命令名）\n" + text, nil
+	return "可用命令（@我 + 命令名，支持带 /）\n" + text, nil
 }
 
 // render 把一个列表合成**一条**回复：头部计数、当前页的行、尾部翻页提示与同步状况。

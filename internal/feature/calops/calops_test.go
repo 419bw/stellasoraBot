@@ -202,7 +202,7 @@ func TestReviewListsPendingRecordsAndSuspectPosts(t *testing.T) {
 	r := newRig(t)
 	r.seed(t)
 
-	got := r.run(t, "待確認")
+	got := r.run(t, "review")
 	if !strings.Contains(got, "test:2:0") {
 		t.Errorf("待确认桶里没有解析不出的那条：%q", got)
 	}
@@ -233,7 +233,7 @@ func TestReviewSaysEmptyWhenNothingToReview(t *testing.T) {
 	})
 	r.waitRecs(t, 1)
 
-	if got := r.run(t, "待確認"); !strings.Contains(got, "空的") {
+	if got := r.run(t, "review"); !strings.Contains(got, "空的") {
 		t.Errorf("全部解析干净时该说桶是空的：%q", got)
 	}
 }
@@ -244,7 +244,7 @@ func TestOverrideChangesCalendarImmediately(t *testing.T) {
 	r.waitFor(t, "乾淨活動进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
 
 	newEnd := time.Date(2026, 9, 30, 23, 0, 0, 0, zone)
-	got := r.run(t, "覆蓋", "test:1:0", "2026-09-01", "12:00", "2026-09-30", "23:00", "官方延期")
+	got := r.run(t, "override", "test:1:0", "2026-09-01", "12:00", "2026-09-30", "23:00", "官方延期")
 
 	if !strings.Contains(got, "已覆盖 test:1:0") {
 		t.Errorf("回复没确认改了哪条：%q", got)
@@ -277,7 +277,7 @@ func TestOverrideSurvivesReparsedSource(t *testing.T) {
 	r.waitFor(t, "进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
 
 	human := time.Date(2026, 10, 1, 0, 0, 0, 0, zone)
-	r.run(t, "覆蓋", "test:1:0", "2026-09-01", "12:00", "2026-10-01", "00:00", "人工核对")
+	r.run(t, "override", "test:1:0", "2026-09-01", "12:00", "2026-10-01", "00:00", "人工核对")
 
 	r.waitFor(t, "覆盖生效", func() bool {
 		a, ok := r.cal.Get("test:1:0")
@@ -321,7 +321,7 @@ func TestConfirmFreezesParsedValues(t *testing.T) {
 	r.seed(t)
 	r.waitFor(t, "进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
 
-	got := r.run(t, "確認", "test:1:0")
+	got := r.run(t, "confirm", "test:1:0")
 	if !strings.Contains(got, "已固化") {
 		t.Errorf("回复 = %q, want 含\"已固化\"", got)
 	}
@@ -365,7 +365,7 @@ func TestConfirmRefusesRecordWithoutTimes(t *testing.T) {
 	r := newRig(t)
 	r.seed(t)
 
-	got := r.run(t, "確認", "test:2:0") // 那条 pending 的没有时间
+	got := r.run(t, "confirm", "test:2:0") // 那条 pending 的没有时间
 	if !strings.Contains(got, "還沒有解析出时间") && !strings.Contains(got, "没有解析出时间") {
 		t.Errorf("回复 = %q, want 说明这条没法固化", got)
 	}
@@ -391,7 +391,7 @@ func TestOverrideRejectsBadInput(t *testing.T) {
 		{"起止倒挂", []string{"test:1:0", "2026-09-10", "12:00", "2026-09-01", "12:00"}, "不在开始时间"},
 	}
 	for _, c := range cases {
-		got := r.run(t, "覆蓋", c.args...)
+		got := r.run(t, "override", c.args...)
 		if !strings.Contains(got, c.want) {
 			t.Errorf("%s：回复 = %q, want 含 %q", c.what, got, c.want)
 		}
@@ -426,7 +426,7 @@ func TestOverrideAcceptsTimeShapes(t *testing.T) {
 			r.seed(t)
 			r.waitFor(t, "进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
 
-			r.run(t, "覆蓋", append([]string{"test:1:0"}, c.args...)...)
+			r.run(t, "override", append([]string{"test:1:0"}, c.args...)...)
 
 			o, ok, err := annsync.NewOverrideStore(r.doc).Get("test:1:0")
 			if err != nil || !ok {
@@ -444,8 +444,8 @@ func TestHideRemovesFromCalendarAndShowRestores(t *testing.T) {
 	r.seed(t)
 	r.waitFor(t, "进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
 
-	got := r.run(t, "隱藏", "test:1:0", "这条不是活动")
-	if !strings.Contains(got, "已隐藏") || !strings.Contains(got, "显示") {
+	got := r.run(t, "hide", "test:1:0", "这条不是活动")
+	if !strings.Contains(got, "已隐藏") || !strings.Contains(got, "show") {
 		t.Errorf("回复 = %q, want 确认并告知怎么撤销", got)
 	}
 	r.waitFor(t, "从日历撤下", func() bool { _, ok := r.cal.Get("test:1:0"); return !ok })
@@ -455,12 +455,12 @@ func TestHideRemovesFromCalendarAndShowRestores(t *testing.T) {
 		t.Errorf("覆盖 = %+v, want Hide=true 且带备注", o)
 	}
 
-	if got := r.run(t, "顯示", "test:1:0"); !strings.Contains(got, "已恢复") {
+	if got := r.run(t, "show", "test:1:0"); !strings.Contains(got, "已恢复") {
 		t.Errorf("撤销的回复 = %q", got)
 	}
 	r.waitFor(t, "回到日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
 
-	if got := r.run(t, "顯示", "test:1:0"); !strings.Contains(got, "本来就没被隐藏") {
+	if got := r.run(t, "show", "test:1:0"); !strings.Contains(got, "本来就没被隐藏") {
 		t.Errorf("重复撤销的回复 = %q, want 说明不用撤销", got)
 	}
 }
@@ -469,7 +469,7 @@ func TestHideRemovesFromCalendarAndShowRestores(t *testing.T) {
 // 门槛由机制层统一查，功能只负责声明。
 func TestEveryOpsCommandIsAdminOnly(t *testing.T) {
 	r := newRig(t)
-	for _, name := range []string{"待確認", "覆蓋", "確認", "隱藏", "顯示"} {
+	for _, name := range []string{"review", "override", "confirm", "hide", "show"} {
 		c, ok := r.reg.Lookup(name)
 		if !ok {
 			t.Errorf("命令 %q 没注册上", name)
@@ -497,14 +497,14 @@ func TestReviewPaging(t *testing.T) {
 	}
 	r.waitRecs(t, 6)
 
-	page1 := r.run(t, "待確認")
+	page1 := r.run(t, "review")
 	if !strings.Contains(page1, "6 条，第 1/2 页") {
 		t.Errorf("头部计数不对（每页 4 条）：%q", page1)
 	}
-	if !strings.Contains(page1, "发「待确认 2」看下一页") {
+	if !strings.Contains(page1, "发「review 2」看下一页") {
 		t.Errorf("没有翻页提示：%q", page1)
 	}
-	page2 := r.run(t, "待確認", "2")
+	page2 := r.run(t, "review", "2")
 	if !strings.Contains(page2, "第 2/2 页") || strings.Contains(page2, "看下一页") {
 		t.Errorf("末页不对：%q", page2)
 	}
@@ -550,16 +550,16 @@ func TestWorksWithoutRefreshHook(t *testing.T) {
 		time.Sleep(3 * time.Millisecond)
 	}
 
-	c, _ := reg.Lookup("覆蓋")
+	c, _ := reg.Lookup("override")
 	m := &qq.Message{Kind: qq.EventGroupAtMessage, ID: "M1", GroupOpenID: "G1",
 		Author: qq.Author{MemberOpenID: "A", Username: "魔王大人", MemberRole: "owner"}}
 	newEnd := time.Date(2026, 12, 31, 23, 0, 0, 0, zone)
 	text, err := c.Run(ctx, m, []string{"test:1:0", "2026-09-02", "12:00", "2026-12-31", "23:00"})
 	if err != nil {
-		t.Fatalf("覆蓋: %v", err)
+		t.Fatalf("override: %v", err)
 	}
 	if !strings.Contains(text.Text, "已覆盖") {
-		t.Fatalf("覆蓋没写成：%q", text.Text)
+		t.Fatalf("override没写成：%q", text.Text)
 	}
 
 	deadline = time.Now().Add(3 * time.Second)
@@ -598,7 +598,7 @@ func TestReviewListsRecentSuspectsAndHidesAncient(t *testing.T) {
 		time.Sleep(3 * time.Millisecond)
 	}
 
-	got := r.run(t, "待确认")
+	got := r.run(t, "review")
 	if strings.Contains(got, "半年前的维护说明") {
 		t.Errorf("30 天以外的未采信公告还在占页面：%q", got)
 	}
@@ -620,23 +620,20 @@ func TestReviewListsRecentSuspectsAndHidesAncient(t *testing.T) {
 	}
 }
 
-// 主名必须是简体：群里的人对着简体官网打字，「帮助」里排第一的名字得是他敲得出来的。
-// 繁体留在别名里不删——老用户的手感不能因为换站点就断。这条同时钉住两边解析到同一个命令：
-// 手改名字时最容易把别名一起简掉，等于悄悄把繁体入口删了。
-func TestSimplifiedNameIsPrimaryAndTraditionalStillRoutes(t *testing.T) {
+// 运维命令全部使用纯英文唯一命令名，且不设别名。
+func TestAllAdminCommandsRegistered(t *testing.T) {
 	r := newRig(t)
-	for simp, trad := range map[string]string{
-		"待确认": "待確認", "覆盖": "覆蓋", "确认": "確認", "隐藏": "隱藏", "显示": "顯示",
-	} {
-		for _, name := range []string{simp, trad} {
-			c, ok := r.reg.Lookup(name)
-			if !ok {
-				t.Errorf("命令 %q 没注册上", name)
-				continue
-			}
-			if c.Name != simp {
-				t.Errorf("打 %q 解析到的主名 = %q, want %q", name, c.Name, simp)
-			}
+	for _, name := range []string{"review", "override", "confirm", "hide", "show"} {
+		c, ok := r.reg.Lookup(name)
+		if !ok {
+			t.Errorf("命令 %q 没注册上", name)
+			continue
+		}
+		if c.Name != name {
+			t.Errorf("Lookup(%q).Name = %q, want %q", name, c.Name, name)
+		}
+		if len(c.Aliases) != 0 {
+			t.Errorf("命令 %q 不应包含别名: %+v", name, c.Aliases)
 		}
 	}
 }

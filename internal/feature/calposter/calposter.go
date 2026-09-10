@@ -281,8 +281,7 @@ func (p *Poster) Start(ctx context.Context, api kernel.API) error {
 	p.api = api
 	if p.cfg.Reg != nil {
 		if err := p.cfg.Reg.Add(command.Cmd{
-			Name: "日历", Aliases: []string{"日曆", "calendar", "活动日历"},
-			Usage: "当前版本的活动日历图", Run: p.calendar,
+			Name: "calendar", Usage: "当前版本的活动日历图", Run: p.calendar,
 		}); err != nil {
 			return err
 		}

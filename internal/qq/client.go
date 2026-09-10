@@ -251,23 +251,62 @@ func (c *Client) sendReply(ctx context.Context,
 	return send(ctx, target, req)
 }
 
+// 被动回复时效常量：平台群聊 5 分钟、单聊 60 分钟有效。
+// 超过 2 小时的消息在平台上早已彻底失效，记录裁剪不影响正确性。
+const (
+	replyRetention  = 2 * time.Hour
+	cleanupInterval = 10 * time.Minute
+)
+
+type replyEntry struct {
+	count int
+	at    time.Time
+}
+
 // replier 记录每条来消息已经回复过几次。相同的 msg_id+msg_seq 重复发送会失败，
-// 所以每次回复必须换一个递增的 seq。
+// 所以每次回复必须换一个递增的 seq。带 2 小时时限清理，防止长期运行内存只增不减。
 type replier struct {
-	mu  sync.Mutex
-	seq map[string]int
+	mu          sync.Mutex
+	now         func() time.Time
+	seq         map[string]replyEntry
+	lastCleanup time.Time
 }
 
 func newReplier() *replier {
-	return &replier{seq: make(map[string]int)}
+	return newReplierWithClock(time.Now)
+}
+
+func newReplierWithClock(now func() time.Time) *replier {
+	if now == nil {
+		now = time.Now
+	}
+	return &replier{
+		now: now,
+		seq: make(map[string]replyEntry),
+	}
 }
 
 func (r *replier) next(msgID string, limit int) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.seq[msgID] >= limit {
+
+	now := r.now()
+	if now.Sub(r.lastCleanup) >= cleanupInterval {
+		cutoff := now.Add(-replyRetention)
+		for id, e := range r.seq {
+			if e.at.Before(cutoff) {
+				delete(r.seq, id)
+			}
+		}
+		r.lastCleanup = now
+	}
+
+	e := r.seq[msgID]
+	if e.count >= limit {
 		return 0, fmt.Errorf("qq: 消息 %s 已回复 %d 次，达到上限", msgID, limit)
 	}
-	r.seq[msgID]++
-	return r.seq[msgID], nil
+	e.count++
+	e.at = now
+	r.seq[msgID] = e
+	return e.count, nil
 }

@@ -404,3 +404,74 @@ func TestMeErrorsWhenResponseLacksID(t *testing.T) {
 		t.Errorf("err = %v, 期望提示响应结构不符", err)
 	}
 }
+
+// 验证被动回复计数器：
+// 1. 相同 msg_id 自动递增 seq；达到 limit 报错；
+// 2. 不同 msg_id 计数隔离；
+// 3. 超过 2 小时的历史消息记录在下一次清理周期被自动淘汰，防止长期运行内存单调爬升；
+// 4. 2 小时以内的活跃消息保留。
+func TestReplierSequenceAndExpiration(t *testing.T) {
+	curr := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return curr }
+
+	r := newReplierWithClock(now)
+
+	// 1. 基本递增与上限测试
+	for i := 1; i <= 3; i++ {
+		seq, err := r.next("msgA", 3)
+		if err != nil {
+			t.Fatalf("第 %d 次 next 失败: %v", i, err)
+		}
+		if seq != i {
+			t.Errorf("seq = %d, want %d", seq, i)
+		}
+	}
+	if _, err := r.next("msgA", 3); err == nil {
+		t.Errorf("超过上限未报错")
+	}
+
+	// 2. 独立消息隔离
+	seqB, err := r.next("msgB", 5)
+	if err != nil || seqB != 1 {
+		t.Errorf("msgB seq = %d (err=%v), want 1", seqB, err)
+	}
+
+	// 3. 时间快进：30 分钟后回复 msgC
+	curr = curr.Add(30 * time.Minute)
+	seqC, err := r.next("msgC", 5)
+	if err != nil || seqC != 1 {
+		t.Errorf("msgC seq = %d (err=%v), want 1", seqC, err)
+	}
+
+	// 此时 map 中有 msgA (t0), msgB (t0), msgC (t0+30m)
+	r.mu.Lock()
+	if len(r.seq) != 3 {
+		t.Errorf("map 长度 = %d, want 3", len(r.seq))
+	}
+	r.mu.Unlock()
+
+	// 4. 时间快进到 t0 + 2h + 1m（此时 msgA/msgB 均已超过 2 小时，msgC 只过了 1.5 小时）
+	curr = time.Date(2026, 9, 10, 14, 1, 0, 0, time.UTC)
+	// 触发一次 next，应当带动 lazy 清理
+	seqD, err := r.next("msgD", 5)
+	if err != nil || seqD != 1 {
+		t.Errorf("msgD seq = %d (err=%v), want 1", seqD, err)
+	}
+
+	r.mu.Lock()
+	_, hasA := r.seq["msgA"]
+	_, hasB := r.seq["msgB"]
+	_, hasC := r.seq["msgC"]
+	_, hasD := r.seq["msgD"]
+	r.mu.Unlock()
+
+	if hasA || hasB {
+		t.Errorf("超过 2 小时的 msgA/msgB 应当被清理淘汰: hasA=%v, hasB=%v", hasA, hasB)
+	}
+	if !hasC {
+		t.Errorf("未满 2 小时的 msgC 应当依然保留")
+	}
+	if !hasD {
+		t.Errorf("刚插入的 msgD 应当保留")
+	}
+}

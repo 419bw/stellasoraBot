@@ -11,8 +11,8 @@ if [ -z "$SSL_CERT_FILE" ] && [ -f "/data/data/com.termux/files/usr/etc/tls/cert
     export SSL_CERT_FILE=/data/data/com.termux/files/usr/etc/tls/cert.pem
 fi
 
-chmod +x ./xingtabot
-screen -dmS xingtabot bash -c 'exec ./xingtabot -creds creds.json -db data/xingta.db >> run.log 2>&1'
+chmod +x ./xingtabot ./chrome-headless
+screen -dmS xingtabot bash -c 'exec ./xingtabot -creds creds.json -db data/xingta.db -chrome ./chrome-headless >> run.log 2>&1'
 sleep 1
 
 if screen -list 2>/dev/null | grep -q "xingtabot"; then

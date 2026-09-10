@@ -15,10 +15,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"xingta/internal/annsync"
@@ -29,6 +31,7 @@ import (
 )
 
 func main() {
+	initAndroidEnv()
 	var (
 		dbPath = flag.String("db", "data/xingta-live.db", "bbolt 数据库文件")
 		key    = flag.String("key", "", "版本键（ActStart 的 UTC yyyyMMddHHmm），留空=当前版本")
@@ -133,4 +136,50 @@ func findBrowser(flagVal string) (string, error) {
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "错误: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+func initAndroidEnv() {
+	if os.Getenv("SSL_CERT_FILE") == "" {
+		termuxCert := "/data/data/com.termux/files/usr/etc/tls/cert.pem"
+		if _, err := os.Stat(termuxCert); err == nil {
+			os.Setenv("SSL_CERT_FILE", termuxCert)
+		}
+	}
+
+	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+		return
+	}
+
+	var servers []string
+	termuxResolv := "/data/data/com.termux/files/usr/etc/resolv.conf"
+	if data, err := os.ReadFile(termuxResolv); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "nameserver") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					servers = append(servers, fields[1]+":53")
+				}
+			}
+		}
+	}
+	if len(servers) == 0 {
+		servers = append(servers, "223.5.5.5:53", "119.29.29.29:53", "8.8.8.8:53")
+	}
+
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			var lastErr error
+			for _, s := range servers {
+				conn, err := d.DialContext(ctx, "udp", s)
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+			}
+			return nil, lastErr
+		},
+	}
 }

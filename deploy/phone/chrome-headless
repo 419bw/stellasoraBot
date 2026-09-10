@@ -1,0 +1,2 @@
+#!/data/data/com.termux/files/usr/bin/bash
+exec chromium-browser --no-sandbox --disable-dev-shm-usage --log-level=3 "$@"

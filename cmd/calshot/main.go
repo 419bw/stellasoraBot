@@ -150,7 +150,7 @@ func initAndroidEnv() {
 		return
 	}
 
-	var servers []string
+	servers := []string{"223.5.5.5:53", "119.29.29.29:53"}
 	termuxResolv := "/data/data/com.termux/files/usr/etc/resolv.conf"
 	if data, err := os.ReadFile(termuxResolv); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -158,13 +158,13 @@ func initAndroidEnv() {
 			if strings.HasPrefix(line, "nameserver") {
 				fields := strings.Fields(line)
 				if len(fields) >= 2 {
-					servers = append(servers, fields[1]+":53")
+					s := fields[1] + ":53"
+					if s != "223.5.5.5:53" && s != "119.29.29.29:53" {
+						servers = append(servers, s)
+					}
 				}
 			}
 		}
-	}
-	if len(servers) == 0 {
-		servers = append(servers, "223.5.5.5:53", "119.29.29.29:53", "8.8.8.8:53")
 	}
 
 	net.DefaultResolver = &net.Resolver{

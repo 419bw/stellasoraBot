@@ -483,3 +483,97 @@ func TestStartRejectsMissingDependencies(t *testing.T) {
 		t.Error("没给 kernel.API 也能启动：排期与投递都无从下手")
 	}
 }
+
+func TestPrunesExpiredRecordsWhenActivityEnds(t *testing.T) {
+	r := newRig(t)
+	api := newAPI(r.cal)
+
+	var mu sync.Mutex
+	curNow := now
+
+	f := calexpiry.New(r.doc, calexpiry.Config{
+		Lead: lead, Every: 5 * time.Millisecond, Targets: []string{"g:GROUP1"},
+		Zone: zone, Now: func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return curNow
+		}, Logf: r.logs.logf,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := f.Start(ctx, api); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, "活动排上期", func() bool { _, ok := api.atOf(taskID(soonID)); return ok })
+	if err := api.fire(taskID(soonID)); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+
+	// 确认提醒账本已落盘
+	if _, ok := r.sentAt(t, soonID); !ok {
+		t.Fatal("fire 成功后账本应该有记录")
+	}
+
+	// 此时活动还未结束（还剩 20h），账本不应被清理
+	settle(30 * time.Millisecond)
+	if _, ok := r.sentAt(t, soonID); !ok {
+		t.Error("活动未到期前，提醒记录不应被清理")
+	}
+
+	// 模拟时间流逝：推进到活动结束之后（25 小时后，soonID 在 20h 结束）
+	mu.Lock()
+	curNow = now.Add(25 * time.Hour)
+	mu.Unlock()
+
+	// 等待扫描器执行并清理已到期记录
+	waitFor(t, "活动结束后已提醒记录被自动淘汰", func() bool {
+		_, ok := r.sentAt(t, soonID)
+		return !ok
+	})
+
+	if !r.logs.has("已到期，清理提醒账本记录") {
+		t.Error("清理时未输出日志")
+	}
+}
+
+func TestPrunesOrphanedRecordsFromDoc(t *testing.T) {
+	r := newRig(t)
+	api := newAPI(r.cal)
+
+	// 手动在 doc 里写一条远古孤立活动的提醒记录（例如日历里已被裁剪淘汰）
+	ghostID := "stellasora:ghost:1"
+	oldSentTime := now.Add(-10 * 24 * time.Hour)
+	if err := r.doc.Put(calexpiry.NS, ghostID, oldSentTime); err != nil {
+		t.Fatalf("写孤立记录: %v", err)
+	}
+
+	// 同时写一条近期提醒过但日历里没有的（发送不足 Lead+24h），保护期内不应误清理
+	recentGhostID := "stellasora:ghost:recent"
+	recentSentTime := now.Add(-10 * time.Hour)
+	if err := r.doc.Put(calexpiry.NS, recentGhostID, recentSentTime); err != nil {
+		t.Fatalf("写近期孤立记录: %v", err)
+	}
+
+	f := calexpiry.New(r.doc, calexpiry.Config{
+		Lead: lead, Every: 5 * time.Millisecond,
+		Zone: zone, Now: func() time.Time { return now }, Logf: r.logs.logf,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := f.Start(ctx, api); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// 远古孤立记录应被自动清理
+	waitFor(t, "远古孤立记录被清理", func() bool {
+		_, ok := r.sentAt(t, ghostID)
+		return !ok
+	})
+
+	// 近期孤立记录还在保护期内，不应被清理
+	settle(30 * time.Millisecond)
+	if _, ok := r.sentAt(t, recentGhostID); !ok {
+		t.Error("近期孤立记录在保护期内不应被清理")
+	}
+}

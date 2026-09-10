@@ -149,6 +149,7 @@ func (f *feature) scan(api kernel.API) {
 		f.arm(act.ID)
 	}
 	f.disarmGone(api, seen)
+	f.pruneExpired(api, now)
 }
 
 // remind 是排期触发时跑的：投递到所有目标，全部成功后才记下"已提醒"。
@@ -213,6 +214,41 @@ func (f *feature) disarmGone(api kernel.API, seen map[string]bool) {
 	for _, id := range gone {
 		if api.Cancel(taskID(id)) {
 			f.cfg.Logf("calexpiry: 活动 %s 已离开提醒窗口，撤销排期", id)
+		}
+	}
+}
+
+// pruneExpired 清理已经真正到期的活动记录：
+// 活动一旦彻底结束，EndingWithin 绝不会再吐出它，留在 sent 和 doc 里的记录已无防重价值。
+func (f *feature) pruneExpired(api kernel.API, now time.Time) {
+	cal := api.Calendar()
+	if cal == nil {
+		return
+	}
+
+	f.mu.Lock()
+	var toDelete []string
+	for id, sentAt := range f.sent {
+		if act, ok := cal.Get(id); ok {
+			if now.After(act.End) {
+				toDelete = append(toDelete, id)
+			}
+		} else {
+			if now.Sub(sentAt) > f.cfg.Lead+24*time.Hour {
+				toDelete = append(toDelete, id)
+			}
+		}
+	}
+	for _, id := range toDelete {
+		delete(f.sent, id)
+	}
+	f.mu.Unlock()
+
+	for _, id := range toDelete {
+		if err := f.doc.Delete(NS, id); err != nil {
+			f.cfg.Logf("calexpiry: 删已到期记录 %s 失败: %v", id, err)
+		} else {
+			f.cfg.Logf("calexpiry: 活动 %s 已到期，清理提醒账本记录", id)
 		}
 	}
 }

@@ -688,19 +688,24 @@ func detectMonthly(recs []annsync.Rec, zone *time.Location) []string {
 		zone = time.Local
 	}
 	type seg struct {
-		st   time.Time
-		sd   int64
-		ed   int64
-		days int64
+		st    time.Time
+		sDate string
+		eDate string
+		days  int64
 	}
 	m := map[string][]seg{}
 	for _, r := range recs {
 		if !r.InCalendar() || r.End.Before(r.Start) {
 			continue
 		}
-		s, e := r.Start.Unix(), r.End.Unix()
+		st := r.Start.In(zone)
+		et := r.End.In(zone)
+		days := int64(r.End.Sub(r.Start) / (24 * time.Hour))
 		m[norm(r.Title)] = append(m[norm(r.Title)], seg{
-			st: r.Start.In(zone), sd: s / 86400, ed: e / 86400, days: (e - s) / 86400,
+			st:    st,
+			sDate: st.Format("2006-01-02"),
+			eDate: et.Format("2006-01-02"),
+			days:  days,
 		})
 	}
 	var out []string
@@ -717,7 +722,7 @@ func detectMonthly(recs []annsync.Rec, zone *time.Location) []string {
 		if !big {
 			for i, a := range ss {
 				for j, b := range ss {
-					if i != j && a.ed == b.sd && a.days >= 20 && b.days >= 20 {
+					if i != j && a.eDate == b.sDate && a.days >= 20 && b.days >= 20 {
 						big = true
 					}
 				}

@@ -768,9 +768,9 @@ func TestDuplicateAlarmSkipsEndedWindows(t *testing.T) {
 	}
 }
 
-// 验证公告保留期（默认 49 天 / 7 周）：
-// 1. 超过 49 天的旧公告在 loadItems 处被过滤，不参与投影、不进 activity 桶与日历；
-// 2. 49 天以内的公告正常进入日历；
+// 验证公告保留期（默认 63 天 / 9 周）：
+// 1. 超过 63 天的旧公告在 loadItems 处被过滤，不参与投影、不进 activity 桶与日历；
+// 2. 63 天以内的公告正常进入日历；
 // 3. 磁盘 news 桶依然完整保留所有历史快照（只读侧过滤，不删落盘数据）；
 // 4. 未填发布时间（零值）的条目向后兼容保留；
 // 5. 支持配置自定义保留期。
@@ -778,7 +778,7 @@ func TestRetentionWindowFiltersAncientAnnouncements(t *testing.T) {
 	doc := storetest.NewMem()
 	w := newWriter()
 
-	// 四篇公告：近期 (10天前)、临界 (48天前)、远古 (50天前)、零值时间
+	// 四篇公告：近期 (10天前)、临界 (62天前)、远古 (65天前)、零值时间
 	rRecent := ref("recent")
 	rAncient := ref("ancient")
 	rBoundary := ref("boundary")
@@ -787,33 +787,33 @@ func TestRetentionWindowFiltersAncientAnnouncements(t *testing.T) {
 	src := newSource("fake", rRecent, rAncient, rBoundary, rZero)
 	src.setItemWithPub("recent", "近期活动", base.Add(-10*24*time.Hour),
 		ev("近期活动", base.Add(-10*24*time.Hour), base.Add(10*24*time.Hour), annsync.StatusOK))
-	src.setItemWithPub("ancient", "远古活动", base.Add(-50*24*time.Hour),
-		ev("远古活动", base.Add(-50*24*time.Hour), base.Add(-30*24*time.Hour), annsync.StatusOK))
-	src.setItemWithPub("boundary", "临界活动", base.Add(-48*24*time.Hour),
-		ev("临界活动", base.Add(-48*24*time.Hour), base.Add(5*24*time.Hour), annsync.StatusOK))
+	src.setItemWithPub("ancient", "远古活动", base.Add(-65*24*time.Hour),
+		ev("远古活动", base.Add(-65*24*time.Hour), base.Add(-30*24*time.Hour), annsync.StatusOK))
+	src.setItemWithPub("boundary", "临界活动", base.Add(-62*24*time.Hour),
+		ev("临界活动", base.Add(-62*24*time.Hour), base.Add(5*24*time.Hour), annsync.StatusOK))
 	src.setItem("zero", "未标注时间活动",
 		ev("未标注时间活动", base.Add(-5*time.Hour), base.Add(5*time.Hour), annsync.StatusOK))
 
 	cfg := testCfg(func() time.Time { return base })
-	// 使用默认的 49 天 Retention（cfg.Retention 为 0，启动时 withDefaults 填充为 49天）
+	// 使用默认的 63 天 Retention（cfg.Retention 为 0，启动时 withDefaults 填充为 63天）
 	start(t, annsync.NewFeature(doc, w, src, nil, cfg))
 
 	waitFor(t, "全量投影完成", func() bool { return w.bulksDone() >= 1 })
 
-	// 1. 49 天以内的活动必须在日历中
+	// 1. 63 天以内的活动必须在日历中
 	if _, ok := w.inner.Get("fake:recent:0"); !ok {
 		t.Errorf("近期活动 fake:recent:0 应当在日历中")
 	}
 	if _, ok := w.inner.Get("fake:boundary:0"); !ok {
-		t.Errorf("48天前的临界活动 fake:boundary:0 应当在日历中")
+		t.Errorf("62天前的临界活动 fake:boundary:0 应当在日历中")
 	}
 	if _, ok := w.inner.Get("fake:zero:0"); !ok {
 		t.Errorf("零值发布时间的活动 fake:zero:0 应当向后兼容保留在日历中")
 	}
 
-	// 2. 超过 49 天的远古活动被过滤，不在日历中
+	// 2. 超过 63 天的远古活动被过滤，不在日历中
 	if _, ok := w.inner.Get("fake:ancient:0"); ok {
-		t.Errorf("50天前的远古活动 fake:ancient:0 应当被过滤，不应出现在日历中")
+		t.Errorf("65天前的远古活动 fake:ancient:0 应当被过滤，不应出现在日历中")
 	}
 
 	// 3. 验证 activity 桶也只包含这 3 条活动记录

@@ -21,7 +21,7 @@
 
 发送 `/calendar` 后，机器人调用无头渲染引擎生成的版本活动日历长图海报效果如下（包含四周版本跨度视图、今日时刻红线标记、全彩官方封面封绘及活动类型标牌）：
 
-![星塔机器人版本活动日历效果图](docs/assets/calendar_preview.png)
+![星塔机器人版本活动日历效果图](docs/assets/calendar_poster.png)
 
 ---
 

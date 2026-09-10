@@ -8,7 +8,9 @@ data/
 # 本地构建产物与容器暂存
 vendor/
 out/
+bin/
 
 # 本地开发笔记（不入仓库）
 DEVELOPMENT-NOTES.md
 PROJECT-MEMORIES.md
+HANDOFF.md

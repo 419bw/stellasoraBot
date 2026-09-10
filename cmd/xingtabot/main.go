@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,6 +41,7 @@ import (
 )
 
 func main() {
+	initAndroidEnv()
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
@@ -396,3 +398,54 @@ func loadCreds(path string) (creds, error) {
 	}
 	return c, nil
 }
+
+// initAndroidEnv 检查环境是否缺少 /etc/resolv.conf 与证书（常见于 Android / Termux 环境）。
+// 1. Go 的 netgo 解析器在找不到 /etc/resolv.conf 时会默认尝试 127.0.0.1:53，导致 connection refused。
+//    此处自动读取 Termux 的 resolv.conf 或回退到主流公共 DNS。
+// 2. Termux 环境的根证书位于 $PREFIX/etc/tls/cert.pem，自动为其配置 SSL_CERT_FILE。
+func initAndroidEnv() {
+	if os.Getenv("SSL_CERT_FILE") == "" {
+		termuxCert := "/data/data/com.termux/files/usr/etc/tls/cert.pem"
+		if _, err := os.Stat(termuxCert); err == nil {
+			os.Setenv("SSL_CERT_FILE", termuxCert)
+		}
+	}
+
+	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+		return
+	}
+
+	var servers []string
+	termuxResolv := "/data/data/com.termux/files/usr/etc/resolv.conf"
+	if data, err := os.ReadFile(termuxResolv); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "nameserver") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					servers = append(servers, fields[1]+":53")
+				}
+			}
+		}
+	}
+	if len(servers) == 0 {
+		servers = append(servers, "223.5.5.5:53", "119.29.29.29:53", "8.8.8.8:53")
+	}
+
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			var lastErr error
+			for _, s := range servers {
+				conn, err := d.DialContext(ctx, "udp", s)
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+			}
+			return nil, lastErr
+		},
+	}
+}
+

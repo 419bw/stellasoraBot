@@ -80,6 +80,12 @@ func (f *fakeSource) setItem(id, title string, evs ...annsync.Event) {
 	f.items[id] = annsync.Item{Title: title, Events: evs}
 }
 
+func (f *fakeSource) setItemWithPub(id, title string, pub time.Time, evs ...annsync.Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items[id] = annsync.Item{Title: title, Published: pub, Events: evs}
+}
+
 func (f *fakeSource) setErr(id string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -759,5 +765,97 @@ func TestDuplicateAlarmSkipsEndedWindows(t *testing.T) {
 	}
 	if n := len(w.inner.Active(base)); n != 1 {
 		t.Errorf("进行中行数 = %d, want 1（只剩进行中的那一组）", n)
+	}
+}
+
+// 验证公告保留期（默认 49 天 / 7 周）：
+// 1. 超过 49 天的旧公告在 loadItems 处被过滤，不参与投影、不进 activity 桶与日历；
+// 2. 49 天以内的公告正常进入日历；
+// 3. 磁盘 news 桶依然完整保留所有历史快照（只读侧过滤，不删落盘数据）；
+// 4. 未填发布时间（零值）的条目向后兼容保留；
+// 5. 支持配置自定义保留期。
+func TestRetentionWindowFiltersAncientAnnouncements(t *testing.T) {
+	doc := storetest.NewMem()
+	w := newWriter()
+
+	// 四篇公告：近期 (10天前)、临界 (48天前)、远古 (50天前)、零值时间
+	rRecent := ref("recent")
+	rAncient := ref("ancient")
+	rBoundary := ref("boundary")
+	rZero := ref("zero")
+
+	src := newSource("fake", rRecent, rAncient, rBoundary, rZero)
+	src.setItemWithPub("recent", "近期活动", base.Add(-10*24*time.Hour),
+		ev("近期活动", base.Add(-10*24*time.Hour), base.Add(10*24*time.Hour), annsync.StatusOK))
+	src.setItemWithPub("ancient", "远古活动", base.Add(-50*24*time.Hour),
+		ev("远古活动", base.Add(-50*24*time.Hour), base.Add(-30*24*time.Hour), annsync.StatusOK))
+	src.setItemWithPub("boundary", "临界活动", base.Add(-48*24*time.Hour),
+		ev("临界活动", base.Add(-48*24*time.Hour), base.Add(5*24*time.Hour), annsync.StatusOK))
+	src.setItem("zero", "未标注时间活动",
+		ev("未标注时间活动", base.Add(-5*time.Hour), base.Add(5*time.Hour), annsync.StatusOK))
+
+	cfg := testCfg(func() time.Time { return base })
+	// 使用默认的 49 天 Retention（cfg.Retention 为 0，启动时 withDefaults 填充为 49天）
+	start(t, annsync.NewFeature(doc, w, src, nil, cfg))
+
+	waitFor(t, "全量投影完成", func() bool { return w.bulksDone() >= 1 })
+
+	// 1. 49 天以内的活动必须在日历中
+	if _, ok := w.inner.Get("fake:recent:0"); !ok {
+		t.Errorf("近期活动 fake:recent:0 应当在日历中")
+	}
+	if _, ok := w.inner.Get("fake:boundary:0"); !ok {
+		t.Errorf("48天前的临界活动 fake:boundary:0 应当在日历中")
+	}
+	if _, ok := w.inner.Get("fake:zero:0"); !ok {
+		t.Errorf("零值发布时间的活动 fake:zero:0 应当向后兼容保留在日历中")
+	}
+
+	// 2. 超过 49 天的远古活动被过滤，不在日历中
+	if _, ok := w.inner.Get("fake:ancient:0"); ok {
+		t.Errorf("50天前的远古活动 fake:ancient:0 应当被过滤，不应出现在日历中")
+	}
+
+	// 3. 验证 activity 桶也只包含这 3 条活动记录
+	recs, err := annsync.ReadRecs(doc, "fake")
+	if err != nil {
+		t.Fatalf("ReadRecs: %v", err)
+	}
+	if len(recs) != 3 {
+		t.Errorf("activity 桶记录数 = %d, want 3", len(recs))
+	}
+
+	// 4. 核心验证：磁盘 news 桶依然完整保留了 4 篇公告（包括远古公告），证明落盘数据未受破坏
+	var ancientItem annsync.Item
+	hasAncient, err := doc.Get("news", "fake:ancient", &ancientItem)
+	if err != nil || !hasAncient {
+		t.Errorf("news 桶中必须保留远古公告快照（落盘资产不丢），has=%v, err=%v", hasAncient, err)
+	}
+	items, err := annsync.ReadItems(doc, "fake")
+	if err != nil {
+		t.Fatalf("ReadItems: %v", err)
+	}
+	if len(items) != 4 {
+		t.Errorf("news 桶快照总数 = %d, want 4（磁盘全量归档）", len(items))
+	}
+
+	// 5. 验证自定义 Retention（例如缩紧到 7 天）
+	w2 := newWriter()
+	cfgShort := testCfg(func() time.Time { return base })
+	cfgShort.Retention = 7 * 24 * time.Hour
+	// 重新起一个实例读同一个 doc
+	feat2 := annsync.NewFeature(doc, w2, src, nil, cfgShort)
+	start(t, feat2)
+	feat2.Refresh()
+
+	waitFor(t, "自定义保留期重投影完成", func() bool { return w2.bulksDone() >= 1 })
+
+	// 10 天前的活动在 7 天保留期下也应当被过滤
+	if _, ok := w2.inner.Get("fake:recent:0"); ok {
+		t.Errorf("自定义 7 天保留期下，10天前的活动 fake:recent:0 应当被过滤")
+	}
+	// 零值时间的活动依然兼容保留
+	if _, ok := w2.inner.Get("fake:zero:0"); !ok {
+		t.Errorf("自定义 7 天保留期下，零值时间活动 fake:zero:0 应当保留")
 	}
 }

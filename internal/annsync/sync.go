@@ -325,11 +325,19 @@ func (s *syncer) saveItem(it Item) error {
 }
 
 func (s *syncer) loadItems() ([]Item, error) {
+	now := s.cfg.Now()
+	var cutoff time.Time
+	if s.cfg.Retention > 0 {
+		cutoff = now.Add(-s.cfg.Retention)
+	}
 	var out []Item
 	err := s.doc.Scan(nsNews, s.src.Name()+":", func(_ string, raw []byte) error {
 		var it Item
 		if err := json.Unmarshal(raw, &it); err != nil {
 			return err
+		}
+		if !cutoff.IsZero() && !it.Published.IsZero() && it.Published.Before(cutoff) {
+			return nil
 		}
 		out = append(out, it)
 		return nil

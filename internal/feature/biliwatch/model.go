@@ -78,13 +78,13 @@ type DynamicItem struct {
 		} `json:"module_dynamic"`
 		ModuleStat struct {
 			Forward struct {
-				Count int `json:"count"`
+				Count any `json:"count"`
 			} `json:"forward"`
 			Comment struct {
-				Count int `json:"count"`
+				Count any `json:"count"`
 			} `json:"comment"`
 			Like struct {
-				Count int `json:"count"`
+				Count any `json:"count"`
 			} `json:"like"`
 		} `json:"module_stat"`
 	} `json:"modules"`
@@ -101,8 +101,8 @@ type RichNode struct {
 
 // PicInfo 是图片元信息。
 type PicInfo struct {
-	Url    string  `json:"url"`
-	Width  int     `json:"width"`
-	Height int     `json:"height"`
-	Size   float64 `json:"size"`
+	Url    string `json:"url"`
+	Width  any    `json:"width"`
+	Height any    `json:"height"`
+	Size   any    `json:"size"`
 }

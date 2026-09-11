@@ -3,6 +3,7 @@ package biliwatch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -360,5 +361,80 @@ func TestColdBootProtection(t *testing.T) {
 		if item.Media.Key != "dyn_104" || item.Media.Kind != "bili" {
 			t.Errorf("投递内容不符: %+v", item)
 		}
+	}
+}
+
+func TestDynamicJSONCompatibility(t *testing.T) {
+	// 真实 B站接口中 pub_ts 是字符串，图片 width/height 是数字或字符串，forward/comment/like count 可能是各种类型
+	rawJSON := `{
+		"code": 0,
+		"message": "0",
+		"data": {
+			"has_more": true,
+			"items": [
+				{
+					"id_str": "1234567890",
+					"type": "DYNAMIC_TYPE_DRAW",
+					"visible": true,
+					"modules": {
+						"module_author": {
+							"mid": "3546645778139206",
+							"name": "星塔旅人",
+							"face": "https://face.jpg",
+							"pub_time": "10分钟前",
+							"pub_ts": "1726058400",
+							"pub_action": "投稿了动态"
+						},
+						"module_dynamic": {
+							"desc": {
+								"text": "测试动态正文"
+							},
+							"major": {
+								"type": "MAJOR_TYPE_DRAW",
+								"draw": {
+									"items": [
+										{
+											"url": "https://img.jpg",
+											"width": "1920",
+											"height": "1080",
+											"size": 512.5
+										}
+									]
+								}
+							}
+						},
+						"module_stat": {
+							"forward": { "count": "10" },
+							"comment": { "count": 20 },
+							"like": { "count": 30 }
+						}
+					}
+				}
+			]
+		}
+	}`
+
+	var feed DynamicFeedResp
+	if err := json.Unmarshal([]byte(rawJSON), &feed); err != nil {
+		t.Fatalf("反序列化 B站动态 JSON 失败: %v", err)
+	}
+	if len(feed.Data.Items) != 1 {
+		t.Fatalf("期望解析出 1 条动态，实际: %d", len(feed.Data.Items))
+	}
+	it := feed.Data.Items[0]
+	if it.IdStr != "1234567890" {
+		t.Errorf("id_str 不匹配: %s", it.IdStr)
+	}
+
+	// 验证可以正常渲染 HTML 卡片
+	cardHTML, err := BuildCardPage(it)
+	if err != nil {
+		t.Fatalf("BuildCardPage 失败: %v", err)
+	}
+	if !strings.Contains(string(cardHTML), "测试动态正文") {
+		t.Errorf("渲染页面未包含动态正文")
+	}
+	if !strings.Contains(string(cardHTML), "https://img.jpg") {
+		t.Errorf("渲染页面未包含图片 URL")
 	}
 }

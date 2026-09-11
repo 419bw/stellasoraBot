@@ -3,6 +3,7 @@ package biliwatch
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html"
 	"html/template"
@@ -113,9 +114,9 @@ func BuildCardPage(item DynamicItem) ([]byte, error) {
 		Time:      author.PubTime,
 		VipLabel:  "官方认证",
 		Stats: StatsData{
-			Forward: item.Modules.ModuleStat.Forward.Count,
-			Comment: item.Modules.ModuleStat.Comment.Count,
-			Like:    item.Modules.ModuleStat.Like.Count,
+			Forward: toInt(item.Modules.ModuleStat.Forward.Count),
+			Comment: toInt(item.Modules.ModuleStat.Comment.Count),
+			Like:    toInt(item.Modules.ModuleStat.Like.Count),
 		},
 	}
 	if author.Vip != nil && author.Vip.NicknameColor != "" {
@@ -225,4 +226,23 @@ func BuildCardPage(item DynamicItem) ([]byte, error) {
 		return nil, fmt.Errorf("biliwatch: 模板执行失败: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+func toInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		var i int
+		fmt.Sscanf(n, "%d", &i)
+		return i
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
 }

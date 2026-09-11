@@ -163,13 +163,14 @@ func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activit
 	now := f.cfg.Now()
 	msg := f.message(a, now)
 
-	if len(f.cfg.Targets) == 0 {
+	targets := f.targets(api)
+	if len(targets) == 0 {
 		f.cfg.Logf("calexpiry: 未配置提醒目标，只记日志 → %s", text.OneLine(msg))
 		f.markSent(a.ID, now)
 		return nil
 	}
 
-	for _, target := range f.cfg.Targets {
+	for _, target := range targets {
 		// Topic 相同 + Mergeable：同一轮里多个活动一起到期时，队列把它们合成一条发出去
 		item := queue.Item{
 			ID:        "expiry:" + a.ID + "@" + target,
@@ -183,8 +184,17 @@ func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activit
 		}
 	}
 	f.markSent(a.ID, now)
-	f.cfg.Logf("calexpiry: 已提醒 %s（%s），投给 %d 个目标", a.ID, a.Title, len(f.cfg.Targets))
+	f.cfg.Logf("calexpiry: 已提醒 %s（%s），投给 %d 个目标", a.ID, a.Title, len(targets))
 	return nil
+}
+
+func (f *feature) targets(api kernel.API) []string {
+	if api != nil {
+		if t := api.Targets(); len(t) > 0 {
+			return t
+		}
+	}
+	return f.cfg.Targets
 }
 
 func (f *feature) message(a calendar.Activity, now time.Time) string {

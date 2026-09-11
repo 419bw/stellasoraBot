@@ -19,6 +19,7 @@ internal/
   store/                  ← bbolt Doc 接口 + 实现 + memDoc 测试替身
   kernel/                 ← 可插拔 Feature 运行时
     calendar/             ← 内存时间索引（二分查询，View/Writer 拆分）
+    target/               ← 推送目标管理（持久化 + 内存镜像，View/Manager 拆分）
     queue/                ← 发送队列（多维限流、合并、退避重试）
     schedule/             ← 最小堆调度器（动态改期/取消）
   command/                ← 命令机制层（注册表 + dispatch + 被动回复铁律）
@@ -28,6 +29,7 @@ internal/
   feature/                ← 业务功能
     calquery/             ← 查活动（活动/快结束/即将/帮助）
     calops/               ← 运维操作（待确认/覆盖/确认/隐藏/显示）
+    pushops/              ← 推送设置（push on/off 控制群推送开关）
     calexpiry/            ← 到期提醒（定时扫描 + 主动推送）
     text/                 ← 文本工具
   devtools/               ← 开发辅助（qqsim payload 生成器 + loadtest 框架）
@@ -42,11 +44,13 @@ internal/
 
 | 基础设施 | 暴露接口 | 消费者 |
 |----------|---------|--------|
-| store | `Doc` (Get/Put/Scan/Delete/Batch) | annsync, calops, calexpiry |
+| store | `Doc` (Get/Put/Scan/Delete/Batch) | annsync, calops, calexpiry, target |
 | calendar | `View` (Active/EndingSoon/StartingSoon/All) | calquery |
 | calendar | `Writer` (BulkUpsert/Upsert/Remove) | annsync |
-| kernel | `API` (Submit/Schedule/Cancel/Calendar) | Feature.Start() 参数 |
-| command | `Registrar` (Add)、`Text(fn)` 适配 | calquery, calops, calposter |
+| target | `View` (Targets/Has) | kernel.API (calexpiry, calposter) |
+| target | `Manager` (Enable/Disable/List) | pushops |
+| kernel | `API` (Submit/Schedule/Cancel/Calendar/Targets) | Feature.Start() 参数 |
+| command | `Registrar` (Add)、`Text(fn)` 适配 | calquery, calops, calposter, pushops |
 | stellasora | `Source` (Name/List/Fetch) | annsync |
 | render | `Page(Dataset, 模板)` + `Browser.Capture(页面, 锚点)` | feature 层 |
 
@@ -60,6 +64,11 @@ internal/
 且要背一份字体子集与绘制代码，已撤。几何真相只留 `internal/render/template.html` 这一份。）
 
 关掉一个功能 = 删掉 main.go 里对应那行 `rt.Register(...)`。它的命令、定时任务、命名空间写入一起停。
+
+### 推送目标管理与伸缩性思考（为什么单机内存镜像 + 队列，而不是外部 Pub/Sub）
+- **容量与开销**：单机维护上万个群/私聊目标（`g:...`、`u:...`）在 Go 内存中仅耗费约 1MB 内存，切片遍历投递耗时仅数毫秒。对单机独立运行或轻量终端（如 VPS、手机 Termux）而言，引入外部 MQ（Kafka/RabbitMQ/Redis）会带来沉重的运维负担与内存底噪，违背轻量化、零外部依赖的初衷。
+- **物理瓶颈在平台**：主动推送的真正瓶颈从来不是内存遍历，而是 QQ 官方开放平台的出站发信频控与网络 I/O。本架构下游通过 `internal/kernel/queue` 的令牌桶流控、单群合并、退避重试与 Deadline 超时丢弃来平抑流量峰值。
+- **接口保留演进通道**：`target.View` / `target.Manager` 与 `kernel.API` 彻底屏蔽了底层实现。若未来业务规模扩大需要多机集群，只需将底层适配为分布式存储/消息总线，所有上层业务功能（calexpiry, calposter, pushops）无需改动一行代码。
 
 ## 数据流
 

@@ -85,7 +85,7 @@ func TestFeatureSeamWiresThrough(t *testing.T) {
 	sink := newLoadSink()
 	p := queue.DefaultPolicy()
 	p.MergeWindow = time.Millisecond
-	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore())
+	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore(), nil)
 
 	ran := make(chan struct{})
 	r.Register(NewFeature("demo", func(ctx context.Context, api API) error {
@@ -142,7 +142,7 @@ func TestFeatureSeamWiresThrough(t *testing.T) {
 }
 
 func TestFeatureStartErrorAbortsRun(t *testing.T) {
-	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore())
+	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), nil)
 	r.Register(NewFeature("broken", func(context.Context, API) error {
 		return errors.New("配置缺失")
 	}))
@@ -171,7 +171,7 @@ func TestFloodNoLossNoDuplicate(t *testing.T) {
 	p.TargetPerDay = 0
 	p.QueueSize = 8192
 
-	r := NewRuntime(flakySink{sink: sink, latency: 200 * time.Microsecond}, p, calendar.NewStore())
+	r := NewRuntime(flakySink{sink: sink, latency: 200 * time.Microsecond}, p, calendar.NewStore(), nil)
 	r.Register(NewFeature("flood", func(ctx context.Context, api API) error {
 		go func() {
 			for g := 0; g < groups; g++ {
@@ -238,7 +238,7 @@ func TestFloodWithFailuresIsFullyAccounted(t *testing.T) {
 
 	p := generousPolicy()
 	p.MaxAttempts = 4
-	r := NewRuntime(flakySink{sink: sink, failEvery: 7, latency: time.Millisecond}, p, calendar.NewStore())
+	r := NewRuntime(flakySink{sink: sink, failEvery: 7, latency: time.Millisecond}, p, calendar.NewStore(), nil)
 	r.Register(NewFeature("flood-fail", func(ctx context.Context, api API) error {
 		go func() {
 			for g := 0; g < groups; g++ {
@@ -313,7 +313,7 @@ func TestPlatformQuotaUnderFlood(t *testing.T) {
 	p.Deadline = time.Second // 发不出去的很快就该被丢弃
 	p.QueueSize = 8192
 
-	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore())
+	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore(), nil)
 	r.Register(NewFeature("quota-flood", func(ctx context.Context, api API) error {
 		go func() {
 			for g := 0; g < groups; g++ {
@@ -428,7 +428,7 @@ func TestCalendarQueryLatency(t *testing.T) {
 // ---------- 提醒触发抖动 ----------
 
 func TestReminderJitterUnderLoad(t *testing.T) {
-	r := NewRuntime(flakySink{sink: newLoadSink(), latency: time.Millisecond}, generousPolicy(), calendar.NewStore())
+	r := NewRuntime(flakySink{sink: newLoadSink(), latency: time.Millisecond}, generousPolicy(), calendar.NewStore(), nil)
 	apiCh := make(chan API, 1)
 	var deltas []time.Duration
 	var mu sync.Mutex
@@ -594,3 +594,33 @@ func percentiles(d []time.Duration) (p50, p99 time.Duration) {
 	sort.Slice(c, func(i, j int) bool { return c[i] < c[j] })
 	return c[len(c)*50/100], c[min(len(c)*99/100, len(c)-1)]
 }
+
+type dummyTargetView struct{ list []string }
+
+func (d dummyTargetView) Targets() []string     { return d.list }
+func (d dummyTargetView) Has(target string) bool { return true }
+
+func TestAPITargetsSeam(t *testing.T) {
+	tv := dummyTargetView{list: []string{"g:1", "u:2"}}
+	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), tv)
+
+	got := make(chan []string, 1)
+	r.Register(NewFeature("target-check", func(ctx context.Context, api API) error {
+		got <- api.Targets()
+		return nil
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = r.Run(ctx) }()
+
+	select {
+	case targets := <-got:
+		if len(targets) != 2 || targets[0] != "g:1" || targets[1] != "u:2" {
+			t.Errorf("api.Targets() = %v, 期望 [g:1 u:2]", targets)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 api.Targets() 超时")
+	}
+}
+

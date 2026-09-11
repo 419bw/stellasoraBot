@@ -395,13 +395,14 @@ func (p *Poster) push(_ context.Context, key string) error {
 	if p.done(key) {
 		return nil
 	}
-	if len(p.cfg.Targets) == 0 {
+	targets := p.targets()
+	if len(targets) == 0 {
 		p.cfg.Logf("calposter: 没配推图目标，版本 %s 的图只记日志", key)
 		p.markSent(key)
 		return nil
 	}
 	var errs []error
-	for _, target := range p.cfg.Targets {
+	for _, target := range targets {
 		item := queue.Item{
 			ID:     "poster:" + key + "@" + target,
 			Target: target,
@@ -417,6 +418,15 @@ func (p *Poster) push(_ context.Context, key string) error {
 		return fmt.Errorf("calposter: %v", errors.Join(errs...))
 	}
 	return nil
+}
+
+func (p *Poster) targets() []string {
+	if p.api != nil {
+		if t := p.api.Targets(); len(t) > 0 {
+			return t
+		}
+	}
+	return p.cfg.Targets
 }
 
 // MarkPushed 由发送侧在"这条真的发出去了"之后调用：这是账本唯一的写入口。

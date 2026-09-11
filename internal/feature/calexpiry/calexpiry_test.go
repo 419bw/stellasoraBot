@@ -61,6 +61,7 @@ type fakeAPI struct {
 	sched schedule.Scheduler
 
 	mu        sync.Mutex
+	targets   []string
 	submitted []queue.Item
 	submitErr error
 	tasks     map[string]fakeTask
@@ -103,6 +104,7 @@ func (a *fakeAPI) Cancel(id string) bool {
 
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
+func (a *fakeAPI) Targets() []string             { return a.targets }
 
 // fire 手动触发一个排期任务，模拟调度器到点。
 func (a *fakeAPI) fire(id string) error {
@@ -577,3 +579,31 @@ func TestPrunesOrphanedRecordsFromDoc(t *testing.T) {
 		t.Error("近期孤立记录在保护期内不应被清理")
 	}
 }
+
+func TestExpiryUsesAPITargets(t *testing.T) {
+	r := newRig(t)
+	api := newAPI(r.cal)
+	api.targets = []string{"g:DYNAMIC_GROUP"}
+
+	// Config.Targets 留空，但 api.Targets() 有值
+	r.start(t, api)
+
+	waitFor(t, "soonID 已排期", func() bool {
+		_, ok := api.atOf(taskID(soonID))
+		return ok
+	})
+
+	if err := api.fire(taskID(soonID)); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+
+	sub := api.items()
+	if len(sub) != 1 {
+		t.Fatalf("期望投递 1 条，实际投递 %d 条", len(sub))
+	}
+	if sub[0].Target != "g:DYNAMIC_GROUP" {
+		t.Errorf("投递目标 = %q，期望 g:DYNAMIC_GROUP", sub[0].Target)
+	}
+}
+
+

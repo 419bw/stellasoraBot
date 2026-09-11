@@ -31,9 +31,11 @@ import (
 	"xingta/internal/feature/calops"
 	"xingta/internal/feature/calposter"
 	"xingta/internal/feature/calquery"
+	"xingta/internal/feature/pushops"
 	"xingta/internal/kernel"
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
+	"xingta/internal/kernel/target"
 	"xingta/internal/qq"
 	"xingta/internal/render"
 	"xingta/internal/stellasora"
@@ -96,6 +98,11 @@ func run() error {
 
 	cal := calendar.NewStore() // 同时满足 calendar.View（给功能）与 calendar.Writer（给同步引擎）
 
+	targetStore, err := target.NewStore(doc, targets)
+	if err != nil {
+		return fmt.Errorf("初始化推送目标存储失败: %w", err)
+	}
+
 	client := qq.NewClientAt(creds.AppID, creds.AppSecret, *apiBase)
 	// 命令回图走带 file_info 缓存的发送器：同字节命中就跳过四步上传；缓存那份被平台
 	// 判死时 command.reply 会 Forget + 就地重传。主动推送那条路仍用裸 client——
@@ -135,7 +142,7 @@ func run() error {
 		logf("没给 -chrome，日历图功能不启用（「日历」命令与版本推图都不会有；到期提醒照常）")
 	}
 
-	rt := kernel.NewRuntime(activeSink{client: client, poster: poster}, queue.DefaultPolicy(), cal)
+	rt := kernel.NewRuntime(activeSink{client: client, poster: poster}, queue.DefaultPolicy(), cal, targetStore)
 	rt.Register(sync)
 	rt.Register(calquery.New(reg, cal, calquery.Config{
 		Zone:   zone,
@@ -148,6 +155,7 @@ func run() error {
 	rt.Register(calops.New(doc, reg, calops.Config{
 		Source: src.Name(), Zone: zone, Refresh: sync, Logf: logf,
 	}))
+	rt.Register(pushops.New(reg, targetStore, pushops.Config{Logf: logf}))
 	if poster != nil {
 		rt.Register(poster)
 	}
@@ -172,10 +180,11 @@ func run() error {
 		Logf:    func(format string, args ...any) { logf("[网关] "+format, args...) },
 	})
 
+	activeTargets := targetStore.Targets()
 	logf("数据库: %s｜时区: %s｜刷新: %s｜提醒: 提前 %s，每 %s 扫一次｜主动消息 %d 个目标｜日历图: %s",
-		*dbPath, zone.String(), *refresh, *lead, *scan, len(targets), map[bool]string{true: *chrome, false: "未启用"}[poster != nil])
-	if len(targets) == 0 {
-		logf("没配 -push，主动消息只写日志不发送")
+		*dbPath, zone.String(), *refresh, *lead, *scan, len(activeTargets), map[bool]string{true: *chrome, false: "未启用"}[poster != nil])
+	if len(activeTargets) == 0 {
+		logf("当前无主动推送目标（群管可在群内发 push on 开启，或启动时传 -push），主动消息暂不发送")
 	}
 	logf("命令: %s", strings.ReplaceAll(reg.HelpText(), "\n", "／"))
 	logf("开始监听，Ctrl-C 退出。去 @ 机器人发「帮助」看看。")

@@ -29,6 +29,7 @@ type fakeAPI struct {
 	sched schedule.Scheduler
 
 	mu        sync.Mutex
+	targets   []string
 	submitted []queue.Item
 	tasks     map[string]func(context.Context) error
 	at        map[string]time.Time
@@ -58,6 +59,7 @@ func (a *fakeAPI) Schedule(id string, at time.Time, fn func(context.Context) err
 func (a *fakeAPI) Cancel(string) bool            { return false }
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
+func (a *fakeAPI) Targets() []string             { return a.targets }
 
 // fire 触发并消费掉一个排期，与真调度器一致：跑完就不再排着。
 func (a *fakeAPI) fire(id string) error {
@@ -616,3 +618,29 @@ func TestArtCacheSurvivesRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestPosterUsesAPITargets(t *testing.T) {
+	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
+	cap := &fakeCap{}
+	// Config.Targets 为空
+	p, api := featureFor(t, recs, cap, storetest.NewMem(), at("2026-09-08 08:00"))
+	// 但 api.targets 设置了动态目标
+	api.targets = []string{"g:DYNAMIC_POSTER_GROUP"}
+
+	p.round(context.Background())
+
+	want := "poster:202609071600"
+	if err := api.fire(want); err != nil {
+		t.Fatal(err)
+	}
+
+	items := api.items()
+	if len(items) != 1 {
+		t.Fatalf("期望投递 1 条，实际投递 %d 条", len(items))
+	}
+	if items[0].Target != "g:DYNAMIC_POSTER_GROUP" {
+		t.Errorf("投递目标 = %q，期望 g:DYNAMIC_POSTER_GROUP", items[0].Target)
+	}
+}
+
+

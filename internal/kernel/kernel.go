@@ -10,6 +10,7 @@ import (
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
 	"xingta/internal/kernel/schedule"
+	"xingta/internal/kernel/target"
 )
 
 // API 是内核交给一个功能使用的能力面。
@@ -20,6 +21,7 @@ type API interface {
 	Cancel(id string) bool
 	Calendar() calendar.View
 	Scheduler() schedule.Scheduler
+	Targets() []string
 }
 
 // Feature 是一个可插拔功能单元（B 站动态、游戏公告、日历提醒……）。
@@ -35,14 +37,16 @@ type Runtime struct {
 	sched    schedule.Scheduler
 	queue    *queue.Dispatcher
 	cal      calendar.View
+	targets  target.View
 	features []Feature
 }
 
-func NewRuntime(sink queue.Sink, p queue.Policy, cal calendar.View) *Runtime {
+func NewRuntime(sink queue.Sink, p queue.Policy, cal calendar.View, targets target.View) *Runtime {
 	return &Runtime{
-		sched: schedule.New(),
-		queue: queue.New(sink, p),
-		cal:   cal,
+		sched:   schedule.New(),
+		queue:   queue.New(sink, p),
+		cal:     cal,
+		targets: targets,
 	}
 }
 
@@ -93,6 +97,13 @@ func (a *api) Cancel(id string) bool { return a.runtime.sched.Cancel(id) }
 
 func (a *api) Calendar() calendar.View       { return a.runtime.cal }
 func (a *api) Scheduler() schedule.Scheduler { return a.runtime.sched }
+
+func (a *api) Targets() []string {
+	if a.runtime.targets == nil {
+		return nil
+	}
+	return a.runtime.targets.Targets()
+}
 
 var (
 	_ API     = (*api)(nil)

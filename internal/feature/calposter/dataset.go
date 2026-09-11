@@ -414,9 +414,18 @@ func inlineArt(ctx context.Context, list []Record, opt Options) {
 							b, fromCache, fail = call.b, call.err == nil, call.err
 						} else {
 							cctx, cancel := context.WithTimeout(ctx, opt.PerImage)
-							got, alt, err := fetchArt(cctx, opt.HTTPClient, url, opt.AltArt)
-							cancel()
-							opt.Art.end(url, call, got, err)
+							var (
+								got []byte
+								alt bool
+								err error
+							)
+							func() {
+								defer func() {
+									cancel()
+									opt.Art.end(url, call, got, err)
+								}()
+								got, alt, err = fetchArt(cctx, opt.HTTPClient, url, opt.AltArt)
+							}()
 							b, viaAlt, fail = got, alt, err
 							switch {
 							case err != nil:
@@ -538,6 +547,7 @@ func get(ctx context.Context, client *http.Client, url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))

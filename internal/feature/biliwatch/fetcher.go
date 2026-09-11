@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -177,13 +178,17 @@ func (c *HTTPClient) FetchLatest(ctx context.Context, uid string) ([]DynamicItem
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("biliwatch: 动态接口返回 HTTP %d", resp.StatusCode)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return nil, fmt.Errorf("biliwatch: 读取动态响应失败: %w", err)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		snippet := strings.TrimSpace(string(body))
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "..."
+		}
+		return nil, fmt.Errorf("biliwatch: 动态接口返回 HTTP %d: %s", resp.StatusCode, snippet)
 	}
 
 	var feed DynamicFeedResp

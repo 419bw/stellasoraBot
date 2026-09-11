@@ -201,16 +201,18 @@ func (p *Poster) image(ctx context.Context, key string, fetch bool) ([]byte, err
 	p.calls[key] = c
 	p.mu.Unlock()
 
-	c.out, c.err = p.draw(ctx, recs, key, bucket, fetch)
+	defer func() {
+		p.mu.Lock()
+		delete(p.calls, key)
+		if c.err == nil && len(c.out) > 0 {
+			p.shots[key] = shot{token: token, data: c.out}
+			p.built++
+		}
+		p.mu.Unlock()
+		c.wg.Done()
+	}()
 
-	p.mu.Lock()
-	delete(p.calls, key)
-	if c.err == nil {
-		p.shots[key] = shot{token: token, data: c.out}
-		p.built++
-	}
-	p.mu.Unlock()
-	c.wg.Done()
+	c.out, c.err = p.draw(ctx, recs, key, bucket, fetch)
 	return c.out, c.err
 }
 

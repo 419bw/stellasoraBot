@@ -249,7 +249,7 @@ main.activeSink
 | file_info 内容缓存 | `internal/qq/mediacache_test.go`（同字节只合并一次、异字节各传、ttl 上限过期重传、群/单聊与不同目标隔离、Forget 后重传；`IsPlatformRejection` 只认平台明确回拒）+ `internal/command/command_test.go`（命中缓存被拒→Forget+重传再发一次；网络错不重试；新上传那份被拒不重传）；负对照 `python .probe/mutate/cachemutate.py` | 任何环境 |
 | 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG（5 分钟桶）与海报两级缓存、singleflight、推图排期与账本；负对照 `python .probe/mutate/pushmutate.py`） | 任何环境 |
 | 抓取只在后台 | `internal/feature/calposter/*_test.go`（命令路径零网络请求、缺海报照常出图、预热抓到才带图、失败按 RetryAfter 冷却、并发预热同 URL 只抓一次；海报取字节先问原地址、被拒才换候选域、两边都失败才画占位；负对照 `python .probe/mutate/artmutate.py`） | 任何环境 |
-| 入口阻塞压测 | `go run ./.probe/posterload -mode=stall|ws|warm|chrome`（真 Hub + 真命令表 + 真 calposter，画布是可控耗时假件；量排队等待、心跳间隔、判死、预热开销、并发浏览器进程数） | 本机 |
+| 入口阻塞压测 | `go run ./.probe/posterload -mode=stall\|ws\|warm\|chrome`（真 Hub + 真命令表 + 真 calposter，画布是可控耗时假件；量排队等待、心跳间隔、判死、预热开销、并发浏览器进程数） | 本机 |
 | 平台模拟与端到端 | `cmd/qqsim` + `cmd/xingtabot -creds` | 本机沙箱与真连验证 |
 | 真库真浏览器出图 | `go run ./cmd/calshot -db .probe/livesync.db -repeat 3`（三段耗时打进日志；-noart 只核结构） | 本机 Chrome |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |

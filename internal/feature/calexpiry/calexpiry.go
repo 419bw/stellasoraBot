@@ -19,6 +19,7 @@ import (
 	"xingta/internal/kernel"
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
+	"xingta/internal/kernel/target"
 	"xingta/internal/store"
 )
 
@@ -88,6 +89,11 @@ func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	if api == nil {
 		return errors.New("calexpiry: 需要 kernel.API 才能排期与投递")
 	}
+	_ = api.RegisterTopic(target.Topic{
+		Key:  "expiry",
+		Name: "活动到期提醒",
+		Desc: "活动结束前48小时文字提醒",
+	})
 	if err := f.loadSent(); err != nil {
 		return fmt.Errorf("calexpiry: 读已提醒记录: %w", err)
 	}
@@ -190,7 +196,7 @@ func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activit
 
 func (f *feature) targets(api kernel.API) []string {
 	if api != nil {
-		if t := api.Targets(); len(t) > 0 {
+		if t := api.TargetsFor("expiry"); len(t) > 0 {
 			return t
 		}
 	}

@@ -124,3 +124,108 @@ func TestStorePersistenceAcrossRestarts(t *testing.T) {
 		t.Errorf("s2 Targets() = %v, 期望 [g:G2]", s2.Targets())
 	}
 }
+
+func TestStoreMultiTopic(t *testing.T) {
+	doc := storetest.NewMem()
+	s, err := target.NewStore(doc, nil)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// 注册两个主题
+	t1 := target.Topic{Key: "expiry", Name: "活动到期提醒", Desc: "提醒"}
+	t2 := target.Topic{Key: "poster", Name: "版本日历海报", Desc: "海报"}
+	if err := s.RegisterTopic(t1); err != nil {
+		t.Fatalf("RegisterTopic(expiry): %v", err)
+	}
+	if err := s.RegisterTopic(t2); err != nil {
+		t.Fatalf("RegisterTopic(poster): %v", err)
+	}
+
+	topics := s.Topics()
+	if len(topics) != 2 || topics[0].Key != "expiry" || topics[1].Key != "poster" {
+		t.Fatalf("Topics() = %+v, 期望 [expiry, poster]", topics)
+	}
+	if meta, ok := s.Topic("expiry"); !ok || meta.Name != "活动到期提醒" {
+		t.Errorf("Topic(expiry) = %+v, ok=%v", meta, ok)
+	}
+
+	// 单独给 G1 开启 expiry
+	if err := s.EnableTopic("g:G1", "expiry"); err != nil {
+		t.Fatalf("EnableTopic: %v", err)
+	}
+	// 给 G2 全开
+	if err := s.Enable("g:G2"); err != nil {
+		t.Fatalf("Enable G2: %v", err)
+	}
+
+	// 状态断言
+	if !s.HasTopic("g:G1", "expiry") || s.HasTopic("g:G1", "poster") {
+		t.Errorf("G1 主题状态异常")
+	}
+	if !s.HasTopic("g:G2", "expiry") || !s.HasTopic("g:G2", "poster") {
+		t.Errorf("G2 主题状态异常")
+	}
+
+	if !reflect.DeepEqual(s.TopicsOf("g:G1"), []string{"expiry"}) {
+		t.Errorf("TopicsOf(G1) = %v, 期望 [expiry]", s.TopicsOf("g:G1"))
+	}
+	if !reflect.DeepEqual(s.TopicsOf("g:G2"), []string{"expiry", "poster"}) {
+		t.Errorf("TopicsOf(G2) = %v, 期望 [expiry, poster]", s.TopicsOf("g:G2"))
+	}
+
+	if !reflect.DeepEqual(s.TargetsFor("expiry"), []string{"g:G1", "g:G2"}) {
+		t.Errorf("TargetsFor(expiry) = %v", s.TargetsFor("expiry"))
+	}
+	if !reflect.DeepEqual(s.TargetsFor("poster"), []string{"g:G2"}) {
+		t.Errorf("TargetsFor(poster) = %v", s.TargetsFor("poster"))
+	}
+
+	// 关闭 G2 的 poster
+	existed, err := s.DisableTopic("g:G2", "poster")
+	if err != nil || !existed {
+		t.Fatalf("DisableTopic poster on G2: existed=%v, err=%v", existed, err)
+	}
+	if s.HasTopic("g:G2", "poster") {
+		t.Errorf("G2 poster 被关闭后不应再开启")
+	}
+	if !reflect.DeepEqual(s.TargetsFor("poster"), []string{}) {
+		t.Errorf("TargetsFor(poster) 期望为空，实际 = %v", s.TargetsFor("poster"))
+	}
+
+	// 关闭 G1 的 expiry（关闭仅剩的主题应使目标完全移除）
+	existed, err = s.DisableTopic("g:G1", "expiry")
+	if err != nil || !existed {
+		t.Fatalf("DisableTopic expiry on G1: existed=%v, err=%v", existed, err)
+	}
+	if s.Has("g:G1") {
+		t.Errorf("G1 关闭所有主题后应该被彻底移除")
+	}
+}
+
+func TestStaticSeedTopics(t *testing.T) {
+	doc := storetest.NewMem()
+	s, err := target.NewStore(doc, []string{"g:STATIC"})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// 此时注册主题，静态目标自动挂载
+	if err := s.RegisterTopic(target.Topic{Key: "expiry", Name: "活动"}); err != nil {
+		t.Fatalf("RegisterTopic: %v", err)
+	}
+	if !s.HasTopic("g:STATIC", "expiry") {
+		t.Errorf("静态目标应自动拥有新注册的主题")
+	}
+	if !reflect.DeepEqual(s.TargetsFor("expiry"), []string{"g:STATIC"}) {
+		t.Errorf("TargetsFor(expiry) 期望包含静态目标")
+	}
+
+	// 允许单独关闭静态目标的某主题
+	if _, err := s.DisableTopic("g:STATIC", "expiry"); err != nil {
+		t.Fatalf("DisableTopic: %v", err)
+	}
+	if s.HasTopic("g:STATIC", "expiry") {
+		t.Errorf("静态目标关闭主题后不应再生效")
+	}
+}

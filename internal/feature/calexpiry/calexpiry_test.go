@@ -13,6 +13,7 @@ import (
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
 	"xingta/internal/kernel/schedule"
+	"xingta/internal/kernel/target"
 	"xingta/internal/store/storetest"
 )
 
@@ -104,7 +105,10 @@ func (a *fakeAPI) Cancel(id string) bool {
 
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
-func (a *fakeAPI) Targets() []string             { return a.targets }
+func (a *fakeAPI) Targets() []string                 { return a.targets }
+func (a *fakeAPI) TargetsFor(topic string) []string  { return a.targets }
+func (a *fakeAPI) RegisterTopic(t target.Topic) error { return nil }
+func (a *fakeAPI) Topics() []target.Topic            { return nil }
 
 // fire 手动触发一个排期任务，模拟调度器到点。
 func (a *fakeAPI) fire(id string) error {

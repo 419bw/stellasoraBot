@@ -22,6 +22,9 @@ type API interface {
 	Calendar() calendar.View
 	Scheduler() schedule.Scheduler
 	Targets() []string
+	TargetsFor(topic string) []string
+	RegisterTopic(t target.Topic) error
+	Topics() []target.Topic
 }
 
 // Feature 是一个可插拔功能单元（B 站动态、游戏公告、日历提醒……）。
@@ -103,6 +106,27 @@ func (a *api) Targets() []string {
 		return nil
 	}
 	return a.runtime.targets.Targets()
+}
+
+func (a *api) TargetsFor(topic string) []string {
+	if a.runtime.targets == nil {
+		return nil
+	}
+	return a.runtime.targets.TargetsFor(topic)
+}
+
+func (a *api) RegisterTopic(t target.Topic) error {
+	if mgr, ok := a.runtime.targets.(target.Manager); ok {
+		return mgr.RegisterTopic(t)
+	}
+	return nil
+}
+
+func (a *api) Topics() []target.Topic {
+	if mgr, ok := a.runtime.targets.(target.Manager); ok {
+		return mgr.Topics()
+	}
+	return nil
 }
 
 var (

@@ -17,6 +17,7 @@ import (
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
 	"xingta/internal/kernel/schedule"
+	"xingta/internal/kernel/target"
 	"xingta/internal/qq"
 	"xingta/internal/store"
 	"xingta/internal/store/storetest"
@@ -60,6 +61,14 @@ func (a *fakeAPI) Cancel(string) bool            { return false }
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
 func (a *fakeAPI) Targets() []string             { return a.targets }
+func (a *fakeAPI) TargetsFor(topic string) []string {
+	if topic == "poster" {
+		return a.targets
+	}
+	return nil
+}
+func (a *fakeAPI) RegisterTopic(t target.Topic) error { return nil }
+func (a *fakeAPI) Topics() []target.Topic            { return nil }
 
 // fire 触发并消费掉一个排期，与真调度器一致：跑完就不再排着。
 func (a *fakeAPI) fire(id string) error {

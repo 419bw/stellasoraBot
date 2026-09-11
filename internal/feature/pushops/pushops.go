@@ -57,7 +57,7 @@ func (f *feature) Start(ctx context.Context, _ kernel.API) error {
 	cmd := command.Cmd{
 		Name:  "push",
 		Admin: true,
-		Usage: "push on/off 控制本群主动推送；单独发送 push 查看状态",
+		Usage: "push on/off [功能] 控制本群主动推送；单独发送 push 查看状态",
 		Run:   command.Text(f.handlePush),
 	}
 	return f.reg.Add(cmd)
@@ -76,27 +76,92 @@ func (f *feature) handlePush(ctx context.Context, m *qq.Message, args []string) 
 
 	switch sub {
 	case "", "status":
-		if f.mgr.Has(targetID) {
-			return "本群主动推送已开启。\n（包含活动到期提醒与版本日历图；发送 push off 可关闭）", nil
-		}
-		return "本群主动推送已关闭。\n（发送 push on 可开启）", nil
+		return f.renderStatus(targetID), nil
 
 	case "on":
-		if err := f.mgr.Enable(targetID); err != nil {
-			return "", fmt.Errorf("开启推送失败: %w", err)
+		if len(args) == 1 || strings.ToLower(strings.TrimSpace(args[1])) == "all" {
+			if err := f.mgr.Enable(targetID); err != nil {
+				return "", fmt.Errorf("开启推送失败: %w", err)
+			}
+			f.cfg.Logf("pushops: 群 %s 开启全部主动推送", m.GroupOpenID)
+			return "本群主动推送已全部开启。\n提示：请确保群管理员已在 QQ 群设置中开启机器人的「允许主动发送消息」权限。", nil
 		}
-		f.cfg.Logf("pushops: 群 %s 开启主动推送", m.GroupOpenID)
-		return "本群主动推送已开启（包含活动到期提醒与版本日历图）。\n提示：请确保群管理员已在 QQ 群设置中开启机器人的「允许主动发送消息」权限。", nil
+
+		topicKey := strings.ToLower(strings.TrimSpace(args[1]))
+		topic, ok := f.mgr.Topic(topicKey)
+		if !ok {
+			return fmt.Errorf("未知功能 %q。当前可用功能：%s", topicKey, f.availableTopicKeys()).Error(), nil
+		}
+
+		if err := f.mgr.EnableTopic(targetID, topicKey); err != nil {
+			return "", fmt.Errorf("开启指定推送失败: %w", err)
+		}
+		f.cfg.Logf("pushops: 群 %s 开启「%s (%s)」主动推送", m.GroupOpenID, topic.Name, topic.Key)
+		return fmt.Sprintf("已开启本群「%s (%s)」主动推送。\n提示：请确保群管理员已在 QQ 群设置中开启机器人的「允许主动发送消息」权限。", topic.Name, topic.Key), nil
 
 	case "off":
-		existed, err := f.mgr.Disable(targetID)
-		if err != nil {
-			return "", fmt.Errorf("关闭推送失败: %w", err)
+		if len(args) == 1 || strings.ToLower(strings.TrimSpace(args[1])) == "all" {
+			existed, err := f.mgr.Disable(targetID)
+			if err != nil {
+				return "", fmt.Errorf("关闭推送失败: %w", err)
+			}
+			f.cfg.Logf("pushops: 群 %s 关闭全部主动推送（此前开启状态: %v）", m.GroupOpenID, existed)
+			return "本群主动推送已全部关闭。", nil
 		}
-		f.cfg.Logf("pushops: 群 %s 关闭主动推送（此前开启状态: %v）", m.GroupOpenID, existed)
-		return "本群主动推送已关闭。", nil
+
+		topicKey := strings.ToLower(strings.TrimSpace(args[1]))
+		topic, ok := f.mgr.Topic(topicKey)
+		if !ok {
+			return fmt.Errorf("未知功能 %q。当前可用功能：%s", topicKey, f.availableTopicKeys()).Error(), nil
+		}
+
+		existed, err := f.mgr.DisableTopic(targetID, topicKey)
+		if err != nil {
+			return "", fmt.Errorf("关闭指定推送失败: %w", err)
+		}
+		f.cfg.Logf("pushops: 群 %s 关闭「%s (%s)」主动推送（此前开启状态: %v）", m.GroupOpenID, topic.Name, topic.Key, existed)
+		return fmt.Sprintf("已关闭本群「%s (%s)」主动推送。", topic.Name, topic.Key), nil
 
 	default:
-		return "用法：\n- push on：开启本群主动推送\n- push off：关闭本群主动推送\n- push：查看当前推送状态", nil
+		return "用法：\n- push on [功能]：开启主动推送（留空全开）\n- push off [功能]：关闭主动推送（留空全关）\n- push：查看当前推送状态", nil
 	}
+}
+
+func (f *feature) renderStatus(targetID string) string {
+	topics := f.mgr.Topics()
+	if len(topics) == 0 {
+		if f.mgr.Has(targetID) {
+			return "本群主动推送已开启。\n（发送 push off 可关闭）"
+		}
+		return "本群主动推送已关闭。\n（发送 push on 可开启）"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("本群主动推送状态：\n")
+	for _, t := range topics {
+		mark := "[✗]"
+		if f.mgr.HasTopic(targetID, t.Key) {
+			mark = "[✓]"
+		}
+		sb.WriteString(fmt.Sprintf("%s %s - %s\n", mark, t.Key, t.Name))
+	}
+
+	sb.WriteString("\n管理命令：\n")
+	sb.WriteString("- push on <功能>：开启指定推送（如 push on " + topics[0].Key + "）\n")
+	sb.WriteString("- push off <功能>：关闭指定推送\n")
+	sb.WriteString("- push on：全部开启\n")
+	sb.WriteString("- push off：全部关闭")
+	return sb.String()
+}
+
+func (f *feature) availableTopicKeys() string {
+	topics := f.mgr.Topics()
+	keys := make([]string, 0, len(topics))
+	for _, t := range topics {
+		keys = append(keys, t.Key)
+	}
+	if len(keys) == 0 {
+		return "无"
+	}
+	return strings.Join(keys, ", ")
 }

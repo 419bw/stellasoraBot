@@ -48,6 +48,8 @@ func TestPushCommandRegisteredAsAdminOnly(t *testing.T) {
 
 func TestPushToggleInGroup(t *testing.T) {
 	_, store, cmd := newTestRig(t, nil)
+	_ = store.RegisterTopic(target.Topic{Key: "expiry", Name: "活动到期提醒"})
+	_ = store.RegisterTopic(target.Topic{Key: "poster", Name: "版本日历海报"})
 
 	msgGroup := &qq.Message{
 		Kind:        qq.EventGroupAtMessage,
@@ -61,56 +63,83 @@ func TestPushToggleInGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("push status: %v", err)
 	}
-	if !strings.Contains(rep.Text, "已关闭") {
-		t.Errorf("初始状态期望已关闭，实际输出: %s", rep.Text)
+	if !strings.Contains(rep.Text, "[✗] expiry") || !strings.Contains(rep.Text, "[✗] poster") {
+		t.Errorf("初始状态期望各项均为 [✗]，实际输出:\n%s", rep.Text)
 	}
 	if store.Has("g:GRP_A") {
 		t.Error("store 不应包含 g:GRP_A")
 	}
 
-	// 2. 开启推送：push on
-	rep, err = cmd.Run(context.Background(), msgGroup, []string{"on"})
+	// 2. 单独开启 expiry：push on expiry
+	rep, err = cmd.Run(context.Background(), msgGroup, []string{"on", "expiry"})
 	if err != nil {
-		t.Fatalf("push on: %v", err)
+		t.Fatalf("push on expiry: %v", err)
 	}
-	if !strings.Contains(rep.Text, "本群主动推送已开启") {
-		t.Errorf("push on 输出未包含开启提示: %s", rep.Text)
+	if !strings.Contains(rep.Text, "已开启本群「活动到期提醒 (expiry)」主动推送") {
+		t.Errorf("push on expiry 输出未包含开启提示: %s", rep.Text)
 	}
-	if !strings.Contains(rep.Text, "允许主动发送消息") {
-		t.Errorf("push on 输出未包含权限提示: %s", rep.Text)
+	if !store.HasTopic("g:GRP_A", "expiry") {
+		t.Error("store 应该开启 expiry")
 	}
-	if !store.Has("g:GRP_A") {
-		t.Error("store 应该包含 g:GRP_A")
+	if store.HasTopic("g:GRP_A", "poster") {
+		t.Error("store 不应开启 poster")
 	}
 
-	// 3. 再次查看状态：push
+	// 3. 查看状态：push
 	rep, err = cmd.Run(context.Background(), msgGroup, []string{"status"})
 	if err != nil {
 		t.Fatalf("push status: %v", err)
 	}
-	if !strings.Contains(rep.Text, "已开启") {
-		t.Errorf("开启后期望状态为已开启，实际输出: %s", rep.Text)
+	if !strings.Contains(rep.Text, "[✓] expiry") || !strings.Contains(rep.Text, "[✗] poster") {
+		t.Errorf("期望 expiry 为 [✓] 且 poster 为 [✗]，实际输出:\n%s", rep.Text)
 	}
 
-	// 4. 关闭推送：push off
+	// 4. 全开：push on all
+	rep, err = cmd.Run(context.Background(), msgGroup, []string{"on", "all"})
+	if err != nil {
+		t.Fatalf("push on all: %v", err)
+	}
+	if !strings.Contains(rep.Text, "已全部开启") {
+		t.Errorf("push on all 输出未包含全开提示: %s", rep.Text)
+	}
+	if !store.HasTopic("g:GRP_A", "poster") || !store.HasTopic("g:GRP_A", "expiry") {
+		t.Error("全开后两者都应为 true")
+	}
+
+	// 5. 单关 poster：push off poster
+	rep, err = cmd.Run(context.Background(), msgGroup, []string{"off", "poster"})
+	if err != nil {
+		t.Fatalf("push off poster: %v", err)
+	}
+	if !strings.Contains(rep.Text, "已关闭本群「版本日历海报 (poster)」主动推送") {
+		t.Errorf("push off poster 输出错误: %s", rep.Text)
+	}
+	if store.HasTopic("g:GRP_A", "poster") {
+		t.Error("poster 应被关闭")
+	}
+	if !store.HasTopic("g:GRP_A", "expiry") {
+		t.Error("expiry 仍应保持开启")
+	}
+
+	// 6. 全关：push off
 	rep, err = cmd.Run(context.Background(), msgGroup, []string{"off"})
 	if err != nil {
 		t.Fatalf("push off: %v", err)
 	}
-	if !strings.Contains(rep.Text, "本群主动推送已关闭") {
-		t.Errorf("push off 输出未包含关闭提示: %s", rep.Text)
+	if !strings.Contains(rep.Text, "已全部关闭") {
+		t.Errorf("push off 输出未包含全关提示: %s", rep.Text)
 	}
 	if store.Has("g:GRP_A") {
-		t.Error("store 不应再包含 g:GRP_A")
+		t.Error("全关后目标应被彻底移除")
 	}
 
-	// 5. 再次查看状态
-	rep, err = cmd.Run(context.Background(), msgGroup, []string{})
+	// 7. 测试未知主题提示
+	rep, err = cmd.Run(context.Background(), msgGroup, []string{"on", "unknown_func"})
 	if err != nil {
-		t.Fatalf("push status: %v", err)
+		t.Fatalf("push on unknown: %v", err)
 	}
-	if !strings.Contains(rep.Text, "已关闭") {
-		t.Errorf("关闭后期望状态为已关闭，实际输出: %s", rep.Text)
+	if !strings.Contains(rep.Text, "未知功能 \"unknown_func\"") || !strings.Contains(rep.Text, "expiry, poster") {
+		t.Errorf("未知功能提示异常: %s", rep.Text)
 	}
 }
 

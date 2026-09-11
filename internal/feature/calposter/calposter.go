@@ -24,6 +24,7 @@ import (
 	"xingta/internal/command"
 	"xingta/internal/kernel"
 	"xingta/internal/kernel/queue"
+	"xingta/internal/kernel/target"
 	"xingta/internal/qq"
 	"xingta/internal/render"
 	"xingta/internal/store"
@@ -279,6 +280,11 @@ func (p *Poster) Start(ctx context.Context, api kernel.API) error {
 		return errors.New("calposter: 需要 kernel.API 才能排期与投递")
 	}
 	p.api = api
+	_ = api.RegisterTopic(target.Topic{
+		Key:  "poster",
+		Name: "版本日历海报",
+		Desc: "版本开启时主动推送日历海报长图",
+	})
 	if p.cfg.Reg != nil {
 		if err := p.cfg.Reg.Add(command.Cmd{
 			Name: "calendar", Usage: "当前版本的活动日历图", Run: p.calendar,
@@ -422,7 +428,7 @@ func (p *Poster) push(_ context.Context, key string) error {
 
 func (p *Poster) targets() []string {
 	if p.api != nil {
-		if t := p.api.Targets(); len(t) > 0 {
+		if t := p.api.TargetsFor("poster"); len(t) > 0 {
 			return t
 		}
 	}

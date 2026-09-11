@@ -597,16 +597,21 @@ func percentiles(d []time.Duration) (p50, p99 time.Duration) {
 
 type dummyTargetView struct{ list []string }
 
-func (d dummyTargetView) Targets() []string      { return d.list }
-func (d dummyTargetView) Has(target string) bool { return true }
+func (d dummyTargetView) Targets() []string                  { return d.list }
+func (d dummyTargetView) TargetsFor(topic string) []string  { return d.list }
+func (d dummyTargetView) Has(target string) bool             { return true }
+func (d dummyTargetView) HasTopic(target, topic string) bool { return true }
+func (d dummyTargetView) TopicsOf(target string) []string    { return []string{"default"} }
 
 func TestAPITargetsSeam(t *testing.T) {
 	tv := dummyTargetView{list: []string{"g:1", "u:2"}}
 	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), tv)
 
 	got := make(chan []string, 1)
+	gotFor := make(chan []string, 1)
 	r.Register(NewFeature("target-check", func(ctx context.Context, api API) error {
 		got <- api.Targets()
+		gotFor <- api.TargetsFor("expiry")
 		return nil
 	}))
 
@@ -621,5 +626,14 @@ func TestAPITargetsSeam(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("等待 api.Targets() 超时")
+	}
+
+	select {
+	case targets := <-gotFor:
+		if len(targets) != 2 || targets[0] != "g:1" || targets[1] != "u:2" {
+			t.Errorf("api.TargetsFor() = %v, 期望 [g:1 u:2]", targets)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 api.TargetsFor() 超时")
 	}
 }

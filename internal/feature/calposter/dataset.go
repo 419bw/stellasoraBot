@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"xingta/internal/annsync"
-	"xingta/internal/render"
 )
 
 // 这个文件是"一张卡片要画什么"的判断：哪些记录进这个版本窗、哪些算周期玩法、
@@ -97,18 +96,18 @@ func VersionKey(t time.Time) string { return t.UTC().Format(keyFmt) }
 // Windows 从活动记录里挑出版本窗口。版本边界在解析阶段就被产成一条
 // Provenance=Label 的记录（Start=玩法起, End=玩法止, ClaimEnd=兑换止），
 // 所以这里不需要第二个数据源。返回值按开启时刻升序。
-func Windows(recs []annsync.Rec, label string, zone *time.Location) []render.Window {
+func Windows(recs []annsync.Rec, label string, zone *time.Location) []Window {
 	if zone == nil {
 		zone = time.Local
 	}
-	by := map[string]render.Window{}
+	by := map[string]Window{}
 	for _, r := range versionRecs(recs, label) {
-		w := render.Window{
+		w := Window{
 			Key:    VersionKey(r.Start),
 			Name:   r.Title,
-			Start:  r.Start.In(zone).Format(render.TimeLayout),
-			End:    r.End.In(zone).Format(render.TimeLayout),
-			Until:  r.ClaimEnd.In(zone).Format(render.TimeLayout),
+			Start:  r.Start.In(zone).Format(TimeLayout),
+			End:    r.End.In(zone).Format(TimeLayout),
+			Until:  r.ClaimEnd.In(zone).Format(TimeLayout),
 			Source: r.RefID,
 		}
 		// 同一开启时刻被多篇公告声明时留兑换尾更长的那篇：窗口画宽点不伤人。
@@ -116,7 +115,7 @@ func Windows(recs []annsync.Rec, label string, zone *time.Location) []render.Win
 			by[w.Key] = w
 		}
 	}
-	out := make([]render.Window, 0, len(by))
+	out := make([]Window, 0, len(by))
 	for _, w := range by {
 		out = append(out, w)
 	}
@@ -157,15 +156,15 @@ func versionRecs(recs []annsync.Rec, label string) []annsync.Rec {
 }
 
 // Build 组装一次出图的全部输入。opt.Key 为空时按 opt.Now 取当前版本。
-func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset, error) {
+func Build(ctx context.Context, recs []annsync.Rec, opt Options) (Dataset, error) {
 	opt = opt.withDefaults()
 
 	var sel annsync.Rec
 	if opt.Key == "" {
 		r, ok := Current(recs, opt.Label, opt.Now, opt.OpenAt)
 		if !ok {
-			return render.Dataset{}, fmt.Errorf("calposter: %s 还没有任何版本开闸（%d 条记录里没有版本窗口）",
-				opt.Now.Format(render.TimeLayout), len(recs))
+			return Dataset{}, fmt.Errorf("calposter: %s 还没有任何版本开闸（%d 条记录里没有版本窗口）",
+				opt.Now.Format(TimeLayout), len(recs))
 		}
 		sel = r
 	} else {
@@ -177,17 +176,17 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset
 			}
 		}
 		if !found {
-			return render.Dataset{}, fmt.Errorf("calposter: 没有版本键 %s（%d 条记录里没有这条版本窗口）",
+			return Dataset{}, fmt.Errorf("calposter: 没有版本键 %s（%d 条记录里没有这条版本窗口）",
 				opt.Key, len(recs))
 		}
 	}
 
-	win := render.Window{
+	win := Window{
 		Key:    opt.Key,
 		Name:   sel.Title,
-		Start:  sel.Start.In(opt.Zone).Format(render.TimeLayout),
-		End:    sel.End.In(opt.Zone).Format(render.TimeLayout),
-		Until:  sel.ClaimEnd.In(opt.Zone).Format(render.TimeLayout),
+		Start:  sel.Start.In(opt.Zone).Format(TimeLayout),
+		End:    sel.End.In(opt.Zone).Format(TimeLayout),
+		Until:  sel.ClaimEnd.In(opt.Zone).Format(TimeLayout),
 		Source: sel.RefID,
 	}
 	if win.Key == "" {
@@ -199,17 +198,17 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset
 	hi := sel.ClaimEnd.Add(7 * 24 * time.Hour)
 	monthly := detectMonthly(recs, opt.Zone)
 
-	list := make([]render.Record, 0, 32)
+	list := make([]Record, 0, 32)
 	for _, r := range recs {
 		if !r.InCalendar() || r.End.Before(sel.Start) || r.Start.After(hi) {
 			continue
 		}
-		rec := render.Record{
+		rec := Record{
 			ID:    r.ID,
 			Name:  r.Title,
 			Label: r.Label,
-			Start: r.Start.In(opt.Zone).Format(render.TimeLayout),
-			End:   r.End.In(opt.Zone).Format(render.TimeLayout),
+			Start: r.Start.In(opt.Zone).Format(TimeLayout),
+			End:   r.End.In(opt.Zone).Format(TimeLayout),
 			Raw:   r.Fragment,
 			Tint:  wash(r.Title),
 			// 口径取值由模板解释（summary 走"无海报"那段说明文案），这里只照抄。
@@ -226,8 +225,8 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset
 			rec.StartKind = "fuzzy"
 		}
 		if !r.ClaimEnd.IsZero() {
-			rec.ClaimStart = r.ClaimStart.In(opt.Zone).Format(render.TimeLayout)
-			rec.ClaimEnd = r.ClaimEnd.In(opt.Zone).Format(render.TimeLayout)
+			rec.ClaimStart = r.ClaimStart.In(opt.Zone).Format(TimeLayout)
+			rec.ClaimEnd = r.ClaimEnd.In(opt.Zone).Format(TimeLayout)
 		}
 		list = append(list, rec)
 	}
@@ -242,11 +241,11 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (render.Dataset
 		}
 		return list[i].ID < list[j].ID
 	})
-	return render.Dataset{
-		Now:       opt.Now.In(opt.Zone).Format(render.TimeLayout),
+	return Dataset{
+		Now:       opt.Now.In(opt.Zone).Format(TimeLayout),
 		OpenMs:    int64(opt.OpenAt / time.Millisecond),
 		Records:   list,
-		Windows:   []render.Window{win},
+		Windows:   []Window{win},
 		Repeating: monthly,
 	}, nil
 }
@@ -391,7 +390,7 @@ func (c *ArtCache) fileOf(url string) string {
 // 抓与重试由后台预热轮（opt.Fetch=true）负责。真要抓时先问公告里给的原地址，
 // 被拒了才换候选地址再试一次（见 fetchArt）。取不到图的记录清空 Poster，
 // 模板画斜纹占位——这不是失败，维护公告切出来的条目本来就没有自己的海报。
-func inlineArt(ctx context.Context, list []render.Record, opt Options) {
+func inlineArt(ctx context.Context, list []Record, opt Options) {
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	var mu sync.Mutex

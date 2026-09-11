@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>Bilibili Dynamic</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #f1f2f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    padding: 16px;
+    display: flex;
+    justify-content: center;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: 640px;
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.07);
+    border: 1px solid #e3e5e7;
+    overflow: hidden;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    padding: 18px 20px 12px;
+  }
+  .avatar-wrap {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    margin-right: 12px;
+    flex-shrink: 0;
+  }
+  .avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid #edf0f2;
+    display: block;
+  }
+  .verify-icon {
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 17px;
+    height: 17px;
+    background: #00aeec;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .verify-icon svg {
+    width: 10px;
+    height: 10px;
+  }
+  .user-info {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .user-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .name {
+    font-size: 16px;
+    font-weight: 700;
+    color: {{.NameColor}};
+    line-height: 1.3;
+  }
+  .action-tag {
+    font-size: 13px;
+    color: #61666d;
+    font-weight: 400;
+  }
+  .vip-badge {
+    background: #fb7299;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    line-height: 1.2;
+  }
+  .time-row {
+    font-size: 12px;
+    color: #9499a0;
+    margin-top: 3px;
+  }
+  .bili-badge {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #f1f2f5;
+    border: 1px solid #e3e5e7;
+    border-radius: 999px;
+    padding: 4px 12px 4px 9px;
+    color: #00aeec;
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: -0.2px;
+  }
+  .bili-tv-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .content {
+    padding: 4px 20px 16px;
+  }
+  .text {
+    font-size: 15px;
+    line-height: 1.7;
+    color: #18191c;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .tag-topic {
+    color: #00aeec;
+    font-weight: 600;
+  }
+  .tag-at {
+    color: #00aeec;
+  }
+  .tag-link {
+    color: #00aeec;
+  }
+  .badge-lottery {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: #fff0f3;
+    color: #ff6699;
+    border: 1px solid #ffccd8;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12.5px;
+    font-weight: 600;
+    vertical-align: 1px;
+    margin-right: 4px;
+  }
+
+  /* 图片展示样式 */
+  .media-container {
+    margin-top: 12px;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .single-pic {
+    max-width: 100%;
+    max-height: 580px;
+    border-radius: 10px;
+    display: block;
+    object-fit: contain;
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+  }
+  /* 2图布局：双列 */
+  .grid-pics-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .grid-pics-2 img {
+    width: 100%;
+    aspect-ratio: 4 / 5;
+    object-fit: cover;
+    border-radius: 8px;
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+  }
+  /* 4图布局：2x2 方阵 */
+  .grid-pics-4 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    max-width: 480px;
+  }
+  .grid-pics-4 img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 8px;
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+  }
+  /* 3/5~9图布局：九宫格 */
+  .grid-pics-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .grid-pics-3 img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 6px;
+    background: #f8f9fa;
+    border: 1px solid #edf0f2;
+  }
+
+  /* 视频投稿卡片 */
+  .video-card {
+    margin-top: 12px;
+    border: 1px solid #e3e5e7;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+  .video-cover-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #18191c;
+    overflow: hidden;
+  }
+  .video-cover {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .video-duration {
+    position: absolute;
+    bottom: 10px;
+    right: 12px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #ffffff;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+  .video-stats {
+    position: absolute;
+    bottom: 10px;
+    left: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: #ffffff;
+    font-size: 12px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  }
+  .video-play-btn {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 52px;
+    height: 52px;
+    background: rgba(0, 0, 0, 0.55);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+  }
+  .video-play-btn svg {
+    width: 24px;
+    height: 24px;
+    fill: #ffffff;
+    margin-left: 3px;
+  }
+  .video-body {
+    padding: 14px 16px;
+  }
+  .video-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #18191c;
+    line-height: 1.4;
+  }
+  .video-desc {
+    font-size: 13px;
+    color: #61666d;
+    margin-top: 6px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  /* 转发卡片 */
+  .orig-card {
+    margin-top: 12px;
+    background: #f6f7f8;
+    border-radius: 10px;
+    padding: 12px 14px;
+    border: 1px solid #e8e9eb;
+  }
+  .orig-author {
+    font-size: 14px;
+    font-weight: 600;
+    color: #00aeec;
+    margin-bottom: 6px;
+  }
+  .orig-text {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #61666d;
+    white-space: pre-wrap;
+  }
+
+  /* 关联游戏/活动组件 */
+  .game-card {
+    margin-top: 14px;
+    background: #f6f7f8;
+    border: 1px solid #e3e5e7;
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .game-cover {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+  .game-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .game-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #18191c;
+    line-height: 1.3;
+  }
+  .game-desc {
+    font-size: 12px;
+    color: #9499a0;
+    margin-top: 2px;
+  }
+  .game-btn {
+    background: #00aeec;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 14px;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+
+  .footer {
+    padding: 12px 20px;
+    background: #fafbfc;
+    border-top: 1px solid #f1f2f5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #61666d;
+  }
+  .stats-group {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+  .stat-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .stat-item svg {
+    width: 15px;
+    height: 15px;
+    fill: #9499a0;
+  }
+  .dynamic-id {
+    font-size: 11px;
+    color: #9499a0;
+  }
+</style>
+</head>
+<body>
+
+<div class="card" id="card">
+  <div class="header">
+    <div class="avatar-wrap">
+      <img class="avatar" src="{{.Avatar}}" alt="头像">
+      <div class="verify-icon">
+        <svg viewBox="0 0 1024 1024"><path d="M595.6 96L234.7 544.8h211.2L341.3 928l448-522.7H552.5L682.7 96h-87.1z" fill="#fff"/></svg>
+      </div>
+    </div>
+    <div class="user-info">
+      <div class="user-row">
+        <span class="name">{{.Name}}</span>
+        {{if .Action}}
+          <span class="action-tag">{{.Action}}</span>
+        {{end}}
+        {{if .VipLabel}}
+          <span class="vip-badge">{{.VipLabel}}</span>
+        {{end}}
+      </div>
+      <div class="time-row">{{.Time}}</div>
+    </div>
+    <div class="bili-badge">
+      <svg class="bili-tv-icon" viewBox="0 0 28 28" fill="none">
+        <path d="M9 4.2l3 4.2" stroke="#00aeec" stroke-width="2.2" stroke-linecap="round"/>
+        <path d="M19 4.2l-3 4.2" stroke="#00aeec" stroke-width="2.2" stroke-linecap="round"/>
+        <rect x="3" y="7.2" width="22" height="16.8" rx="5" fill="#00aeec"/>
+        <ellipse cx="9.5" cy="14" rx="1.6" ry="2" fill="#ffffff"/>
+        <ellipse cx="18.5" cy="14" rx="1.6" ry="2" fill="#ffffff"/>
+        <path d="M12 17.2c1.2.9 2.8.9 4 0" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span>bilibili</span>
+    </div>
+  </div>
+
+  <div class="content">
+    {{if .HTMLContent}}
+      <div class="text">{{.HTMLContent}}</div>
+    {{end}}
+
+    {{if .Pics}}
+      <div class="media-container">
+        {{if eq .PicsLayout "single"}}
+          <img class="single-pic" src="{{index .Pics 0}}">
+        {{else if eq .PicsLayout "grid-2"}}
+          <div class="grid-pics-2">
+            {{range .Pics}}
+              <img src="{{.}}">
+            {{end}}
+          </div>
+        {{else if eq .PicsLayout "grid-4"}}
+          <div class="grid-pics-4">
+            {{range .Pics}}
+              <img src="{{.}}">
+            {{end}}
+          </div>
+        {{else}}
+          <div class="grid-pics-3">
+            {{range .Pics}}
+              <img src="{{.}}">
+            {{end}}
+          </div>
+        {{end}}
+      </div>
+    {{end}}
+
+    {{if .Video}}
+      <div class="video-card">
+        <div class="video-cover-wrap">
+          <img class="video-cover" src="{{.Video.Cover}}">
+          <div class="video-play-btn">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </div>
+          <div class="video-stats">
+            <span>▶ {{.Video.PlayCount}}</span>
+            <span>💬 {{.Video.DanmakuCount}}</span>
+          </div>
+          <div class="video-duration">{{.Video.Duration}}</div>
+        </div>
+        <div class="video-body">
+          <div class="video-title">{{.Video.Title}}</div>
+          {{if .Video.Desc}}
+            <div class="video-desc">{{.Video.Desc}}</div>
+          {{end}}
+        </div>
+      </div>
+    {{end}}
+
+    {{if .OrigCard}}
+      <div class="orig-card">
+        <div class="orig-author">@{{.OrigCard.AuthorName}}</div>
+        <div class="orig-text">{{.OrigCard.HTMLContent}}</div>
+        {{if .OrigCard.Pics}}
+          <div class="media-container">
+            {{if eq (len .OrigCard.Pics) 1}}
+              <img class="single-pic" src="{{index .OrigCard.Pics 0}}">
+            {{else}}
+              <div class="grid-pics-3">
+                {{range .OrigCard.Pics}}
+                  <img src="{{.}}">
+                {{end}}
+              </div>
+            {{end}}
+          </div>
+        {{end}}
+      </div>
+    {{end}}
+
+    {{if .GameCard}}
+      <div class="game-card">
+        <img class="game-cover" src="{{.GameCard.Cover}}">
+        <div class="game-info">
+          <div class="game-title">{{.GameCard.Title}}</div>
+          <div class="game-desc">{{.GameCard.Desc2}}</div>
+        </div>
+        <div class="game-btn">{{.GameCard.BtnText}}</div>
+      </div>
+    {{end}}
+  </div>
+
+  <div class="footer">
+    <div class="stats-group">
+      <div class="stat-item">
+        <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92c0-1.61-1.31-2.92-2.92-2.92z"/></svg>
+        <span>{{.Stats.Forward}}</span>
+      </div>
+      <div class="stat-item">
+        <svg viewBox="0 0 24 24"><path d="M21.99 4c0-1.1-.89-2-1.99-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4-.01-18zM18 14H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
+        <span>{{.Stats.Comment}}</span>
+      </div>
+      <div class="stat-item">
+        <svg viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/></svg>
+        <span>{{.Stats.Like}}</span>
+      </div>
+    </div>
+    <div class="dynamic-id">ID: {{.ID}}</div>
+  </div>
+</div>
+
+<script>
+window.addEventListener('load', () => {
+  const card = document.getElementById('card');
+  if (card) {
+    const rect = card.getBoundingClientRect();
+    // card width/height + 32px (16px padding on each side)
+    document.title = Math.ceil(rect.width + 32) + 'x' + Math.ceil(rect.height + 32);
+  }
+});
+</script>
+</body>
+</html>

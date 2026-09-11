@@ -11,6 +11,7 @@ package calposter
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,9 +27,11 @@ import (
 	"xingta/internal/kernel/queue"
 	"xingta/internal/kernel/target"
 	"xingta/internal/qq"
-	"xingta/internal/render"
 	"xingta/internal/store"
 )
+
+//go:embed template.html
+var defaultTemplate []byte
 
 // Capturer 是"给一页 HTML，回一张 PNG"的能力，render.Browser 天然满足。
 // 抽出来是为了单测不必真起浏览器。
@@ -82,7 +85,7 @@ func (c Config) withDefaults() Config {
 		c.Logf = func(string, ...any) {}
 	}
 	if c.Template == nil {
-		c.Template = render.Template
+		c.Template = defaultTemplate
 	}
 	return c
 }
@@ -173,14 +176,14 @@ func (p *Poster) image(ctx context.Context, key string, fetch bool) ([]byte, err
 		r, ok := Current(recs, p.cfg.Label, now, p.cfg.OpenAt)
 		if !ok {
 			return nil, fmt.Errorf("calposter: %s 还没有任何版本开闸（%d 条记录里没有版本窗口）",
-				now.In(p.cfg.Zone).Format(render.TimeLayout), len(recs))
+				now.In(p.cfg.Zone).Format(TimeLayout), len(recs))
 		}
 		key = VersionKey(r.Start)
 	}
 	// 画布与令牌共用桶起点：同一桶内画两次，字节一样，只画一次；红线一桶一跳，
 	// 亚像素级，肉眼不可见。Current 判开闸仍用真 now，版本切换不受桶影响。
 	bucket := now.Truncate(renderBucket)
-	token := fp + "|" + bucket.In(p.cfg.Zone).Format(render.TimeLayout)
+	token := fp + "|" + bucket.In(p.cfg.Zone).Format(TimeLayout)
 
 	p.mu.Lock()
 	if s, ok := p.shots[key]; ok && s.token == token {
@@ -219,7 +222,7 @@ func (p *Poster) draw(ctx context.Context, recs []annsync.Rec, key string, now t
 		return nil, err
 	}
 	assembled := time.Now()
-	page, err := render.Page(d, p.cfg.Template)
+	page, err := Page(d, p.cfg.Template)
 	if err != nil {
 		return nil, fmt.Errorf("calposter: 注入模板: %w", err)
 	}
@@ -373,7 +376,7 @@ func (p *Poster) options(key string, now time.Time, fetch bool) Options {
 func (p *Poster) armPushes(recs []annsync.Rec) {
 	now := p.cfg.Now()
 	for _, w := range Windows(recs, p.cfg.Label, p.cfg.Zone) {
-		t, err := time.ParseInLocation(render.TimeLayout, w.Start, p.cfg.Zone)
+		t, err := time.ParseInLocation(TimeLayout, w.Start, p.cfg.Zone)
 		if err != nil {
 			continue
 		}

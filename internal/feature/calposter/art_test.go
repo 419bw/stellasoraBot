@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"xingta/internal/annsync"
-	"xingta/internal/render"
 )
 
 // 这一组钉的是"抓字节"那一步的策略：原地址优先、被拒才换候选地址，以及多张海报
@@ -151,7 +150,7 @@ func TestAcceleratedPosterOnlyRewritesPosterHost(t *testing.T) {
 }
 
 // recOf 按 ID 取一条画布记录。版本窗口记录本身也在列表里，别按位置取。
-func recOf(t *testing.T, d render.Dataset, id string) render.Record {
+func recOf(t *testing.T, d Dataset, id string) Record {
 	t.Helper()
 	for _, r := range d.Records {
 		if r.ID == id {
@@ -159,12 +158,12 @@ func recOf(t *testing.T, d render.Dataset, id string) render.Record {
 		}
 	}
 	t.Fatalf("数据集里没有 %s 这条记录（共 %d 条）", id, len(d.Records))
-	return render.Record{}
+	return Record{}
 }
 
 // buildArtLog 组一个"版本窗 + n 张海报"的数据集跑一遍 Build：海报原地址指向 cd，
 // 候选地址指向 ac，最后一条的原地址故意会失败。日志按行收进 lines。
-func buildArtLog(t *testing.T, cd, ac *httptest.Server, n int, lines *[]string) render.Dataset {
+func buildArtLog(t *testing.T, cd, ac *httptest.Server, n int, lines *[]string) Dataset {
 	t.Helper()
 	recs := []annsync.Rec{
 		verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"),
@@ -196,7 +195,7 @@ func buildArtLog(t *testing.T, cd, ac *httptest.Server, n int, lines *[]string) 
 	return d
 }
 
-func buildArt(t *testing.T, cd, ac *httptest.Server, n int) render.Dataset {
+func buildArt(t *testing.T, cd, ac *httptest.Server, n int) Dataset {
 	t.Helper()
 	var lines []string
 	return buildArtLog(t, cd, ac, n, &lines)

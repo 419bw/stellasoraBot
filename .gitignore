@@ -9,6 +9,7 @@ data/
 vendor/
 out/
 bin/
+scratch/
 
 # 本地开发笔记（不入仓库）
 DEVELOPMENT-NOTES.md

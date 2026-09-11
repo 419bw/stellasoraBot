@@ -2,7 +2,6 @@ package render
 
 import (
 	"bytes"
-	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,14 +11,12 @@ import (
 	"time"
 )
 
-// Template 是日历卡片的版式与几何，唯一一份真相。机器人自己出图要用它，所以入库；
-// .probe 下的校验脚本读的是同一份。
-//
-//go:embed template.html
-var Template []byte
+// Capturer 定义从 HTML 页面与路由截取 PNG 的通用能力。
+type Capturer interface {
+	Capture(page []byte, route string) ([]byte, error)
+}
 
-// StagePad 是模板出图模式下 .stage 的内边距（12px×2）：视口要在卡片尺寸外加掉它，
-// 截出来的才正好是卡片。
+// StagePad 是出图视口的默认留白补正。
 const StagePad = 24
 
 // Browser 用无头浏览器把页面截成 PNG。

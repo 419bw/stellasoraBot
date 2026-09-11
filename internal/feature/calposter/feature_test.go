@@ -614,9 +614,6 @@ func TestArtCacheSurvivesRestart(t *testing.T) {
 			Cap: &fakeCap{}, Label: "version", Zone: zone, ArtDir: dir,
 			Client: cdn.Client(), Now: func() time.Time { return at("2026-09-08 20:00") },
 		})
-		if err := p.Start(ctx, newAPI()); err != nil {
-			t.Fatal(err)
-		}
 		p.round(ctx)
 		stop()
 		mu.Lock()

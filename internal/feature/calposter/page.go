@@ -1,9 +1,4 @@
-// Package render 产一张日历卡片：把数据集注入模板得到页面，再用无头浏览器截成 PNG。
-//
-// 它不认识"版本""活动""该不该发"：调用方把要画的东西组好交进来，它只回答
-// "这份数据 + 这个锚点 = 这些 PNG 字节"。浏览器可执行文件路径由调用方注入，
-// 包不去翻 PATH 也不猜装在哪。
-package render
+package calposter
 
 import (
 	"bytes"
@@ -47,12 +42,10 @@ type Window struct {
 
 // Dataset 是一次出图的全部输入。时间一律 "2006-01-02 15:04"（同一时区，由调用方保证）。
 type Dataset struct {
-	Now     string   `json:"now"`
-	OpenMs  int64    `json:"openOffsetMs"`
-	Records []Record `json:"records"`
-	Windows []Window `json:"versions"`
-	// Repeating 是模板里键名为 monthly 的那份名单：落在其中的名字画在第三条轨道、
-	// 且不画尾段。名单怎么判出来是调用方的事。
+	Now       string   `json:"now"`
+	OpenMs    int64    `json:"openOffsetMs"`
+	Records   []Record `json:"records"`
+	Windows   []Window `json:"versions"`
 	Repeating []string `json:"monthly"`
 }
 

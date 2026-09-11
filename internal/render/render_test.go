@@ -2,7 +2,6 @@ package render
 
 import (
 	"bytes"
-	"encoding/json"
 	"image"
 	_ "image/png"
 	"os"
@@ -11,49 +10,6 @@ import (
 	"strings"
 	"testing"
 )
-
-func TestPageInjectsDataset(t *testing.T) {
-	tpl := []byte("before " + DataMark + " after")
-	d := Dataset{Now: "2026-09-08 20:00", OpenMs: 61200000,
-		Windows: []Window{{Key: "202609071600", Name: "V", Start: "2026-09-08 00:00", Until: "2026-09-29 10:59"}}}
-	out, err := Page(d, tpl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(out)
-	const head = "before const DATA = "
-	if !strings.HasPrefix(s, head) || !strings.HasSuffix(s, "; after") {
-		t.Fatalf("注入形式不对: %q", s)
-	}
-	var back Dataset
-	if err := json.Unmarshal([]byte(s[len(head):len(s)-len("; after")]), &back); err != nil {
-		t.Fatalf("注入的不是合法 JSON: %v\n%s", err, s)
-	}
-	if back.OpenMs != 61200000 || back.Windows[0].Key != "202609071600" {
-		t.Errorf("回读不一致: %+v", back)
-	}
-	// 线格式键名不能漂：页面按这些名字取值。
-	for _, k := range []string{`"openOffsetMs"`, `"versions"`, `"act0"`, `"redeem"`, `"monthly"`} {
-		if !strings.Contains(s, k) {
-			t.Errorf("缺少模板要用的键 %s", k)
-		}
-	}
-	// 原文里带 </script> 也不能把脚本段截断。
-	d.Records = []Record{{ID: "1", Raw: "</script><script>alert(1)</script>"}}
-	bad, err := Page(d, []byte("<script>"+DataMark+"</script>"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := strings.Count(string(bad), "</script>"); n != 1 {
-		t.Errorf("转义后仍有 %d 个 </script>，脚本段会被截断", n)
-	}
-	if !strings.Contains(string(bad), `\u003c/script`) {
-		t.Errorf("没把 < 转义: %s", bad)
-	}
-	if _, err := Page(d, []byte("没有占位")); err == nil {
-		t.Error("模板里没有占位却成功了")
-	}
-}
 
 func TestURLOfEscapesNonASCII(t *testing.T) {
 	got := urlOf(filepath.Join(string(os.PathSeparator)+"tmp", "星塔", "cal.html"))
@@ -114,18 +70,6 @@ func TestCaptureValidatesInput(t *testing.T) {
 	}
 }
 
-func TestTemplateIsEmbedded(t *testing.T) {
-	if len(Template) < 1000 {
-		t.Fatalf("模板没打进来（%d 字节）", len(Template))
-	}
-	if !strings.Contains(string(Template), DataMark) {
-		t.Error("内嵌模板里没有数据占位")
-	}
-	if !strings.Contains(string(Template), "location.hash") {
-		t.Error("内嵌模板不像那份日历页")
-	}
-}
-
 // chromeBin 找一台机器上的浏览器；找不到就跳过真截图（单元测试不依赖它）。
 func chromeBin(t *testing.T) string {
 	for _, p := range []string{os.Getenv("XINGTA_CHROME"),
@@ -141,41 +85,13 @@ func chromeBin(t *testing.T) string {
 	return ""
 }
 
-// 真跑一遍：内嵌模板 + 最小数据集 → 浏览器 → PNG。
-// 验的是两趟契约：截图尺寸必须正好是页面自己解出的卡片尺寸 + 四周留白。
-// （不能拿宽高比当断言：记录少时卡片被 MIN_PPD 下限顶宽，比例本就不是 16:9。）
+// 真跑一遍：最小自报尺寸 HTML → 浏览器 → PNG。
 func TestCaptureWithRealBrowser(t *testing.T) {
-	page, err := Page(Dataset{
-		Now:    "2026-09-08 20:00",
-		OpenMs: 61200000,
-		Windows: []Window{{Key: "202609071600", Name: "测试版本",
-			Start: "2026-09-08 00:00", End: "2026-09-22 03:59", Until: "2026-09-29 10:59"}},
-		Records: []Record{
-			{ID: "1-0", Name: "甲活动", Label: "活动时间", Start: "2026-09-08 00:00", End: "2026-09-12 03:59",
-				StartKind: "fuzzy", Tint: "eef3fb", Source: "solo", Ref: "1"},
-			{ID: "2-0", Name: "乙尾段", Label: "招募时间", Start: "2026-09-14 00:00", End: "2026-09-16 10:59",
-				ClaimEnd: "2026-09-20 10:59", Tint: "fdeef2", Source: "solo", Ref: "2"},
-		},
-		Repeating: []string{},
-	}, Template)
-	if err != nil {
-		t.Fatal(err)
-	}
+	page := []byte("<!DOCTYPE html><html><head><title>400x200</title></head><body><div style=\"width:400px;height:200px;background:#f00;\">Hello</div></body></html>")
 	bin := chromeBin(t)
 	dir := t.TempDir()
-	path := filepath.Join(dir, "page.html")
-	if err := os.WriteFile(path, page, 0o644); err != nil {
-		t.Fatal(err)
-	}
 	b := &Browser{Bin: bin, WorkDir: dir}
-	w, h, err := b.measure(path, "#x202609071600")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if w < 1000 || h < 400 {
-		t.Fatalf("页面报的尺寸不像画过东西: %dx%d", w, h)
-	}
-	raw, err := b.Capture(page, "#x202609071600")
+	raw, err := b.Capture(page, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,8 +100,8 @@ func TestCaptureWithRealBrowser(t *testing.T) {
 		t.Fatalf("出来的不是能解的图: %v", err)
 	}
 	got := im.Bounds()
-	if got.Dx() != w+StagePad || got.Dy() != h+StagePad {
-		t.Errorf("截图 %dx%d, 想 %dx%d（页面自报尺寸 + 四周留白）", got.Dx(), got.Dy(), w+StagePad, h+StagePad)
+	if got.Dx() != 400+StagePad || got.Dy() != 200+StagePad {
+		t.Errorf("截图 %dx%d, 想 %dx%d（自报尺寸 + 四周留白）", got.Dx(), got.Dy(), 400+StagePad, 200+StagePad)
 	}
-	t.Logf("真出图 %dx%d（页面报卡片 %dx%d），%.0f KB", got.Dx(), got.Dy(), w, h, float64(len(raw))/1024)
+	t.Logf("真出图 %dx%d，%.0f KB", got.Dx(), got.Dy(), float64(len(raw))/1024)
 }

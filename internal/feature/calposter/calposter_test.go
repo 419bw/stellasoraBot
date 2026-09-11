@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"xingta/internal/annsync"
-	"xingta/internal/render"
 )
 
 var zone = time.FixedZone("CST", 8*3600)
 
 func at(s string) time.Time {
-	t, err := time.ParseInLocation(render.TimeLayout, s, zone)
+	t, err := time.ParseInLocation(TimeLayout, s, zone)
 	if err != nil {
 		panic(err)
 	}
@@ -119,7 +118,7 @@ func TestBuildTakesOnlyThisWindow(t *testing.T) {
 	if d.Now != "2026-09-08 20:00" {
 		t.Errorf("出图时刻不对: %s", d.Now)
 	}
-	var fuzzy render.Record
+	var fuzzy Record
 	for _, r := range d.Records {
 		if r.ID == "4540-2" {
 			fuzzy = r

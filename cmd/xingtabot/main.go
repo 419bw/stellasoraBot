@@ -27,6 +27,7 @@ import (
 
 	"xingta/internal/annsync"
 	"xingta/internal/command"
+	"xingta/internal/feature/biliwatch"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
 	"xingta/internal/feature/calposter"
@@ -60,9 +61,11 @@ func run() error {
 		lead      = flag.Duration("lead", 48*time.Hour, "活动结束前多久开始提醒")
 		scan      = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
 		push      = flag.String("push", "", "主动消息目标，逗号分隔：g:<群 openid> / u:<用户 openid>；留空只记日志。到期提醒与版本日历图共用这一份")
-		chrome    = flag.String("chrome", "", "出日历图用的无头浏览器可执行文件；留空 = 不启用日历图功能")
-		warm      = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
-		admins    = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
+		chrome       = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
+		warm         = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
+		biliUID      = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
+		biliInterval = flag.Duration("bili-interval", 3*time.Minute, "B站动态轮询间隔")
+		admins       = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
 		apiBase   = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
 		intents   = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
 	)
@@ -120,15 +123,18 @@ func run() error {
 
 	// ---- 功能：一行一个，删掉即关掉 ---------------------------------------
 
-	// 日历图要先造出来：activeSink 得出图，所以它得在 Runtime 之前存在。
-	// 没给 -chrome 就是不启用这个功能——本机没有浏览器时，到期提醒与运维命令照常跑，
-	// 而不是启动后每次发图都失败。
-	var poster *calposter.Poster
+	// 出图能力依赖无头浏览器：没给 -chrome 就是不启用出图相关功能——
+	// 本机没有浏览器时，到期提醒与运维命令照常跑，而不是启动后每次发图都失败。
+	var (
+		poster *calposter.Poster
+		bili   *biliwatch.Feature
+	)
 	if *chrome != "" {
+		browser := &render.Browser{Bin: *chrome}
 		poster = calposter.New(calposter.Config{
 			Doc:     doc,
 			Records: func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
-			Cap:     &render.Browser{Bin: *chrome},
+			Cap:     browser,
 			ArtDir:  artDir(*dbPath),
 			Label:   stellasora.ProvVersion,
 			Zone:    zone,
@@ -138,11 +144,18 @@ func run() error {
 			Reg:     reg,
 			Logf:    logf,
 		})
+		bili = biliwatch.New(biliwatch.Config{
+			Doc:      doc,
+			Cap:      browser,
+			UID:      *biliUID,
+			Interval: *biliInterval,
+			Logf:     logf,
+		})
 	} else {
-		logf("没给 -chrome，日历图功能不启用（「日历」命令与版本推图都不会有；到期提醒照常）")
+		logf("没给 -chrome，出图功能不启用（日历海报与 B站动态推图都不会有；到期提醒照常）")
 	}
 
-	rt := kernel.NewRuntime(activeSink{client: client, poster: poster}, queue.DefaultPolicy(), cal, targetStore)
+	rt := kernel.NewRuntime(activeSink{client: client, poster: poster, bili: bili}, queue.DefaultPolicy(), cal, targetStore)
 	rt.Register(sync)
 	rt.Register(calquery.New(reg, cal, calquery.Config{
 		Zone:   zone,
@@ -158,6 +171,9 @@ func run() error {
 	rt.Register(pushops.New(reg, targetStore, pushops.Config{Logf: logf}))
 	if poster != nil {
 		rt.Register(poster)
+	}
+	if bili != nil {
+		rt.Register(bili)
 	}
 
 	// ---- QQ 接入：命令机制挂在事件入口上 ----------------------------------
@@ -219,20 +235,16 @@ func run() error {
 // Target 里的前缀（g: / u:）是投递约定：功能只写字符串，不认识 QQ 的两个通道，
 // 解释前缀是接入层的事。启动时已经用 parseTargets 校验过，所以这里再遇到坏前缀
 // 只可能是代码问题。
+// mediaProvider 是出图提供者的统一接口：根据键获取图片字节 + 汇报成功推过。
+type mediaProvider interface {
+	Fetch(ctx context.Context, key string) ([]byte, error)
+	MarkPushed(key string)
+}
+
 type activeSink struct {
 	client *qq.Client
-	// poster 是"给版本键要一张图 + 报一声发出去了"两件事。渲染与上传都推到这里、
-	// 推到真要发的这一刻：file_info 的作废时机不可预知（实测 ttl 24h、文档示例
-	// 300s，不能跨场景复用），队列里排过一轮的引用不保险。
-	//
-	// 这里要的是 Fetch 不是 Image：队列里的每一条都是主动推送，没人在等回复，
-	// 慢几十秒没关系，而推出去一张全是占位的图不可撤回。命令回图才走零网络的 Image。
-	poster interface {
-		Fetch(ctx context.Context, key string) ([]byte, error)
-		// MarkPushed 是账本唯一的写入口：只有真发出去了才算推过。失败时不调它，
-		// 队列退避重试、最终放弃也不记账，功能下一轮会重新排上这张。
-		MarkPushed(key string)
-	}
+	poster mediaProvider
+	bili   mediaProvider
 }
 
 func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
@@ -241,13 +253,26 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 		return err
 	}
 	req := qq.SendRequest{MsgType: qq.MsgTypeText, Content: b.Text}
+	var provider mediaProvider
 	if b.Media != nil {
-		if s.poster == nil {
-			return fmt.Errorf("队列里有媒体项（%s/%s）但没接出图能力：检查 -chrome", b.Media.Kind, b.Media.Key)
+		switch b.Media.Kind {
+		case "poster", "":
+			if s.poster == nil {
+				return fmt.Errorf("队列里有海报项但没接出图能力：检查 -chrome")
+			}
+			provider = s.poster
+		case "bili":
+			if s.bili == nil {
+				return fmt.Errorf("队列里有 B站动态项但没接出图能力：检查 -chrome")
+			}
+			provider = s.bili
+		default:
+			return fmt.Errorf("未知的媒体类型: %s", b.Media.Kind)
 		}
-		raw, err := s.poster.Fetch(ctx, b.Media.Key)
+
+		raw, err := provider.Fetch(ctx, b.Media.Key)
 		if err != nil {
-			return fmt.Errorf("出 %s 的图失败: %w", b.Media.Key, err)
+			return fmt.Errorf("出 %s/%s 的图失败: %w", b.Media.Kind, b.Media.Key, err)
 		}
 		name := b.Media.Key + ".png"
 		var ref qq.MediaRef
@@ -271,8 +296,8 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 		return err
 	}
 	// 发出去了才算推过：调度回调只负责投递，"推没推过"以这里为准。
-	if b.Media != nil {
-		s.poster.MarkPushed(b.Media.Key)
+	if provider != nil && b.Media != nil {
+		provider.MarkPushed(b.Media.Key)
 	}
 	return nil
 }

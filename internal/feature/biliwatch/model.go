@@ -18,11 +18,11 @@ type DynamicItem struct {
 	Visible bool   `json:"visible"`
 	Modules struct {
 		ModuleAuthor struct {
-			Mid     int64  `json:"mid"`
-			Name    string `json:"name"`
-			Face    string `json:"face"`
-			PubTime string `json:"pub_time"`
-			PubTs   int64  `json:"pub_ts"`
+			Mid       any    `json:"mid"`
+			Name      string `json:"name"`
+			Face      string `json:"face"`
+			PubTime   string `json:"pub_time"`
+			PubTs     any    `json:"pub_ts"`
 			PubAction string `json:"pub_action"`
 			Vip     *struct {
 				NicknameColor string `json:"nickname_color"`

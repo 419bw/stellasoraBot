@@ -605,5 +605,3 @@ func TestExpiryUsesAPITargets(t *testing.T) {
 		t.Errorf("投递目标 = %q，期望 g:DYNAMIC_GROUP", sub[0].Target)
 	}
 }
-
-

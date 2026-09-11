@@ -597,7 +597,7 @@ func percentiles(d []time.Duration) (p50, p99 time.Duration) {
 
 type dummyTargetView struct{ list []string }
 
-func (d dummyTargetView) Targets() []string     { return d.list }
+func (d dummyTargetView) Targets() []string      { return d.list }
 func (d dummyTargetView) Has(target string) bool { return true }
 
 func TestAPITargetsSeam(t *testing.T) {
@@ -623,4 +623,3 @@ func TestAPITargetsSeam(t *testing.T) {
 		t.Fatal("等待 api.Targets() 超时")
 	}
 }
-

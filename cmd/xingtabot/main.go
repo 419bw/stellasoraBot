@@ -69,7 +69,7 @@ func run() error {
 	flag.Parse()
 
 	logf := func(format string, args ...any) {
-		fmt.Println(fmt.Sprintf(format, args...))
+		fmt.Printf("%s %s\n", time.Now().Format("2006-01-02 15:04:05.000"), fmt.Sprintf(format, args...))
 	}
 
 	zone, err := parseZone(*tz)
@@ -409,9 +409,9 @@ func loadCreds(path string) (creds, error) {
 }
 
 // initAndroidEnv 检查环境是否缺少 /etc/resolv.conf 与证书（常见于 Android / Termux 环境）。
-// 1. Go 的 netgo 解析器在找不到 /etc/resolv.conf 时会默认尝试 127.0.0.1:53，导致 connection refused。
-//    此处自动读取 Termux 的 resolv.conf 或回退到主流公共 DNS。
-// 2. Termux 环境的根证书位于 $PREFIX/etc/tls/cert.pem，自动为其配置 SSL_CERT_FILE。
+//  1. Go 的 netgo 解析器在找不到 /etc/resolv.conf 时会默认尝试 127.0.0.1:53，导致 connection refused。
+//     此处自动读取 Termux 的 resolv.conf 或回退到主流公共 DNS。
+//  2. Termux 环境的根证书位于 $PREFIX/etc/tls/cert.pem，自动为其配置 SSL_CERT_FILE。
 func initAndroidEnv() {
 	if os.Getenv("SSL_CERT_FILE") == "" {
 		termuxCert := "/data/data/com.termux/files/usr/etc/tls/cert.pem"
@@ -457,4 +457,3 @@ func initAndroidEnv() {
 		},
 	}
 }
-

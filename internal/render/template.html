@@ -209,6 +209,15 @@ const fMD = ms => { const d = new Date(ms + H8); return p2(d.getUTCMonth() + 1) 
 const fHM = ms => { const d = new Date(ms + H8); return p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes()); };
 const CN = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'], DK = ['日', '一', '二', '三', '四', '五', '六'];
 const tint = r => '#' + (r.tint || 'eef3fb');
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 // 已开闸：起点那天维护后（OPEN）才算开。库里的 act0 是 00:00 占位，别直接跟 now 比。
 const opened = i => now >= T(VERSIONS[i].act0) + OPEN;
@@ -330,7 +339,7 @@ function render() {
 
   document.getElementById('vname').textContent = f.v.name;
   document.getElementById('vers').innerHTML = VERSIONS.map((v, i) =>
-    `<button data-i="${i}"${i === state.vi ? ' class="on"' : ''} title="活动一览 ${v.src}｜${v.name}">${vTag(i)}</button>`).join('');
+    `<button data-i="${i}"${i === state.vi ? ' class="on"' : ''} title="活动一览 ${esc(v.src)}｜${esc(v.name)}">${vTag(i)}</button>`).join('');
   document.querySelectorAll('#vers button').forEach(b => b.onclick = () => { state.vi = +b.dataset.i; render(); });
   document.getElementById('dayseg').innerHTML = DAYMODES.map(d =>
     `<button data-k="${d.k}"${d.k === state.day ? ' class="on"' : ''} title="${d.tip}">${d.n}</button>`).join('');
@@ -393,8 +402,8 @@ function render() {
         <span class="ava">
           ${art ? `<img src="${art}" style="${pos}">` : '<i class="noart"></i>'}
           ${state.slot && !x.drop ? '<span class="rar">?</span>' : ''}</span>
-        <span class="txt"><span class="nm">${x.st === 'fuzzy' ? '≈' : ''}${x.n}</span>
-        <span class="lb ${LBCLS[x.lb] || 't-test'}">${x.lb}</span></span></span>`;
+        <span class="txt"><span class="nm">${x.st === 'fuzzy' ? '≈' : ''}${esc(x.n)}</span>
+        <span class="lb ${LBCLS[x.lb] || 't-test'}">${esc(x.lb)}</span></span></span>`;
     }).join('');
     const days = Math.round((g.e0 - now) / DAY);
     const ends = `<span class="ends${days > 0 && days <= 2 ? ' hot' : ''}">${fMD(dayOf(g.x1))}</span>`;

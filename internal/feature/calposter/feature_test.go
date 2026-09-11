@@ -642,5 +642,3 @@ func TestPosterUsesAPITargets(t *testing.T) {
 		t.Errorf("投递目标 = %q，期望 g:DYNAMIC_POSTER_GROUP", items[0].Target)
 	}
 }
-
-

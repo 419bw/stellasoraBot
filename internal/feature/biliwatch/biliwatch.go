@@ -15,18 +15,23 @@ import (
 	"xingta/internal/store"
 )
 
-// NS 是 biliwatch 在 store.Doc 中的命名空间。
-const NS = "biliwatch"
+const (
+	// NS 是 biliwatch 在 store.Doc 中的命名空间。
+	NS = "biliwatch"
+	// DefaultUID 是《星塔旅人》官方账号 UID。
+	DefaultUID = "3546645778139206"
+	// maxCachedItems 是内存中暂存的动态元数据条目上限（避免无界增长）
+	maxCachedItems = 30
+	// pushedMemoryTTL 是内存中已推记录的保活窗口（超期从内存清理，磁盘 BoltDB 永久保留）
+	pushedMemoryTTL = 30 * 24 * time.Hour
+)
 
-// 默认星塔旅人官方账号 UID
-const DefaultUID = "3546645778139206"
-
-// Capturer 定义由 HTML 生成 PNG 截图的能力（render.Browser 天然实现）。
+// Capturer 抽象无头浏览器截图执行，便于脱离真实 Chrome 单测。
 type Capturer interface {
 	Capture(page []byte, route string) ([]byte, error)
 }
 
-// Config 是功能配置项。
+// Config 配置 biliwatch 功能。
 type Config struct {
 	Doc      store.Doc
 	Cap      Capturer
@@ -64,10 +69,11 @@ type Feature struct {
 	cfg     Config
 	fetcher Fetcher
 
-	mu     sync.Mutex
-	api    kernel.API
-	pushed map[string]time.Time
-	items  map[string]DynamicItem
+	mu         sync.Mutex
+	api        kernel.API
+	hasHistory bool
+	pushed     map[string]time.Time
+	items      map[string]DynamicItem
 
 	// 单图槽位缓存：内存中永远只存当前最新的一张动态图
 	slotMu    sync.RWMutex
@@ -131,31 +137,51 @@ func (f *Feature) loadPushed() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	now := time.Now()
 	return f.doc.Scan(NS, "", func(key string, raw []byte) error {
+		f.hasHistory = true
 		var at time.Time
 		if err := json.Unmarshal(raw, &at); err != nil {
 			f.cfg.Logf("biliwatch: 历史记录 %s 解码失败，按当前时间兜底: %v", key, err)
-			at = time.Now()
+			at = now
 		}
-		f.pushed[key] = at
+		// 仅在 30 天保活窗口内的热记录载入内存活跃集，更早的持久化保留在磁盘不占内存
+		if now.Sub(at) <= pushedMemoryTTL {
+			f.pushed[key] = at
+		}
 		return nil
 	})
 }
 
 func (f *Feature) isPushed(id string) bool {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	_, ok := f.pushed[id]
-	return ok
+	f.mu.Unlock()
+	if ok {
+		return true
+	}
+
+	// 内存未命中（可能因超期已被内存清理），查询磁盘永久账本兜底
+	var at time.Time
+	found, err := f.doc.Get(NS, id, &at)
+	if err == nil && found {
+		f.mu.Lock()
+		f.pushed[id] = at // 回填内存活跃集
+		f.mu.Unlock()
+		return true
+	}
+	return false
 }
 
 // MarkPushed 记录已向群投递成功的动态 ID。由 activeSink 发送完成后回调。
 func (f *Feature) MarkPushed(id string) {
 	now := time.Now()
 	f.mu.Lock()
+	f.hasHistory = true
 	f.pushed[id] = now
 	f.mu.Unlock()
 
+	// 磁盘持久化永久保存（不删磁盘）
 	_ = f.doc.Put(NS, id, now)
 }
 
@@ -187,12 +213,42 @@ func (f *Feature) round(ctx context.Context) {
 	}
 
 	f.mu.Lock()
-	// 缓存解析过的条目以便 Fetch 出图
+	// 1. 缓存解析过的条目以便 Fetch 出图；限制内存中最多缓存 maxCachedItems 条（避免无界增长）
 	for _, it := range items {
 		f.items[it.IdStr] = it
 	}
-	// 冷启动判定：若账本完全为空，说明是系统初次运行，直接将当前拉取到的所有历史动态标为基准，不轰炸群
-	if len(f.pushed) == 0 {
+	if len(f.items) > maxCachedItems {
+		cur := make(map[string]bool, len(items))
+		for _, it := range items {
+			cur[it.IdStr] = true
+		}
+		for id := range f.items {
+			if !cur[id] {
+				delete(f.items, id)
+				if len(f.items) <= maxCachedItems {
+					break
+				}
+			}
+		}
+		for id := range f.items {
+			if len(f.items) <= maxCachedItems {
+				break
+			}
+			delete(f.items, id)
+		}
+	}
+
+	// 2. 内存已推账本定期清理：超过 30 天的记录从内存淘汰（磁盘永久保留）
+	now := time.Now()
+	for id, at := range f.pushed {
+		if now.Sub(at) > pushedMemoryTTL {
+			delete(f.pushed, id)
+		}
+	}
+
+	// 3. 冷启动判定：若无论内存还是磁盘都完全没有历史记录，直接设为基线不轰炸群
+	if !f.hasHistory {
+		f.hasHistory = true
 		f.mu.Unlock()
 		for _, it := range items {
 			f.MarkPushed(it.IdStr)

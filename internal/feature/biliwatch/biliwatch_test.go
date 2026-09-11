@@ -438,3 +438,67 @@ func TestDynamicJSONCompatibility(t *testing.T) {
 		t.Errorf("渲染页面未包含图片 URL")
 	}
 }
+
+func TestMemoryBoundedEvictionAndDiskPersistence(t *testing.T) {
+	doc := storetest.NewMem()
+	api := &mockKernelAPI{targetList: []string{"group_100"}}
+	capturer := &mockCapturer{}
+	fetcher := &mockFetcher{}
+
+	feat := New(Config{
+		Doc:     doc,
+		Cap:     capturer,
+		Fetcher: fetcher,
+	})
+
+	ctx := context.Background()
+	if err := feat.Start(ctx, api); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+
+	// 1. 测试 f.items 内存上限裁剪（喂 40 条数据，上限 30 条）
+	var manyItems []DynamicItem
+	for i := 1; i <= 40; i++ {
+		manyItems = append(manyItems, DynamicItem{IdStr: fmt.Sprintf("dyn_%d", i)})
+	}
+	fetcher.items = manyItems
+	feat.round(ctx)
+
+	feat.mu.Lock()
+	itemsCount := len(feat.items)
+	feat.mu.Unlock()
+	if itemsCount > maxCachedItems {
+		t.Fatalf("f.items 数量超限: 期望 <= %d，实际 %d", maxCachedItems, itemsCount)
+	}
+
+	// 2. 测试已推记录内存 TTL 淘汰（模拟一条 35 天前已推的动态）
+	oldID := "dyn_ancient"
+	oldTime := time.Now().Add(-35 * 24 * time.Hour)
+	// 写入磁盘持久化
+	_ = doc.Put(NS, oldID, oldTime)
+
+	feat.mu.Lock()
+	feat.pushed[oldID] = oldTime
+	feat.mu.Unlock()
+
+	// 跑一轮 round 触发内存已推记录淘汰
+	feat.round(ctx)
+
+	// 验证内存中已被淘汰（删除）
+	feat.mu.Lock()
+	_, inMem := feat.pushed[oldID]
+	feat.mu.Unlock()
+	if inMem {
+		t.Fatalf("内存中的超期已推记录未能成功清理！")
+	}
+
+	// 3. 验证磁盘中持久化保留（磁盘不删），且 isPushed 能够从磁盘查回
+	var diskTime time.Time
+	foundOnDisk, err := doc.Get(NS, oldID, &diskTime)
+	if err != nil || !foundOnDisk {
+		t.Fatalf("磁盘中的历史持久化记录不应被删除！err: %v, found: %v", err, foundOnDisk)
+	}
+	if !feat.isPushed(oldID) {
+		t.Fatalf("isPushed 应能从磁盘兜底查出已推状态")
+	}
+}

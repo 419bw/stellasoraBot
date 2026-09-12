@@ -13,6 +13,8 @@ var ErrQueueFull = errors.New("queue: 发送队列已满")
 
 var ErrExpired = errors.New("queue: 消息超过投递截止时间")
 
+var ErrOverflow = errors.New("queue: 单目标积压超限，丢弃最老条目")
+
 // Media 表示"这一条要发的不是文字，而是一个待解析的非文字载荷"。
 //
 // 队列只搬运一个引用，不解释它：Kind 由 Sink 自己认领，Key 是不透明标识。
@@ -292,7 +294,11 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case item := <-d.in:
-			d.enqueue(item)
+			for _, it := range d.enqueue(item) {
+				if d.OnError != nil {
+					d.OnError(it, ErrOverflow)
+				}
+			}
 		case <-d.wake:
 		case <-timer.C:
 		}
@@ -301,14 +307,18 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 }
 
-func (d *Dispatcher) enqueue(item Item) {
+// enqueue 返回因溢出被丢的最老条目，交由 Run 在锁外报 OnError —— 与 pump 同一纪律：
+// 锁内只做决策，回调一律放到解锁之后（回调可能反过来访问 Dispatcher）。
+func (d *Dispatcher) enqueue(item Item) []Item {
 	now := d.clock()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	var dropped []Item
 	q := d.pending[item.Target]
 	if len(q) >= d.p.MaxPendingPerTarget {
 		// 丢最老的，保证新提醒还能发出去
+		dropped = append(dropped, q[0].item)
 		d.pending[item.Target] = q[1:]
 		d.stats.DroppedOverflw++
 		q = d.pending[item.Target]
@@ -322,6 +332,7 @@ func (d *Dispatcher) enqueue(item Item) {
 		readyAt:  ready,
 		deadline: now.Add(d.p.Deadline),
 	})
+	return dropped
 }
 
 // pump 尽可能把到期消息交给 worker，返回下一次应当醒来的间隔。

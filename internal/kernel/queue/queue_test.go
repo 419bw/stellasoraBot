@@ -317,6 +317,113 @@ func TestNonRetryableErrorDropsImmediately(t *testing.T) {
 	}
 }
 
+// gateSink：Send 进入即报信、然后卡住直到放行，用于把 worker 钉在原地、
+// 让条目稳定滞留在 pending 里触发积压溢出。
+type gateSink struct {
+	entered chan struct{}
+	release chan struct{}
+
+	mu      sync.Mutex
+	sentIDs []string
+}
+
+func (g *gateSink) Send(ctx context.Context, b *Batch) error {
+	g.entered <- struct{}{}
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, it := range b.Items {
+		g.sentIDs = append(g.sentIDs, it.ID)
+	}
+	return nil
+}
+
+func (g *gateSink) delivered() map[string]bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[string]bool, len(g.sentIDs))
+	for _, id := range g.sentIDs {
+		out[id] = true
+	}
+	return out
+}
+
+// 溢出丢弃不能只留在 DroppedOverflw 计数里：它和过期/终态失败同属静默丢消息，
+// 必须走 OnError 交代。丢弃决策在锁内（enqueue），回调必须在锁外（Run 循环）。
+//
+// 确定性构造（Workers=1、积压上限 1）：a 被 worker 卡在 Send 里；b 被 pump 塞进
+// 满容量 jobs 缓冲；c 留在 pending；d 到来时把最老的 c 挤出溢出。Run 按 FIFO 逐条
+// 处理且每条都先 enqueue 再 pump，所以无论测试侧提交多快，c 必然是溢出对象。
+func TestOverflowDroppedItemReportsOnError(t *testing.T) {
+	gate := &gateSink{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	p := fastPolicy()
+	p.Workers = 1
+	p.MaxPendingPerTarget = 1
+	d := New(gate, p)
+
+	var mu sync.Mutex
+	var overflowed []Item
+	var causes []error
+	d.OnError = func(it Item, err error) {
+		_ = d.Stats() // 回调可能回访 Dispatcher：持锁调用会自死锁（纪律同 OnDelivered）
+		mu.Lock()
+		defer mu.Unlock()
+		overflowed = append(overflowed, it)
+		causes = append(causes, err)
+	}
+	startDispatcher(t, d)
+
+	if err := d.Submit(Item{ID: "a", Target: "g1", Text: "1"}); err != nil {
+		t.Fatalf("Submit a: %v", err)
+	}
+	<-gate.entered // a 已被 worker 取走并卡在 Send 里
+
+	for _, id := range []string{"b", "c", "d"} {
+		if err := d.Submit(Item{ID: id, Target: "g1", Text: id}); err != nil {
+			t.Fatalf("Submit %s: %v", id, err)
+		}
+	}
+
+	waitForStats(t, d, func(s Stats) bool { return s.DroppedOverflw == 1 }, 3*time.Second, "溢出丢弃未计数")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(overflowed)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	if len(overflowed) != 1 {
+		t.Fatalf("溢出丢弃未回调 OnError（回调 %d 次）", len(overflowed))
+	}
+	if overflowed[0].ID != "c" {
+		t.Errorf("溢出丢的是 %q, want \"c\"（pending 里最老的）", overflowed[0].ID)
+	}
+	if !errors.Is(causes[0], ErrOverflow) {
+		t.Errorf("溢出回调的错误 = %v, want ErrOverflow", causes[0])
+	}
+	mu.Unlock()
+
+	close(gate.release)
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 3 }, 3*time.Second, "放行后 a/b/d 未发出")
+	got := gate.delivered()
+	for _, id := range []string{"a", "b", "d"} {
+		if !got[id] {
+			t.Errorf("条目 %s 应已送达", id)
+		}
+	}
+	if got["c"] {
+		t.Error("被溢出丢弃的 c 不应送达")
+	}
+}
+
 func TestDailyQuotaBlocksFurtherSends(t *testing.T) {
 	sink := &recSink{}
 	p := fastPolicy()

@@ -155,7 +155,7 @@ func run() error {
 		logf("没给 -chrome，出图功能不启用（日历海报与 B站动态推图都不会有；到期提醒照常）")
 	}
 
-	rt := kernel.NewRuntime(activeSink{client: client, poster: poster, bili: bili}, queue.DefaultPolicy(), cal, targetStore)
+	rt := kernel.NewRuntime(activeSink{client: client, poster: poster, bili: bili}, queue.DefaultPolicy(), cal, targetStore, logf)
 	rt.Register(sync)
 	rt.Register(calquery.New(reg, cal, calquery.Config{
 		Zone:   zone,
@@ -221,8 +221,8 @@ func run() error {
 	}
 
 	st := rt.Stats()
-	logf("收工。队列：投递 %d 条 / 发出 %d 条 / 合并 %d 次 / 过期丢弃 %d / 失败丢弃 %d",
-		st.Submitted, st.Sent, st.Merged, st.DroppedExpired, st.DroppedFailed)
+	logf("收工。队列：投递 %d 条 / 发出 %d 条 / 合并 %d 次 / 过期丢弃 %d / 失败丢弃 %d / 溢出丢弃 %d",
+		st.Submitted, st.Sent, st.Merged, st.DroppedExpired, st.DroppedFailed, st.DroppedOverflw)
 
 	if gwErr != nil && !errors.Is(gwErr, context.Canceled) {
 		return fmt.Errorf("网关退出: %w", gwErr)

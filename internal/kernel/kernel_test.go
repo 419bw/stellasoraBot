@@ -85,7 +85,7 @@ func TestFeatureSeamWiresThrough(t *testing.T) {
 	sink := newLoadSink()
 	p := queue.DefaultPolicy()
 	p.MergeWindow = time.Millisecond
-	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore(), nil)
+	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore(), nil, nil)
 
 	ran := make(chan struct{})
 	r.Register(NewFeature("demo", func(ctx context.Context, api API) error {
@@ -142,13 +142,73 @@ func TestFeatureSeamWiresThrough(t *testing.T) {
 }
 
 func TestFeatureStartErrorAbortsRun(t *testing.T) {
-	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), nil)
+	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), nil, nil)
 	r.Register(NewFeature("broken", func(context.Context, API) error {
 		return errors.New("配置缺失")
 	}))
 	err := r.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "broken") || !strings.Contains(err.Error(), "配置缺失") {
 		t.Errorf("Run 错误 = %v, 期望包含功能名与原因", err)
+	}
+}
+
+// ---------- OnError 接线（审计 P2-1）----------
+
+// NewRuntime 必须把队列与调度器的 OnError 都接到 logf：终态丢弃与任务失败若无人
+// 接收，只剩 Stats 计数，线上等于静默丢失。回调可能被 2 个 worker 并发触发，
+// 捕获必须带锁——容器 race 会抓裸共享。
+func TestRuntimeWiresOnErrorToLogf(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	contains := func(sub string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, l := range logs {
+			if strings.Contains(l, sub) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 队列线：MaxAttempts=1 的必败 Sink → 首次失败即终态丢弃
+	sink := newLoadSink()
+	p := generousPolicy()
+	p.MaxAttempts = 1
+	r := NewRuntime(flakySink{sink: sink, failEvery: 1}, p, calendar.NewStore(), nil, logf)
+
+	// 调度线：At 已过的任务 Fn 报错（任务到点弹出即删，错误只有 OnError 这一个出口）
+	r.Register(NewFeature("boom", func(ctx context.Context, api API) error {
+		api.Schedule("boom-task", time.Now().Add(-time.Second), func(context.Context) error {
+			return errors.New("任务自己的错误")
+		})
+		if err := api.Submit(queue.Item{ID: "doomed", Target: "g0", Text: "必败"}); err != nil {
+			t.Errorf("Submit: %v", err)
+		}
+		return nil
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = r.Run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if contains("doomed") && contains("boom-task") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !contains("doomed") {
+		t.Error("队列终态丢弃没有经过 logf（队列 OnError 断线）")
+	}
+	if !contains("boom-task") {
+		t.Error("调度任务失败没有经过 logf（调度器 OnError 断线）")
 	}
 }
 
@@ -171,7 +231,7 @@ func TestFloodNoLossNoDuplicate(t *testing.T) {
 	p.TargetPerDay = 0
 	p.QueueSize = 8192
 
-	r := NewRuntime(flakySink{sink: sink, latency: 200 * time.Microsecond}, p, calendar.NewStore(), nil)
+	r := NewRuntime(flakySink{sink: sink, latency: 200 * time.Microsecond}, p, calendar.NewStore(), nil, nil)
 	r.Register(NewFeature("flood", func(ctx context.Context, api API) error {
 		go func() {
 			for g := 0; g < groups; g++ {
@@ -238,7 +298,7 @@ func TestFloodWithFailuresIsFullyAccounted(t *testing.T) {
 
 	p := generousPolicy()
 	p.MaxAttempts = 4
-	r := NewRuntime(flakySink{sink: sink, failEvery: 7, latency: time.Millisecond}, p, calendar.NewStore(), nil)
+	r := NewRuntime(flakySink{sink: sink, failEvery: 7, latency: time.Millisecond}, p, calendar.NewStore(), nil, nil)
 	r.Register(NewFeature("flood-fail", func(ctx context.Context, api API) error {
 		go func() {
 			for g := 0; g < groups; g++ {
@@ -313,7 +373,7 @@ func TestPlatformQuotaUnderFlood(t *testing.T) {
 	p.Deadline = time.Second // 发不出去的很快就该被丢弃
 	p.QueueSize = 8192
 
-	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore(), nil)
+	r := NewRuntime(flakySink{sink: sink}, p, calendar.NewStore(), nil, nil)
 	r.Register(NewFeature("quota-flood", func(ctx context.Context, api API) error {
 		go func() {
 			for g := 0; g < groups; g++ {
@@ -428,7 +488,7 @@ func TestCalendarQueryLatency(t *testing.T) {
 // ---------- 提醒触发抖动 ----------
 
 func TestReminderJitterUnderLoad(t *testing.T) {
-	r := NewRuntime(flakySink{sink: newLoadSink(), latency: time.Millisecond}, generousPolicy(), calendar.NewStore(), nil)
+	r := NewRuntime(flakySink{sink: newLoadSink(), latency: time.Millisecond}, generousPolicy(), calendar.NewStore(), nil, nil)
 	apiCh := make(chan API, 1)
 	var deltas []time.Duration
 	var mu sync.Mutex
@@ -598,14 +658,14 @@ func percentiles(d []time.Duration) (p50, p99 time.Duration) {
 type dummyTargetView struct{ list []string }
 
 func (d dummyTargetView) Targets() []string                  { return d.list }
-func (d dummyTargetView) TargetsFor(topic string) []string  { return d.list }
+func (d dummyTargetView) TargetsFor(topic string) []string   { return d.list }
 func (d dummyTargetView) Has(target string) bool             { return true }
 func (d dummyTargetView) HasTopic(target, topic string) bool { return true }
 func (d dummyTargetView) TopicsOf(target string) []string    { return []string{"default"} }
 
 func TestAPITargetsSeam(t *testing.T) {
 	tv := dummyTargetView{list: []string{"g:1", "u:2"}}
-	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), tv)
+	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), tv, nil)
 
 	got := make(chan []string, 1)
 	gotFor := make(chan []string, 1)

@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -189,5 +190,52 @@ func TestRunReturnsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("取消 ctx 后 Run 没有退出")
+	}
+}
+
+// OnError 是 Fn 失败的唯一出口：任务到点即从堆里弹出删除，错误无人接就是静默丢失。
+// 成功路径绝不回调；失败任务不残留，补投是调用方用同 ID 幂等重排的事。
+func TestOnErrorReceivesFnError(t *testing.T) {
+	s := New()
+	var mu sync.Mutex
+	var gotID string
+	var gotErr error
+	var calls int
+	s.OnError = func(id string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotID, gotErr, calls = id, err, calls+1
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+
+	s.Schedule(Task{ID: "boom", At: time.Now().Add(time.Millisecond), Fn: func(context.Context) error {
+		return errors.New("任务自己的错误")
+	}})
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 1
+	}, 2*time.Second, "Fn 错误未回调 OnError")
+	mu.Lock()
+	if gotID != "boom" {
+		t.Errorf("OnError 收到任务 %q, want \"boom\"", gotID)
+	}
+	if gotErr == nil || gotErr.Error() != "任务自己的错误" {
+		t.Errorf("OnError 收到错误 %v, want \"任务自己的错误\"", gotErr)
+	}
+	mu.Unlock()
+	if s.Pending() != 0 {
+		t.Errorf("失败后任务仍残留 %d 个", s.Pending())
+	}
+
+	// 成功任务不回调
+	s.Schedule(Task{ID: "ok", At: time.Now().Add(time.Millisecond), Fn: func(context.Context) error { return nil }})
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("成功任务也触发了 OnError：共 %d 次", calls)
 	}
 }

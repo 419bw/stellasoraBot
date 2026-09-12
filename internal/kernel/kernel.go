@@ -37,20 +37,34 @@ type Feature interface {
 }
 
 type Runtime struct {
-	sched    schedule.Scheduler
+	sched    *schedule.HeapScheduler
 	queue    *queue.Dispatcher
 	cal      calendar.View
 	targets  target.View
 	features []Feature
 }
 
-func NewRuntime(sink queue.Sink, p queue.Policy, cal calendar.View, targets target.View) *Runtime {
-	return &Runtime{
+// NewRuntime 组装内核。logf 是两条错误线的出口：队列的终态丢弃（重试耗尽、超期、
+// 积压溢出）与调度任务的失败若无人接收，就只剩 Stats 计数，线上只能靠猜——审计
+// P2-1 的两条断线正是这里漏接。传 nil 保持静默（测试够用，生产必须接）。回调在
+// 构造时装好，先于 Run 起的任何 goroutine；闭包只许记日志，与 OnDelivered 同一
+// 调用纪律：不阻塞、不回访 Dispatcher/Scheduler。
+func NewRuntime(sink queue.Sink, p queue.Policy, cal calendar.View, targets target.View, logf func(format string, args ...any)) *Runtime {
+	r := &Runtime{
 		sched:   schedule.New(),
 		queue:   queue.New(sink, p),
 		cal:     cal,
 		targets: targets,
 	}
+	if logf != nil {
+		r.queue.OnError = func(it queue.Item, err error) {
+			logf("[队列] 条目 %s 投给 %s 最终未送达: %v", it.ID, it.Target, err)
+		}
+		r.sched.OnError = func(id string, err error) {
+			logf("[调度] 任务 %s 执行失败: %v", id, err)
+		}
+	}
+	return r
 }
 
 func (r *Runtime) Register(f Feature) {

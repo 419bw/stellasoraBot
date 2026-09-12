@@ -53,21 +53,21 @@ func main() {
 
 func run() error {
 	var (
-		credsPath = flag.String("creds", ".probe/creds.json", "凭据文件路径（JSON: appId / clientSecret）")
-		dbPath    = flag.String("db", "data/xingta.db", "bbolt 数据库文件路径")
-		tz        = flag.String("tz", "+08:00", "公告日期与回复时间用的时区：+08:00 或 Asia/Shanghai")
-		sourceURL = flag.String("source", stellasora.DefaultBaseURL, "公告源站点基地址")
-		refresh   = flag.Duration("refresh", 30*time.Minute, "公告刷新间隔")
-		lead      = flag.Duration("lead", 48*time.Hour, "活动结束前多久开始提醒")
-		scan      = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
-		push      = flag.String("push", "", "主动消息目标，逗号分隔：g:<群 openid> / u:<用户 openid>；留空只记日志。到期提醒与版本日历图共用这一份")
+		credsPath    = flag.String("creds", ".probe/creds.json", "凭据文件路径（JSON: appId / clientSecret）")
+		dbPath       = flag.String("db", "data/xingta.db", "bbolt 数据库文件路径")
+		tz           = flag.String("tz", "+08:00", "公告日期与回复时间用的时区：+08:00 或 Asia/Shanghai")
+		sourceURL    = flag.String("source", stellasora.DefaultBaseURL, "公告源站点基地址")
+		refresh      = flag.Duration("refresh", 30*time.Minute, "公告刷新间隔")
+		lead         = flag.Duration("lead", 48*time.Hour, "活动结束前多久开始提醒")
+		scan         = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
+		push         = flag.String("push", "", "主动消息目标，逗号分隔：g:<群 openid> / u:<用户 openid>；留空只记日志。到期提醒与版本日历图共用这一份")
 		chrome       = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
 		warm         = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
 		biliUID      = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
 		biliInterval = flag.Duration("bili-interval", 5*time.Minute, "B站动态轮询间隔")
 		admins       = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
-		apiBase   = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
-		intents   = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
+		apiBase      = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
+		intents      = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
 	)
 	flag.Parse()
 
@@ -235,10 +235,10 @@ func run() error {
 // Target 里的前缀（g: / u:）是投递约定：功能只写字符串，不认识 QQ 的两个通道，
 // 解释前缀是接入层的事。启动时已经用 parseTargets 校验过，所以这里再遇到坏前缀
 // 只可能是代码问题。
-// mediaProvider 是出图提供者的统一接口：根据键获取图片字节 + 汇报成功推过。
+// mediaProvider 是出图提供者的统一接口：根据键获取图片字节。"发出去才记账"的回执
+// 由队列条目自带的 OnDelivered 承担（失败与丢弃一律不回调），这里不再参与记账。
 type mediaProvider interface {
 	Fetch(ctx context.Context, key string) ([]byte, error)
-	MarkPushed(key string)
 }
 
 type activeSink struct {
@@ -292,14 +292,7 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 	} else {
 		_, err = s.client.SendC2CMessage(ctx, openID, req)
 	}
-	if err != nil {
-		return err
-	}
-	// 发出去了才算推过：调度回调只负责投递，"推没推过"以这里为准。
-	if provider != nil && b.Media != nil {
-		provider.MarkPushed(b.Media.Key)
-	}
-	return nil
+	return err
 }
 
 // artDir 是海报落盘的位置：紧挨着数据库放，换 -db 就换一套缓存，

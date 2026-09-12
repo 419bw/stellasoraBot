@@ -34,6 +34,12 @@ type Item struct {
 	// Topic 相同且 Mergeable 的消息会合并成一条发送，用于"多个活动同时结束"。
 	Topic     string
 	Mergeable bool
+	// OnDelivered 非空时，本条目所在的批次被 Sink 报成功后，worker 在锁外逐条调用
+	// （与 OnError 同一调用纪律：回调可能反过来访问 Dispatcher）。失败、重试、过期
+	// 与溢出丢弃一律不调用——它是"这条真的发出去了"在队列侧的唯一权威时刻，功能拿
+	// 它记账。合并批一条消息装着多个条目，逐条回调才能把账归到每个条目自己的
+	// Target×内容上。回调必须幂等且不得阻塞。
+	OnDelivered func()
 }
 
 type Batch struct {
@@ -535,6 +541,14 @@ func (d *Dispatcher) worker(ctx context.Context, jobs <-chan *job) {
 
 		if err != nil {
 			d.requeue(j, err)
+		} else {
+			// 回执在锁外逐条回调：整批成功意味着批里每个条目都送到了，
+			// 各记各的账；回调可能反过来访问 Dispatcher，不能持锁。
+			for _, st := range j.states {
+				if st.item.OnDelivered != nil {
+					st.item.OnDelivered()
+				}
+			}
 		}
 		d.notify()
 	}

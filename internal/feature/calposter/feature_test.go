@@ -60,15 +60,21 @@ func (a *fakeAPI) Schedule(id string, at time.Time, fn func(context.Context) err
 func (a *fakeAPI) Cancel(string) bool            { return false }
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
-func (a *fakeAPI) Targets() []string             { return a.targets }
+func (a *fakeAPI) Targets() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.targets
+}
 func (a *fakeAPI) TargetsFor(topic string) []string {
 	if topic == "poster" {
+		a.mu.Lock()
+		defer a.mu.Unlock()
 		return a.targets
 	}
 	return nil
 }
 func (a *fakeAPI) RegisterTopic(t target.Topic) error { return nil }
-func (a *fakeAPI) Topics() []target.Topic            { return nil }
+func (a *fakeAPI) Topics() []target.Topic             { return nil }
 
 // fire 触发并消费掉一个排期，与真调度器一致：跑完就不再排着。
 func (a *fakeAPI) fire(id string) error {
@@ -228,7 +234,7 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 	// 发送侧报"发出去了"之后，再跑几轮都不该投第二条。
 	// 这里断言的是"发出去几次"而不是"有没有被重新排上"——排期检查与触发之间
 	// 本来就允许重排，只要 push 以账本为准，就不会真发第二遍。
-	p.MarkPushed("202609071600")
+	p.MarkPushed("g:grp", "202609071600")
 	for i := 0; i < 3; i++ {
 		p.round(context.Background())
 		_ = api.fire(want)
@@ -271,7 +277,7 @@ func TestRestartDoesNotResend(t *testing.T) {
 	if len(api.items()) != 1 {
 		t.Fatalf("第一次该投 1 条，%d 条", len(api.items()))
 	}
-	p.MarkPushed("202609071600") // 模拟发送 worker 真把它发出去了
+	p.MarkPushed("g:grp", "202609071600") // 模拟队列回执：worker 真把它发出去了
 
 	// 换一个 Poster 实例（= 重启），账本还在库里。
 	p2, api2 := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:06"), "g:grp")
@@ -299,16 +305,16 @@ func TestBrokenImageIsNotMarkedSent(t *testing.T) {
 	if len(api.items()) != 1 {
 		t.Fatalf("该投 1 条，%d 条", len(api.items()))
 	}
-	// worker 去要图：画不出来 → 不调 MarkPushed → 账本必须还是空的。
+	// worker 去要图：画不出来 → 回执不会来 → 账本必须还是空的。
 	if _, err := p.Fetch(context.Background(), "202609071600"); err == nil {
 		t.Fatal("画不出来必须往上报错，否则就当发过了")
 	}
-	var raw []byte
-	if ok, _ := doc.Get(NS, "202609071600", &raw); ok {
+	var rec pushRec
+	if ok, _ := doc.Get(NS, "202609071600", &rec); ok && (!rec.SettledAt.IsZero() || len(rec.Targets) > 0) {
 		t.Error("没发出去的一轮被记成已推，之后永远不会补发")
 	}
 
-	// 下一轮（浏览器修好了）重新排上、再投，发出去之后记账，此后不再重投。
+	// 下一轮（浏览器修好了）重新排上、再投，回执到了之后记账，此后不再重投。
 	bad.fix()
 	p.round(context.Background())
 	if err := api.fire("poster:202609071600"); err != nil {
@@ -320,7 +326,7 @@ func TestBrokenImageIsNotMarkedSent(t *testing.T) {
 	if _, err := p.Fetch(context.Background(), "202609071600"); err != nil {
 		t.Fatalf("修好后要图还失败: %v", err)
 	}
-	p.MarkPushed("202609071600")
+	p.MarkPushed("g:grp", "202609071600")
 
 	p.round(context.Background())
 	_ = api.fire("poster:202609071600")
@@ -339,9 +345,100 @@ func TestNoTargetsLogsOnly(t *testing.T) {
 	if len(api.items()) != 0 {
 		t.Errorf("没配目标却投了 %d 条", len(api.items()))
 	}
-	var v time.Time
-	if ok, _ := p.cfg.Doc.Get(NS, "202609071600", &v); !ok {
-		t.Error("只记日志的一轮也要落账，否则每轮都重排")
+	var rec pushRec
+	if ok, _ := p.cfg.Doc.Get(NS, "202609071600", &rec); !ok || rec.SettledAt.IsZero() {
+		t.Error("只记日志的一轮也要落全局了结账，否则每轮都重排")
+	}
+}
+
+// 多目标账必须记到"目标×版本"粒度：一个群先成功绝不再压住其他群——
+// 没送到的那部分由下一轮 armPushes 重新排上，只补缺回执的目标。
+func TestPartialDeliveryResumesOnlyMissingTarget(t *testing.T) {
+	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
+	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"), "g:AAA", "g:BBB")
+
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(api.items()); got != 2 {
+		t.Fatalf("两个订阅目标该各投一条，实际 %d 条", got)
+	}
+
+	// 模拟队列：g:AAA 发送成功（回执），g:BBB 那条被丢弃（回执永远不来）。
+	// A 群先成功绝不能把整条版本记成已推。
+	for _, it := range api.items() {
+		if it.Target == "g:AAA" && it.OnDelivered != nil {
+			it.OnDelivered()
+		}
+	}
+
+	// 下一轮：宽限窗内重新排上，再触发时只补缺回执的 g:BBB。
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatal(err)
+	}
+	items := api.items()
+	if len(items) != 3 {
+		t.Fatalf("该只给 g:BBB 补投 1 条（累计 3 条），实际 %d 条", len(items))
+	}
+	if items[2].Target != "g:BBB" {
+		t.Errorf("补投目标 = %q，want g:BBB", items[2].Target)
+	}
+
+	// g:BBB 的回执到了 → 收敛写全局了结 → 之后再无投递。
+	items[2].OnDelivered()
+	p.round(context.Background())
+	_ = api.fire("poster:202609071600")
+	if got := len(api.items()); got != 3 {
+		t.Errorf("全员收齐后不该再投，累计 %d 条, want 停在 3", got)
+	}
+	var rec pushRec
+	if ok, _ := p.cfg.Doc.Get(NS, "202609071600", &rec); !ok || rec.SettledAt.IsZero() {
+		t.Error("全员收齐后没写全局了结账")
+	}
+}
+
+// 订阅集收缩后（有人退订），到点 push 发现没人缺回执就收敛写全局了结——
+// 宽限窗内不再反复空排空扫，与"全员收齐才收敛"的既有语义保持一致。
+func TestShrunkTargetSetSettlesLedger(t *testing.T) {
+	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
+	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"))
+	api.targets = []string{"g:AAA", "g:BBB"} // 走 api.TargetsFor，才能模拟中途退订
+
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(api.items()); got != 2 {
+		t.Fatalf("两个订阅目标该各投一条，实际 %d 条", got)
+	}
+	// 只有 g:AAA 的回执回来；随后 g:BBB 退订
+	for _, it := range api.items() {
+		if it.Target == "g:AAA" && it.OnDelivered != nil {
+			it.OnDelivered()
+		}
+	}
+	api.mu.Lock()
+	api.targets = []string{"g:AAA"}
+	api.mu.Unlock()
+
+	// 下一轮：宽限窗内重排，到点发现剩余目标全有回执 → 收敛，不再投递
+	p.round(context.Background())
+	if err := api.fire("poster:202609071600"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(api.items()); got != 2 {
+		t.Fatalf("订阅集收缩后不该再投，累计 %d 条", got)
+	}
+	var rec pushRec
+	if ok, _ := p.cfg.Doc.Get(NS, "202609071600", &rec); !ok || rec.SettledAt.IsZero() {
+		t.Error("订阅集收缩后没写全局了结账")
+	}
+	// 了结之后不再排期
+	p.round(context.Background())
+	if api.armed("poster:202609071600") {
+		t.Error("已收敛的版本又被排上期")
 	}
 }
 

@@ -105,10 +105,18 @@ func (a *fakeAPI) Cancel(id string) bool {
 
 func (a *fakeAPI) Calendar() calendar.View       { return a.cal }
 func (a *fakeAPI) Scheduler() schedule.Scheduler { return a.sched }
-func (a *fakeAPI) Targets() []string                 { return a.targets }
-func (a *fakeAPI) TargetsFor(topic string) []string  { return a.targets }
+func (a *fakeAPI) Targets() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.targets
+}
+func (a *fakeAPI) TargetsFor(topic string) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.targets
+}
 func (a *fakeAPI) RegisterTopic(t target.Topic) error { return nil }
-func (a *fakeAPI) Topics() []target.Topic            { return nil }
+func (a *fakeAPI) Topics() []target.Topic             { return nil }
 
 // fire 手动触发一个排期任务，模拟调度器到点。
 func (a *fakeAPI) fire(id string) error {
@@ -235,14 +243,36 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // settle 让扫描循环再跑一会儿，用于断言"没有发生什么"。
 func settle(d time.Duration) { time.Sleep(d) }
 
-func (r *rig) sentAt(t *testing.T, activityID string) (time.Time, bool) {
+// sentRec 与产品侧 remindRec 的 JSON 形状一致：测试包够不到私有结构，靠字段名对上。
+type sentRec struct {
+	SettledAt time.Time            `json:"settled_at"`
+	Targets   map[string]time.Time `json:"targets"`
+}
+
+func (r *rig) sentAt(t *testing.T, activityID string) (sentRec, bool) {
 	t.Helper()
-	var at time.Time
-	ok, err := r.doc.Get(calexpiry.NS, activityID, &at)
-	if err != nil {
-		t.Fatalf("读已提醒记录: %v", err)
+	var rec sentRec
+	ok, err := r.doc.Get(calexpiry.NS, activityID, &rec)
+	if err == nil {
+		return rec, ok
 	}
-	return at, ok
+	// 旧格式（裸时间戳值）：按产品侧 loadSent 的迁移语义折算成"已全局了结"
+	var at time.Time
+	if ok2, err2 := r.doc.Get(calexpiry.NS, activityID, &at); err2 == nil && ok2 {
+		return sentRec{SettledAt: at}, true
+	}
+	t.Fatalf("读已提醒记录: %v", err)
+	return sentRec{}, false
+}
+
+// deliver 模拟队列 worker 整批发送成功：逐条回调条目自带的回执（OnDelivered）。
+// 新账本模型下"fire 只投递"，账要等回执才落——测试用它扮演发送侧。
+func deliver(items []queue.Item) {
+	for _, it := range items {
+		if it.OnDelivered != nil {
+			it.OnDelivered()
+		}
+	}
 }
 
 // ---- 用例 ------------------------------------------------------------------
@@ -307,9 +337,17 @@ func TestRemindSendsOneItemPerTargetWithReadableText(t *testing.T) {
 		}
 	}
 
-	at, ok := r.sentAt(t, soonID)
-	if !ok || !at.Equal(now) {
-		t.Errorf("已提醒记录 = %v, %v；want 落盘且时刻为 %v", at, ok, now)
+	deliver(api.items()) // 模拟队列整批发送成功，回执落账
+
+	rec, ok := r.sentAt(t, soonID)
+	if !ok || rec.SettledAt.IsZero() {
+		t.Errorf("回执之后没写全局了结账：%v, %v", rec, ok)
+	}
+	if _, ok := rec.Targets["g:GROUP1"]; !ok {
+		t.Error("g:GROUP1 的回执没落账")
+	}
+	if _, ok := rec.Targets["u:USER9"]; !ok {
+		t.Error("u:USER9 的回执没落账")
 	}
 }
 
@@ -322,10 +360,11 @@ func TestSameActivityRemindedOnlyOnce(t *testing.T) {
 	if err := api.fire(taskID(soonID)); err != nil {
 		t.Fatalf("触发提醒: %v", err)
 	}
+	deliver(api.items()) // 回执落账，之后的扫描都该跳过它
 
-	settle(60 * time.Millisecond) // 让提醒落盘，之后的扫描都该跳过它
+	settle(60 * time.Millisecond) // 又跑了 ~12 轮扫描
 	schedules, submitted := api.scheduleCount(taskID(soonID)), len(api.items())
-	settle(120 * time.Millisecond) // 又跑了 ~24 轮扫描
+	settle(120 * time.Millisecond) // 再跑 ~24 轮扫描
 
 	if got := api.scheduleCount(taskID(soonID)); got != schedules {
 		t.Errorf("提醒过之后还在重复排期：%d → %d 次", schedules, got)
@@ -383,7 +422,8 @@ func TestRestartDoesNotRemindAgain(t *testing.T) {
 	if err := api.fire(taskID(soonID)); err != nil {
 		t.Fatalf("触发提醒: %v", err)
 	}
-	if _, ok := r.sentAt(t, soonID); !ok {
+	deliver(api.items()) // 回执落账
+	if rec, ok := r.sentAt(t, soonID); !ok || rec.SettledAt.IsZero() {
 		t.Fatal("已提醒记录没落盘，重启必然重发")
 	}
 
@@ -420,8 +460,8 @@ func TestNoTargetsLogsInsteadOfSending(t *testing.T) {
 	if got := api.items(); len(got) != 0 {
 		t.Errorf("没配目标却投递了 %d 条：%v", len(got), got)
 	}
-	if _, ok := r.sentAt(t, soonID); !ok {
-		t.Error("只记日志也要落已提醒记录，否则每轮扫描都刷一条日志")
+	if rec, ok := r.sentAt(t, soonID); !ok || rec.SettledAt.IsZero() {
+		t.Error("只记日志也要落全局了结账，否则每轮扫描都刷一条日志")
 	}
 	if n := r.logs.count("悠悠漫時"); n != 1 {
 		t.Errorf("同一个活动记了 %d 条日志，want 1 条（每轮扫描都刷一条就吵死了）", n)
@@ -450,8 +490,9 @@ func TestSubmitFailureIsRetriedByNextScan(t *testing.T) {
 	if got := len(api.items()); got != 2 {
 		t.Errorf("重投后投了 %d 条，want 每个目标一条", got)
 	}
-	if _, ok := r.sentAt(t, soonID); !ok {
-		t.Error("重投成功后没落已提醒记录")
+	deliver(api.items()) // 回执落账
+	if rec, ok := r.sentAt(t, soonID); !ok || rec.SettledAt.IsZero() {
+		t.Error("回执到了之后没落全局了结账")
 	}
 }
 
@@ -515,10 +556,11 @@ func TestPrunesExpiredRecordsWhenActivityEnds(t *testing.T) {
 	if err := api.fire(taskID(soonID)); err != nil {
 		t.Fatalf("fire: %v", err)
 	}
+	deliver(api.items()) // 回执落账
 
 	// 确认提醒账本已落盘
-	if _, ok := r.sentAt(t, soonID); !ok {
-		t.Fatal("fire 成功后账本应该有记录")
+	if rec, ok := r.sentAt(t, soonID); !ok || rec.SettledAt.IsZero() {
+		t.Fatal("回执之后账本应该有全局了结记录")
 	}
 
 	// 此时活动还未结束（还剩 20h），账本不应被清理
@@ -550,14 +592,14 @@ func TestPrunesOrphanedRecordsFromDoc(t *testing.T) {
 	// 手动在 doc 里写一条远古孤立活动的提醒记录（例如日历里已被裁剪淘汰）
 	ghostID := "stellasora:ghost:1"
 	oldSentTime := now.Add(-10 * 24 * time.Hour)
-	if err := r.doc.Put(calexpiry.NS, ghostID, oldSentTime); err != nil {
+	if err := r.doc.Put(calexpiry.NS, ghostID, sentRec{SettledAt: oldSentTime}); err != nil {
 		t.Fatalf("写孤立记录: %v", err)
 	}
 
 	// 同时写一条近期提醒过但日历里没有的（发送不足 Lead+24h），保护期内不应误清理
 	recentGhostID := "stellasora:ghost:recent"
 	recentSentTime := now.Add(-10 * time.Hour)
-	if err := r.doc.Put(calexpiry.NS, recentGhostID, recentSentTime); err != nil {
+	if err := r.doc.Put(calexpiry.NS, recentGhostID, sentRec{SettledAt: recentSentTime}); err != nil {
 		t.Fatalf("写近期孤立记录: %v", err)
 	}
 
@@ -608,4 +650,98 @@ func TestExpiryUsesAPITargets(t *testing.T) {
 	if sub[0].Target != "g:DYNAMIC_GROUP" {
 		t.Errorf("投递目标 = %q，期望 g:DYNAMIC_GROUP", sub[0].Target)
 	}
+}
+
+// 部分回执缺席不能把整条提醒记成已了结：扫描用同一任务 ID 重排，重投只补缺回执的目标，
+// 全员收齐后才收敛全局了结。旧实现"入队即记账"在这条路上是永久漏提醒。
+func TestPartialDeliveryReschedulesOnlyMissingTarget(t *testing.T) {
+	r := newRig(t)
+	api := newAPI(r.cal)
+	r.start(t, api, "g:GROUP1", "u:USER9")
+
+	waitFor(t, "排期出现", func() bool { _, ok := api.atOf(taskID(soonID)); return ok })
+	if err := api.fire(taskID(soonID)); err != nil {
+		t.Fatalf("触发提醒: %v", err)
+	}
+	// 两个目标都投出后，只有 g:GROUP1 的回执回来（u:USER9 那条被队列丢弃）
+	deliver(filterByTarget(api.items(), "g:GROUP1"))
+
+	// 下一轮扫描：回执未收齐不算了结，用同一任务 ID 重新排上
+	waitFor(t, "部分回执后重新排期", func() bool { return api.scheduleCount(taskID(soonID)) >= 2 })
+	if err := api.fire(taskID(soonID)); err != nil {
+		t.Fatalf("重投: %v", err)
+	}
+	items := api.items()
+	if len(items) != 3 {
+		t.Fatalf("该只补投缺回执的目标 1 条（累计 3 条），实际 %d 条：%v", len(items), items)
+	}
+	if items[2].Target != "u:USER9" {
+		t.Errorf("补投目标 = %q，want u:USER9", items[2].Target)
+	}
+
+	// 缺的那份回执到了 → 收敛全局了结 → 之后的扫描不再重排重投
+	deliver(items[2:])
+	settle(60 * time.Millisecond)
+	if got := len(api.items()); got != 3 {
+		t.Errorf("全员收齐后扫描还在重投：%d → %d 条", 3, got)
+	}
+	if rec, ok := r.sentAt(t, soonID); !ok || rec.SettledAt.IsZero() {
+		t.Error("全员收齐后没写全局了结账")
+	}
+}
+
+// 订阅集收缩（有人退订）后，done 按当前订阅集现算"全员已收执"：扫描不再重排、
+// 不再投递。且这条判定**不写全局了结**——它是活的，订阅集再变会自动翻转，
+// 活动结束后由 pruneExpired 清理。与 biliwatch/calposter 的粘性 settle 刻意不同：
+// 提醒对后来订阅的群仍有时效价值，补收是对的；它们的旧内容必须抑制。
+func TestShrunkTargetSetStopsRescheduling(t *testing.T) {
+	r := newRig(t)
+	api := newAPI(r.cal)
+	r.start(t, api, "g:GROUP1", "u:USER9")
+
+	waitFor(t, "排期出现", func() bool { _, ok := api.atOf(taskID(soonID)); return ok })
+	if err := api.fire(taskID(soonID)); err != nil {
+		t.Fatalf("触发提醒: %v", err)
+	}
+	// 只有 g:GROUP1 的回执回来；随后 u:USER9 退订
+	deliver(filterByTarget(api.items(), "g:GROUP1"))
+	api.mu.Lock()
+	api.targets = []string{"g:GROUP1"}
+	api.mu.Unlock()
+
+	// 扫描按收缩后的订阅集现算：全员已收执 → 不再重排、不再投递
+	before := api.scheduleCount(taskID(soonID))
+	n := len(api.items())
+	settle(60 * time.Millisecond)
+	after := api.scheduleCount(taskID(soonID))
+	got := api.items()
+	if after != before {
+		t.Errorf("收缩后扫描还在重排：%d → %d 次", before, after)
+	}
+	if len(got) != n {
+		t.Errorf("收缩后扫描还在投递：%d → %d 条", n, len(got))
+	}
+
+	// 且判定不落盘：记录保持"未全局了结"，只有该目标的回执
+	rec, ok := r.sentAt(t, soonID)
+	if !ok {
+		t.Fatal("回执记录丢了")
+	}
+	if !rec.SettledAt.IsZero() {
+		t.Error("收缩判定不该写成全局了结——判定要保持是活的")
+	}
+	if _, ok := rec.Targets["g:GROUP1"]; !ok {
+		t.Error("g:GROUP1 的回执没落账")
+	}
+}
+
+// filterByTarget 挑出投给指定目标的条目。
+func filterByTarget(items []queue.Item, target string) []queue.Item {
+	var out []queue.Item
+	for _, it := range items {
+		if it.Target == target {
+			out = append(out, it)
+		}
+	}
+	return out
 }

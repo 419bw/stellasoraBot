@@ -94,14 +94,14 @@ func (c Config) withDefaults() Config {
 type Poster struct {
 	cfg Config
 
-	mu    sync.Mutex
-	api   kernel.API // Start 之后才有：推图要排期与投递
-	sent  map[string]time.Time
-	art   *ArtCache        // 海报字节，跨分钟复用
-	shots map[string]shot  // 版本键 → 当前数据下画好的那一张
-	calls map[string]*call // 同一个键并发的取图请求合成一次画布
-	hits  int
-	built int
+	mu     sync.Mutex
+	api    kernel.API          // Start 之后才有：推图要排期与投递
+	ledger map[string]*pushRec // 版本键 → 账（内存镜像，权威；磁盘是它的投影）
+	art    *ArtCache           // 海报字节，跨分钟复用
+	shots  map[string]shot     // 版本键 → 当前数据下画好的那一张
+	calls  map[string]*call    // 同一个键并发的取图请求合成一次画布
+	hits   int
+	built  int
 }
 
 // shot 每个版本只留一份：数据变了指纹就变、时钟跨过 5 分钟桶也变，旧的直接作废。
@@ -124,7 +124,7 @@ func New(cfg Config) *Poster {
 		panic("calposter: Records 与 Capturer 都不能为空")
 	}
 	return &Poster{
-		cfg: cfg.withDefaults(), art: NewArtCache(cfg.ArtDir, 0), sent: map[string]time.Time{},
+		cfg: cfg.withDefaults(), art: NewArtCache(cfg.ArtDir, 0), ledger: map[string]*pushRec{},
 		shots: map[string]shot{}, calls: map[string]*call{},
 	}
 }
@@ -267,8 +267,16 @@ const renderBucket = 5 * time.Minute
 
 // ---------- 作为 kernel.Feature：预热 + 到点主动推图 ----------
 
-// NS 是本功能在 store.Doc 里占的命名空间：键=版本键，值=推图时刻。
+// NS 是本功能在 store.Doc 里占的命名空间：键=版本键，值=推送账本记录。
 const NS = "calposter"
+
+// pushRec 是账本记录：键=版本键（裸键，不带目标），值=哪些目标收到了、是否全局了结。
+// 写入纪律：磁盘永远是"锁内以内存镜像为准整条序列化 + Put"，不在盘上读改写——
+// 两个 worker 的回执并发回来时各改各的内存、整条覆盖写盘，天然无竞争且幂等。
+type pushRec struct {
+	SettledAt time.Time            `json:"settled_at,omitempty"` // 全局了结：全员收齐/无目标只记日志的轮次
+	Targets   map[string]time.Time `json:"targets,omitempty"`    // 目标 → 回执时刻
+}
 
 // pushGrace 是"开启时刻已经过了还补不补"的窗口。重启晚了 1 小时内照发一次；
 // 更早的不补——这个功能第一次上线时，把历史上每个版本都推一遍是刷屏。
@@ -383,7 +391,7 @@ func (p *Poster) armPushes(recs []annsync.Rec) {
 			continue
 		}
 		at := t.Add(p.cfg.OpenAt)
-		if now.Sub(at) > pushGrace || p.done(w.Key) {
+		if now.Sub(at) > pushGrace || p.settled(w.Key) {
 			continue
 		}
 		key := w.Key
@@ -391,39 +399,52 @@ func (p *Poster) armPushes(recs []annsync.Rec) {
 	}
 }
 
-// push 到点了：只做一件事——把"该发哪一张"投进发送队列。
+// push 到点了：只做一件事——把"该发哪一张、发给还没收到的目标"投进发送队列。
 //
 // 这里绝不出图：调度器是同步跑回调的（schedule.go 的 Fn 契约），画一趟就把同期
 // 到期的提醒一起拖住了。渲染与上传都推到 Sink 真要发的那一刻——file_info 的 ttl
 // 只有几分钟，在队列里排过一轮就可能已经过期。
 //
-// 账本也不在这里写：只有 Sink 报"发出去了"才算了结（MarkPushed）。画不出来或发送
-// 失败时队列自己退避重试，最终放弃也不记账，下一轮 armPushes 会重新排上——宁可晚发，
-// 也不要发一张空的或干脆不发还装作发过了。
+// 账本也不在这里写：只有队列报"发出去了"（条目的 OnDelivered 回执）才算了结。
+// 画不出来或发送失败时队列自己退避重试，最终放弃也不记账，下一轮 armPushes 会
+// 重新排上——宁可晚发，也不要发一张空的或干脆不发还装作发过了。
 func (p *Poster) push(_ context.Context, key string) error {
 	// 以账本为准再判一次：armPushes 的"查已推 → 排期"不是原子的，排期循环可能
 	// 刚越过那道检查、这个任务就触发了，于是它会被重新排上、被调度器立刻再跑一遍。
-	if p.done(key) {
+	if p.settled(key) {
 		return nil
 	}
 	targets := p.targets()
 	if len(targets) == 0 {
 		p.cfg.Logf("calposter: 没配推图目标，版本 %s 的图只记日志", key)
-		p.markSent(key)
+		p.settle(key)
 		return nil
 	}
+	pending := 0
 	var errs []error
-	for _, target := range targets {
+	for _, tgt := range targets {
+		if p.servedTo(tgt, key) {
+			continue // 该目标已有回执（或整条已全局了结），不重投
+		}
+		pending++
 		item := queue.Item{
-			ID:     "poster:" + key + "@" + target,
-			Target: target,
+			ID:     "poster:" + key + "@" + tgt,
+			Target: tgt,
 			Media:  &queue.Media{Kind: "poster", Key: key},
 			Topic:  "poster",
+			// 回执卡随包裹走：队列报发送成功才记账，失败与丢弃永远不记
+			OnDelivered: func() { p.MarkPushed(tgt, key) },
 		}
 		// 每个目标都试完再汇总：中途因为队列满返回，会漏掉后面的目标。
 		if err := p.api.Submit(item); err != nil {
-			errs = append(errs, fmt.Errorf("投版本 %s 到 %s: %w", key, target, err))
+			errs = append(errs, fmt.Errorf("投版本 %s 到 %s: %w", key, tgt, err))
 		}
+	}
+	if pending == 0 {
+		// 订阅集可能在投递后收缩过（有人退订）：剩余目标全有回执就收敛写全局了结，
+		// 宽限窗内不再反复空排空扫；语义与"全员收齐才收敛"一致。
+		p.settle(key)
+		return nil
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("calposter: %v", errors.Join(errs...))
@@ -440,43 +461,105 @@ func (p *Poster) targets() []string {
 	return p.cfg.Targets
 }
 
-// MarkPushed 由发送侧在"这条真的发出去了"之后调用：这是账本唯一的写入口。
-// 队列对同一批目标会重试，所以这里要幂等（markSent 自己覆盖时间戳）。
-func (p *Poster) MarkPushed(key string) {
-	if key == "" || p.done(key) {
+// MarkPushed 由队列条目的 OnDelivered 在"这条真的发出去了"之后调用：账本唯一的
+// 常规写入口。队列对同一批目标会重试，所以这里要幂等（markTo 覆盖时间戳）。
+func (p *Poster) MarkPushed(tgt, key string) {
+	if key == "" || tgt == "" {
 		return
 	}
-	p.markSent(key)
-	p.cfg.Logf("calposter: 版本 %s 已发给目标，记为已推", key)
+	p.markTo(tgt, key)
 }
 
-// loadSent 捞回上一次进程的推图记录。值解不开时按"已推过"处理，与 calexpiry
-// 同一条取舍：键在就说明确实发过一次，重发只会刷屏。
+// loadSent 捞回上一次进程的推图记录。解不开的值按"已全局了结"兜底，与 calexpiry
+// 同一条取舍：重发只会刷屏，漏发的补不回来。不认识任何旧格式（开发期不做迁移）。
 func (p *Poster) loadSent() error {
+	// 虽然目前只在 Start 单协程里跑，锁与另两个功能的 load 保持同一套风格，
+	// 免得将来换个调用点就变成静默的数据竞争。
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.cfg.Doc.Scan(NS, "", func(key string, raw []byte) error {
-		var at time.Time
-		if err := json.Unmarshal(raw, &at); err != nil {
-			p.cfg.Logf("calposter: 已推图记录 %s 解不开，按已推处理: %v", key, err)
-			p.sent[key] = time.Time{}
-			return nil
+		var rec pushRec
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			rec.SettledAt = time.Now()
+			p.cfg.Logf("calposter: 已推图记录 %s 解不开，按已全局了结兜底: %v", key, err)
 		}
-		p.sent[key] = at
+		p.ledger[key] = &rec
 		return nil
 	})
 }
 
-func (p *Poster) done(key string) bool {
+// settled 报告该版本是否已全局了结（全员收到过，或历史上按"已处理"记过账）。
+func (p *Poster) settled(key string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	_, ok := p.sent[key]
+	rec, ok := p.ledger[key]
+	return ok && !rec.SettledAt.IsZero()
+}
+
+// servedTo 报告该版本是否已发给指定目标（有回执，或整条已全局了结）。
+func (p *Poster) servedTo(tgt, key string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, ok := p.ledger[key]
+	if !ok {
+		return false
+	}
+	if !rec.SettledAt.IsZero() {
+		return true
+	}
+	_, ok = rec.Targets[tgt]
 	return ok
 }
 
-func (p *Poster) markSent(key string) {
-	if err := p.cfg.Doc.Put(NS, key, p.cfg.Now()); err != nil {
+// markTo 记"该目标已收到"；当前全部订阅目标都收到时收敛写全局了结。
+// 幂等（覆盖时间戳）。磁盘在锁内以内存镜像为准整条写回，严格同序。
+func (p *Poster) markTo(tgt, key string) {
+	now := p.cfg.Now()
+	p.mu.Lock()
+	rec := p.ledger[key]
+	if rec == nil {
+		rec = &pushRec{Targets: map[string]time.Time{}}
+		p.ledger[key] = rec
+	}
+	if rec.Targets == nil {
+		rec.Targets = map[string]time.Time{}
+	}
+	rec.Targets[tgt] = now
+	if rec.SettledAt.IsZero() {
+		if targets := p.targets(); len(targets) > 0 {
+			allServed := true
+			for _, t := range targets {
+				if _, ok := rec.Targets[t]; !ok {
+					allServed = false
+					break
+				}
+			}
+			if allServed {
+				rec.SettledAt = now
+				p.cfg.Logf("calposter: 版本 %s 已发给全部 %d 个目标，记为已推", key, len(targets))
+			}
+		}
+	}
+	err := p.cfg.Doc.Put(NS, key, rec)
+	p.mu.Unlock()
+	if err != nil {
 		p.cfg.Logf("calposter: 写已推图记录 %s 失败（重启后可能重发一次）: %v", key, err)
 	}
+}
+
+// settle 把版本记为全局了结。无目标只记日志的轮次也必须落账，否则每轮都重排。
+func (p *Poster) settle(key string) {
+	now := p.cfg.Now()
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.sent[key] = p.cfg.Now()
+	rec := p.ledger[key]
+	if rec == nil {
+		rec = &pushRec{}
+		p.ledger[key] = rec
+	}
+	rec.SettledAt = now
+	err := p.cfg.Doc.Put(NS, key, rec)
+	p.mu.Unlock()
+	if err != nil {
+		p.cfg.Logf("calposter: 写已推图记录 %s 失败（重启后可能重发一次）: %v", key, err)
+	}
 }

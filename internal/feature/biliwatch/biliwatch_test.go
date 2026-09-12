@@ -42,17 +42,29 @@ func (m *mockCapturer) Capture(page []byte, route string) ([]byte, error) {
 	return res, nil
 }
 
-// mockFetcher 用于注入受控的 B站动态列表
+// mockFetcher 用于注入受控的 B站动态列表。
+// Start 起的后台轮会并发读 items，测试改它必须走 setter 加锁——
+// 与 calposter 测试的 recBox 同一条教训（直接递可变切片就是 -race 抓的现行）。
 type mockFetcher struct {
+	mu    sync.Mutex
 	items []DynamicItem
 	err   error
 }
 
 func (m *mockFetcher) FetchLatest(ctx context.Context, uid string) ([]DynamicItem, error) {
-	if m.err != nil {
-		return nil, m.err
+	m.mu.Lock()
+	items, err := m.items, m.err
+	m.mu.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	return m.items, nil
+	return items, nil
+}
+
+func (m *mockFetcher) setItems(items []DynamicItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.items = items
 }
 
 // mockKernelAPI 用于记录主题注册和消息投递
@@ -87,6 +99,18 @@ func (m *mockKernelAPI) Submit(item queue.Item) error {
 	defer m.mu.Unlock()
 	m.submitted = append(m.submitted, item)
 	return nil
+}
+
+func (m *mockKernelAPI) items() []queue.Item {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]queue.Item(nil), m.submitted...)
+}
+
+func (m *mockKernelAPI) clearSubmitted() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.submitted = nil
 }
 
 func (m *mockKernelAPI) Schedule(id string, at time.Time, fn func(context.Context) error) {}
@@ -344,11 +368,11 @@ func TestColdBootProtection(t *testing.T) {
 	}
 
 	// 4. 模拟官方发布了一条全新的动态 dyn_104
-	fetcher.items = []DynamicItem{
+	fetcher.setItems([]DynamicItem{
 		{IdStr: "dyn_104"},
 		{IdStr: "dyn_103"},
 		{IdStr: "dyn_102"},
-	}
+	})
 
 	// 手动触发一轮 round
 	feat.round(ctx)
@@ -461,7 +485,7 @@ func TestMemoryBoundedEvictionAndDiskPersistence(t *testing.T) {
 	for i := 1; i <= 40; i++ {
 		manyItems = append(manyItems, DynamicItem{IdStr: fmt.Sprintf("dyn_%d", i)})
 	}
-	fetcher.items = manyItems
+	fetcher.setItems(manyItems)
 	feat.round(ctx)
 
 	feat.mu.Lock()
@@ -471,34 +495,140 @@ func TestMemoryBoundedEvictionAndDiskPersistence(t *testing.T) {
 		t.Fatalf("f.items 数量超限: 期望 <= %d，实际 %d", maxCachedItems, itemsCount)
 	}
 
-	// 2. 测试已推记录内存 TTL 淘汰（模拟一条 35 天前已推的动态）
+	// 2. 测试账本内存 TTL 淘汰（模拟一条 35 天前已了结的动态）
 	oldID := "dyn_ancient"
 	oldTime := time.Now().Add(-35 * 24 * time.Hour)
 	// 写入磁盘持久化
-	_ = doc.Put(NS, oldID, oldTime)
+	_ = doc.Put(NS, oldID, pushRec{SettledAt: oldTime})
 
 	feat.mu.Lock()
-	feat.pushed[oldID] = oldTime
+	feat.ledger[oldID] = &pushRec{SettledAt: oldTime}
 	feat.mu.Unlock()
 
-	// 跑一轮 round 触发内存已推记录淘汰
+	// 跑一轮 round 触发内存账本记录淘汰
 	feat.round(ctx)
 
 	// 验证内存中已被淘汰（删除）
 	feat.mu.Lock()
-	_, inMem := feat.pushed[oldID]
+	_, inMem := feat.ledger[oldID]
 	feat.mu.Unlock()
 	if inMem {
-		t.Fatalf("内存中的超期已推记录未能成功清理！")
+		t.Fatalf("内存中的超期账本记录未能成功清理！")
 	}
 
 	// 3. 验证磁盘中持久化保留（磁盘不删），且 isPushed 能够从磁盘查回
-	var diskTime time.Time
-	foundOnDisk, err := doc.Get(NS, oldID, &diskTime)
+	var diskRec pushRec
+	foundOnDisk, err := doc.Get(NS, oldID, &diskRec)
 	if err != nil || !foundOnDisk {
 		t.Fatalf("磁盘中的历史持久化记录不应被删除！err: %v, found: %v", err, foundOnDisk)
 	}
 	if !feat.isPushed(oldID) {
-		t.Fatalf("isPushed 应能从磁盘兜底查出已推状态")
+		t.Fatalf("isPushed 应能从磁盘兜底查出已了结状态")
+	}
+}
+
+// 多目标账必须记到"目标×动态"粒度：一个群先成功绝不再压住其他群——
+// 没送到的那部分由下一轮对账补投，只投缺回执的目标，收齐后收敛全局了结。
+func TestPartialDeliveryResumesOnlyMissingTarget(t *testing.T) {
+	doc := storetest.NewMem()
+	api := &mockKernelAPI{targetList: []string{"g:group_1", "g:group_2"}}
+	fetcher := &mockFetcher{}
+	feat := New(Config{Doc: doc, Cap: &mockCapturer{}, Fetcher: fetcher})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 预置一条历史基线绕过冷启动（否则首轮会把当前窗口全部设为基线）
+	if err := doc.Put(NS, "dyn_old", pushRec{SettledAt: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatalf("预置账本: %v", err)
+	}
+	if err := feat.Start(ctx, api); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond) // 等 Start 的首轮 round 跑完（此刻 fetcher 还是空的）
+	api.clearSubmitted()
+
+	// 官方发布 dyn_104：两个订阅目标各投一条
+	fetcher.setItems([]DynamicItem{{IdStr: "dyn_104"}})
+	feat.round(ctx)
+	if got := len(api.items()); got != 2 {
+		t.Fatalf("两个订阅目标该各投一条，实际 %d 条", got)
+	}
+
+	// 模拟队列：g:group_1 发送成功（回执），g:group_2 那条被丢弃（回执永远不来）
+	for _, it := range api.items() {
+		if it.Target == "g:group_1" && it.OnDelivered != nil {
+			it.OnDelivered()
+		}
+	}
+
+	// 下一轮对账：只给缺回执的 g:group_2 补投，g:group_1 不重收
+	api.clearSubmitted()
+	feat.round(ctx)
+	items := api.items()
+	if len(items) != 1 {
+		t.Fatalf("只该给缺回执的目标补投 1 条，实际 %d 条：%v", len(items), items)
+	}
+	if items[0].Target != "g:group_2" {
+		t.Errorf("补投目标 = %q，want g:group_2", items[0].Target)
+	}
+
+	// g:group_2 的回执到了 → 收敛全局了结 → 之后再无投递
+	items[0].OnDelivered()
+	api.clearSubmitted()
+	feat.round(ctx)
+	if got := len(api.items()); got != 0 {
+		t.Errorf("全员收齐后不该再投，实际 %d 条", got)
+	}
+	var rec pushRec
+	if ok, _ := doc.Get(NS, "dyn_104", &rec); !ok || rec.SettledAt.IsZero() {
+		t.Error("全员收齐后没写全局了结账")
+	}
+}
+
+// 订阅集收缩后（有人退订），"剩余目标全有回执"也要能收敛写全局了结——
+// 免得这条动态在后续轮次里反复空扫，与"全员收齐才收敛"的既有语义保持一致。
+func TestShrunkTargetSetSettlesLedger(t *testing.T) {
+	doc := storetest.NewMem()
+	api := &mockKernelAPI{targetList: []string{"g:group_1", "g:group_2"}}
+	fetcher := &mockFetcher{}
+	feat := New(Config{Doc: doc, Cap: &mockCapturer{}, Fetcher: fetcher})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := doc.Put(NS, "dyn_old", pushRec{SettledAt: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatalf("预置账本: %v", err)
+	}
+	if err := feat.Start(ctx, api); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	api.clearSubmitted()
+
+	fetcher.setItems([]DynamicItem{{IdStr: "dyn_104"}})
+	feat.round(ctx)
+	if got := len(api.items()); got != 2 {
+		t.Fatalf("两个订阅目标该各投一条，实际 %d 条", got)
+	}
+	// 只有 g:group_1 的回执回来；随后 g:group_2 退订
+	for _, it := range api.items() {
+		if it.Target == "g:group_1" && it.OnDelivered != nil {
+			it.OnDelivered()
+		}
+	}
+	api.mu.Lock()
+	api.targetList = []string{"g:group_1"}
+	api.mu.Unlock()
+
+	// 下一轮对账：剩余目标全有回执 → 收敛全局了结，且不再投递
+	api.clearSubmitted()
+	feat.round(ctx)
+	if got := len(api.items()); got != 0 {
+		t.Fatalf("订阅集收缩后不该再投，实际 %d 条", got)
+	}
+	var rec pushRec
+	if ok, _ := doc.Get(NS, "dyn_104", &rec); !ok || rec.SettledAt.IsZero() {
+		t.Error("订阅集收缩后没写全局了结账")
 	}
 }

@@ -104,7 +104,9 @@ calposter.Fetch(key)   ← 发送队列的 Sink 在 worker 上走这条：允许
        ↓ Build 数据集 → calposter.Page → render.Capturer.Capture → PNG
 「日历」命令回 command.Reply{Image}；版本开闸只投 queue.Item{Media{poster,key}}——
 调度回调绝不出图（它同步跑 Fn，画一趟就把同期到期的提醒一起拖住），图在真要发的那一刻
-由 Sink 现取；账本是 Sink 发送成功后回调 MarkPushed 写的，失败一律不记，下一轮重排补发。
+由 Sink 现取；账本由队列条目自带的 OnDelivered 回执写（发送成功才逐条回调，失败与丢弃
+一律不记），账键为 pushRec{SettledAt, Targets}：记到"目标×版本"粒度，全部订阅目标收齐
+才收敛写全局了结；下一轮重排只补缺回执的目标。
        ↓
 qq.UploadGroupImage 四步 → file_info → msg_type=7
        命令通道包一层 qq.MediaCache：同字节命中就跳过四步（只付发送那一下），
@@ -123,14 +125,15 @@ activeSink (发送侧 worker 出队):
   │    ├─ 单图槽位缓存 latestPNG 命中？→ 0ms 内存秒出
   │    └─ 未命中 → Singleflight 汇聚并发请求 → 浏览器仅渲染一次 → 覆盖单槽缓存
   ├─ qq.UploadGroupImage (分片上传获取 file_info)
-  └─ qq.SendGroupMessage → 成功回调 biliwatch.MarkPushed 记录落盘账本
+  └─ qq.SendGroupMessage → 成功后队列逐条回调条目自带的 OnDelivered 回执
+       └─ biliwatch 记"该群已收到"（pushRec.Targets），全部订阅群收齐才收敛写全局了结
 
 4. 主动消息与出图分发（activeSink）：
-queue.Dispatcher (多群消息出队)
+queue.Dispatcher (多群消息出队，整批成功后逐条回调条目自带的 OnDelivered 回执)
        ↓
-main.activeSink
-       ├─ Media.Kind == "poster" → calposter.Fetch() → 上传 → 发送 → calposter.MarkPushed()
-       └─ Media.Kind == "bili"   → biliwatch.Fetch() → 上传 → 发送 → biliwatch.MarkPushed()
+main.activeSink（只管出图与发送，不参与记账）
+       ├─ Media.Kind == "poster" → calposter.Fetch() → 上传 → 发送 → calposter 记回执账
+       └─ Media.Kind == "bili"   → biliwatch.Fetch() → 上传 → 发送 → biliwatch 记回执账
 ```
 
 ## QQ 平台硬约束

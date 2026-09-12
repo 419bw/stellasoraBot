@@ -161,6 +161,40 @@ func TestMergesSameTopicIntoOneSend(t *testing.T) {
 	}
 }
 
+// OnDelivered 是"这条真的发出去了"的队列侧权威时刻：整批成功后逐条回调（合并批
+// 一条消息装多个条目，各记各的账）；失败重试与最终丢弃一律不回调——功能拿它记账，
+// 这两条边界就是"只有发送成功才记账"的机制保证。
+func TestOnDeliveredFiresPerItemOnSuccessOnly(t *testing.T) {
+	var mu sync.Mutex
+	fired := map[string]int{}
+
+	sink := &recSink{failFor: 1} // 第一次 Send 失败（可重试），第二次成功
+	d := New(sink, fastPolicy())
+	startDispatcher(t, d)
+
+	d.Submit(Item{ID: "m1", Target: "g1", Topic: "t", Mergeable: true, Text: "甲",
+		OnDelivered: func() { mu.Lock(); fired["m1"]++; mu.Unlock() }})
+	d.Submit(Item{ID: "m2", Target: "g1", Topic: "t", Mergeable: true, Text: "乙",
+		OnDelivered: func() { mu.Lock(); fired["m2"]++; mu.Unlock() }})
+
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 2 }, 5*time.Second, "两条合并消息未送达")
+	sends := sink.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("成功发送次数 = %d, want 1（recSink 只记成功的批次）", len(sends))
+	}
+	if got := len(sends[0].ids); got != 2 {
+		t.Fatalf("成功批的条目数 = %d, want 2（合并批）", got)
+	}
+	waitForStats(t, d, func(s Stats) bool { return s.Retries >= 2 && s.Sent == 2 }, 5*time.Second, "重试未完成")
+	time.Sleep(50 * time.Millisecond) // 给"不该发生的回调"留出暴露窗口
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fired["m1"] != 1 || fired["m2"] != 1 {
+		t.Errorf("回执回调次数 = %v, want 各恰好 1 次（失败那批不许回调）", fired)
+	}
+}
+
 func TestDifferentTopicsAreNotMerged(t *testing.T) {
 	sink := &recSink{}
 	d := New(sink, fastPolicy())

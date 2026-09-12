@@ -4,6 +4,8 @@ package schedule
 import (
 	"container/heap"
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -12,6 +14,8 @@ type Task struct {
 	ID string
 	At time.Time
 	// Fn 应当只做非阻塞的投递（例如往发送队列塞消息），耗时会拖住整个调度循环。
+	// Fn 的 panic 由调度器兜住：降级为错误走 OnError 上报，任务弹出即删的语义
+	// 不变，重排是功能自己的事——业务任务偶发崩溃不该带走整个进程（审计 P2-3）。
 	Fn func(ctx context.Context) error
 
 	heapIndex int
@@ -164,10 +168,22 @@ func (s *HeapScheduler) runDue(ctx context.Context) {
 		delete(s.byID, t.ID)
 		s.mu.Unlock()
 
-		if err := t.Fn(ctx); err != nil && s.OnError != nil {
+		if err := s.invoke(t, ctx); err != nil && s.OnError != nil {
 			s.OnError(t.ID, err)
 		}
 	}
+}
+
+// invoke 是 Fn 边界上的保险丝：业务任务的 panic 一律降级为普通错误，只走 OnError
+// 上报，调度循环与进程都活着。逐任务包裹——一个任务 panic 不殃及同批到期的其他
+// 任务。只包 Fn 这一次调用，调度器自身的 bug 该炸还得炸，不吞机制层错误。审计 P2-3。
+func (s *HeapScheduler) invoke(t *Task, ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("schedule: 任务 panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return t.Fn(ctx)
 }
 
 func (s *HeapScheduler) delay() time.Duration {

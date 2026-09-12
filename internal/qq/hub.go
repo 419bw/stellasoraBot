@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 	"sync"
 )
 
@@ -26,13 +27,14 @@ type Hub struct {
 	msg map[string][]MessageHandler
 	raw map[string][]RawHandler
 
-	statMu     sync.Mutex
-	admitted   uint64
-	dupDropped uint64
-	forgotten  uint64
-	decodeFail uint64
-	handlerErr uint64
-	byType     map[string]uint64
+	statMu       sync.Mutex
+	admitted     uint64
+	dupDropped   uint64
+	forgotten    uint64
+	decodeFail   uint64
+	handlerErr   uint64
+	handlerPanic uint64
+	byType       map[string]uint64
 }
 
 func NewHub(dedup *Deduper, logf func(string, ...any)) *Hub {
@@ -72,6 +74,7 @@ func (h *Hub) Dedup() *Deduper { return h.dedup }
 // 返回值刻意不含业务错误：在这里返回 error 会让网关判定链路出问题并断开重连，
 // 于是「某个处理器报错」会演变成「机器人反复掉线」。处理失败一律就地记日志 + 计数，
 // 由 Stats 暴露出去。WS 这条链路平台不会重投，报错也没有重试可言。
+// 处理器 panic 同理更不能漏出去：在 invokeHandler 边界就地吸收（审计 P2-3）。
 //
 // 处理器按到达顺序同步执行，不额外起 goroutine：并发派发会打乱同一会话里多条消息的
 // 先后顺序，还会让去重判定和实际处理之间出现竞态。需要慢操作请丢给自己的队列。
@@ -99,7 +102,13 @@ func (h *Hub) dispatch(ctx context.Context, ev Event, retryOnFail bool) error {
 
 	if !IsMessageEvent(ev.Type) {
 		for _, fn := range h.rawHandlers(ev.Type) {
-			if err := fn(ctx, ev); err != nil && ctx.Err() == nil {
+			err, panicked := invokeHandler(func() error { return fn(ctx, ev) })
+			if panicked {
+				out.handlerPanic++
+				h.logf("qq: 事件 %s 的处理器 panic（已兜住，继续后续处理器）: %v", ev.Type, err)
+				continue
+			}
+			if err != nil && ctx.Err() == nil {
 				out.handlerErr++
 				h.logf("qq: 事件 %s 的处理器返回错误: %v", ev.Type, err)
 			}
@@ -126,7 +135,16 @@ func (h *Hub) dispatch(ctx context.Context, ev Event, retryOnFail bool) error {
 	out.admitted++
 	var failed error
 	for _, fn := range h.msgHandlers(ev.Type) {
-		if err := fn(ctx, m); err != nil && ctx.Err() == nil {
+		err, panicked := invokeHandler(func() error { return fn(ctx, m) })
+		if panicked {
+			// panic 就地吸收：记日志 + 计数，不进 failed、不外抛。外抛在 WS 上等于
+			// 让网关断连重连（Handle 的注释），在 webhook 上等于 Forget 后让平台
+			// 无限重投——确定性 panic 两条路都会变成风暴。
+			out.handlerPanic++
+			h.logf("qq: 事件 %s 的处理器 panic（已兜住，继续后续处理器）: %v", ev.Type, err)
+			continue
+		}
+		if err != nil && ctx.Err() == nil {
 			out.handlerErr++
 			failed = err
 			h.logf("qq: 事件 %s 的处理器返回错误: %v", ev.Type, err)
@@ -140,14 +158,28 @@ func (h *Hub) dispatch(ctx context.Context, ev Event, retryOnFail bool) error {
 	return nil
 }
 
+// invokeHandler 是处理器边界上的保险丝：功能注册的处理器 panic 一律降级为带栈
+// 的错误值并由调用方就地吸收——功能偶发崩溃不该带走整个进程。只包 fn 这一次
+// 调用，hub 自身的 bug 该炸还得炸，不吞机制层错误。审计 P2-3。
+func invokeHandler(fn func() error) (err error, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("qq: 处理器 panic: %v\n%s", r, debug.Stack())
+			panicked = true
+		}
+	}()
+	return fn(), false
+}
+
 // outcome 是单个事件的处理结果，攒起来一次性记账，避免每个事件抢多次锁。
 type outcome struct {
-	kind       string
-	admitted   uint64
-	dupDropped uint64
-	forgotten  uint64
-	decodeFail uint64
-	handlerErr uint64
+	kind         string
+	admitted     uint64
+	dupDropped   uint64
+	forgotten    uint64
+	decodeFail   uint64
+	handlerErr   uint64
+	handlerPanic uint64
 }
 
 func (h *Hub) record(o outcome) {
@@ -159,6 +191,7 @@ func (h *Hub) record(o outcome) {
 	h.dupDropped += o.dupDropped
 	h.decodeFail += o.decodeFail
 	h.handlerErr += o.handlerErr
+	h.handlerPanic += o.handlerPanic
 }
 
 func (h *Hub) msgHandlers(kind string) []MessageHandler {
@@ -175,13 +208,14 @@ func (h *Hub) rawHandlers(kind string) []RawHandler {
 
 // HubStats 是入口侧的累计计数，给日志、压测报告和自检断言用。
 type HubStats struct {
-	Admitted   uint64            // 放行给业务处理器的消息数
-	Forgotten  uint64            // 处理失败后撤销去重登记的条数（仅 webhook 前端）
-	DupDropped uint64            // 因重复投递被挡下的消息数
-	DecodeFail uint64            // 解码失败的事件数
-	HandlerErr uint64            // 处理器返回错误的次数
-	ByType     map[string]uint64 // 按事件类型计数（含未订阅的类型）
-	Dedup      DedupStats
+	Admitted     uint64            // 放行给业务处理器的消息数
+	Forgotten    uint64            // 处理失败后撤销去重登记的条数（仅 webhook 前端）
+	DupDropped   uint64            // 因重复投递被挡下的消息数
+	DecodeFail   uint64            // 解码失败的事件数
+	HandlerErr   uint64            // 处理器返回错误的次数
+	HandlerPanic uint64            // 处理器 panic 被保险丝兜住的次数（审计 P2-3）
+	ByType       map[string]uint64 // 按事件类型计数（含未订阅的类型）
+	Dedup        DedupStats
 }
 
 func (h *Hub) Stats() HubStats {
@@ -191,12 +225,13 @@ func (h *Hub) Stats() HubStats {
 		byType[k] = v
 	}
 	s := HubStats{
-		Admitted:   h.admitted,
-		Forgotten:  h.forgotten,
-		DupDropped: h.dupDropped,
-		DecodeFail: h.decodeFail,
-		HandlerErr: h.handlerErr,
-		ByType:     byType,
+		Admitted:     h.admitted,
+		Forgotten:    h.forgotten,
+		DupDropped:   h.dupDropped,
+		DecodeFail:   h.decodeFail,
+		HandlerErr:   h.handlerErr,
+		HandlerPanic: h.handlerPanic,
+		ByType:       byType,
 	}
 	h.statMu.Unlock()
 	s.Dedup = h.dedup.Stats()

@@ -4,6 +4,8 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,8 @@ type Batch struct {
 }
 
 type Sink interface {
+	// Send 投递一批。panic 视为投递失败：worker 把它降级成错误，照常退避重试
+	// 与终态上报——业务实现偶发崩溃不该带走整个进程（审计 P2-3）。
 	Send(ctx context.Context, b *Batch) error
 }
 
@@ -541,7 +545,7 @@ func (d *Dispatcher) sweepExpiredLocked(now time.Time) []Item {
 
 func (d *Dispatcher) worker(ctx context.Context, jobs <-chan *job) {
 	for j := range jobs {
-		err := d.sink.Send(ctx, j.batch)
+		err := d.sendGuarded(ctx, j.batch)
 		d.mu.Lock()
 		d.active -= len(j.states)
 		if err == nil {
@@ -563,6 +567,19 @@ func (d *Dispatcher) worker(ctx context.Context, jobs <-chan *job) {
 		}
 		d.notify()
 	}
+}
+
+// sendGuarded 是 Sink 边界上的保险丝：业务实现（无头浏览器、平台 HTTP、模板渲染）
+// 的 panic 一律降级为普通错误，走既有的退避重试与终态上报，不带走整个进程——
+// worker goroutine 一炸，两个 worker 和整个进程一起没。只包 Send 这一次调用，
+// 队列自身的 bug 该炸还得炸，不吞机制层错误。审计 P2-3。
+func (d *Dispatcher) sendGuarded(ctx context.Context, b *Batch) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("queue: Sink panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return d.sink.Send(ctx, b)
 }
 
 func (d *Dispatcher) requeue(j *job, cause error) {

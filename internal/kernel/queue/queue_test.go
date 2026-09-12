@@ -654,3 +654,93 @@ func TestOnErrorMayReadStatsWithoutDeadlock(t *testing.T) {
 	}
 	t.Fatal("OnError 未按预期触发（可能死锁）")
 }
+
+// panicSink 对指定目标 panic N 次（其余正常送达），用于钉死 Sink 边界保险丝。
+type panicSink struct {
+	panics map[string]int // target → 剩余 panic 次数
+	mu     sync.Mutex
+	sent   []string
+}
+
+func (s *panicSink) Send(ctx context.Context, b *Batch) error {
+	s.mu.Lock()
+	if s.panics[b.Target] > 0 {
+		s.panics[b.Target]--
+		s.mu.Unlock()
+		panic("sink: 目标 " + b.Target + " 炸了")
+	}
+	s.mu.Unlock()
+	s.mu.Lock()
+	s.sent = append(s.sent, b.Target)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *panicSink) sentFor(target string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.sent {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
+// Sink panic 不带走 worker：降级为投递错误，走终态丢弃 + OnError，
+// worker 存活继续送后续消息。变异负对照：注释掉 sendGuarded 的 recover，本测试必红。
+func TestSinkPanicIsDowngradedToFailure(t *testing.T) {
+	sink := &panicSink{panics: map[string]int{"g:boom": 1 << 30}}
+	p := fastPolicy()
+	p.MaxAttempts = 1
+	d := New(sink, p)
+	var mu sync.Mutex
+	var errText string
+	d.OnError = func(_ Item, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		errText = err.Error()
+	}
+	startDispatcher(t, d)
+
+	d.Submit(Item{ID: "doomed", Target: "g:boom", Text: "必炸"})
+	waitForStats(t, d, func(s Stats) bool { return s.DroppedFailed == 1 }, 5*time.Second, "panic 未走终态丢弃")
+
+	mu.Lock()
+	if !strings.Contains(errText, "panic") || !strings.Contains(errText, "g:boom") {
+		t.Errorf("OnError 收到错误 %q，want 含 panic 标记与目标", errText)
+	}
+	mu.Unlock()
+
+	// worker 还活着：后续消息照常送达，在途账目回收干净
+	d.Submit(Item{ID: "alive", Target: "g:ok", Text: "还活着"})
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 1 }, 5*time.Second, "panic 后 worker 未存活")
+	if n := d.InFlight(); n != 0 {
+		t.Errorf("InFlight = %d, want 0 —— panic 不得泄漏在途计数", n)
+	}
+}
+
+// panic 只发生一次时走既有重试管道：重试成功、回执照常、无终态丢弃。
+func TestSinkPanicOnceRetriesSucceed(t *testing.T) {
+	sink := &panicSink{panics: map[string]int{"g1": 1}}
+	d := New(sink, fastPolicy())
+	var delivered atomicInt
+	d.OnError = func(Item, error) { t.Error("panic 后重试成功不应终态丢弃") }
+	startDispatcher(t, d)
+
+	d.Submit(Item{ID: "x", Target: "g1", Text: "hi", OnDelivered: func() { delivered.add(1) }})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && delivered.get() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if delivered.get() != 1 {
+		t.Fatalf("panic 一次后未重试成功（OnDelivered %d 次）: stats=%+v", delivered.get(), d.Stats())
+	}
+	st := d.Stats()
+	if st.Retries != 1 || st.Sent != 1 || st.DroppedFailed != 0 {
+		t.Errorf("Stats = %+v, want Retries=1 Sent=1 DroppedFailed=0", st)
+	}
+	if n := d.InFlight(); n != 0 {
+		t.Errorf("InFlight = %d, want 0", n)
+	}
+}

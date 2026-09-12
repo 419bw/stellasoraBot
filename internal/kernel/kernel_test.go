@@ -697,3 +697,106 @@ func TestAPITargetsSeam(t *testing.T) {
 		t.Fatal("等待 api.TargetsFor() 超时")
 	}
 }
+
+// ---------- panic 保险丝（审计 P2-3）端到端 ----------
+
+// boomSink 对指定目标必 panic，其余正常送达。
+type boomSink struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (s *boomSink) Send(ctx context.Context, b *queue.Batch) error {
+	if b.Target == "g:boom" {
+		panic("sink: boom 目标炸了")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, b.Target)
+	return nil
+}
+
+func (s *boomSink) sentFor(target string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.sent {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
+// 功能层的 panic（调度任务 + 投递）都不带走内核：两条线各自走降级出口上报，
+// 恢复后新投递照常送达。变异负对照：注释掉 sendGuarded / invoke 的 recover，
+// 本测试必红（测试进程直接炸）。
+func TestRuntimeSurvivesFeaturePanic(t *testing.T) {
+	sink := &boomSink{}
+	var mu sync.Mutex
+	var logs []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	p := generousPolicy()
+	p.MaxAttempts = 1
+	r := NewRuntime(sink, p, calendar.NewStore(), nil, logf)
+
+	var captured API
+	r.Register(NewFeature("boom", func(ctx context.Context, api API) error {
+		captured = api
+		api.Schedule("boom-task", time.Now().Add(-time.Second), func(context.Context) error {
+			panic("任务炸了")
+		})
+		if err := api.Submit(queue.Item{ID: "doomed", Target: "g:boom", Text: "必炸"}); err != nil {
+			t.Errorf("Submit: %v", err)
+		}
+		return nil
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// 队列线：panic 走通降级路径（终态丢弃）；调度线：panic 上了日志
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		joined := strings.Join(logs, "\n")
+		mu.Unlock()
+		if r.Stats().DroppedFailed == 1 &&
+			strings.Contains(joined, "boom-task") && strings.Contains(joined, "panic") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if r.Stats().DroppedFailed != 1 {
+		t.Fatalf("队列 panic 未走通降级路径: stats=%+v", r.Stats())
+	}
+	mu.Lock()
+	joined := strings.Join(logs, "\n")
+	mu.Unlock()
+	if !strings.Contains(joined, "boom-task") || !strings.Contains(joined, "panic") {
+		t.Errorf("调度 panic 未上日志: %q", joined)
+	}
+
+	// 内核还活着：新消息照常送达
+	if err := captured.Submit(queue.Item{ID: "alive", Target: "g:ok", Text: "活着"}); err != nil {
+		t.Fatalf("Submit alive: %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !sink.sentFor("g:ok") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sink.sentFor("g:ok") {
+		t.Fatal("内核 panic 后未存活：后续消息未送达")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("内核提前退出: %v", err)
+	default:
+	}
+}

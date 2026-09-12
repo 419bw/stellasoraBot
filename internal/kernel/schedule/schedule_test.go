@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -238,4 +239,49 @@ func TestOnErrorReceivesFnError(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("成功任务也触发了 OnError：共 %d 次", calls)
 	}
+}
+
+// panic 任务不带走调度循环：降级为错误走 OnError，同批到期任务照常执行，
+// 之后的新任务照常触发。变异负对照：注释掉 invoke 的 recover，本测试必红。
+func TestTaskPanicDoesNotKillLoop(t *testing.T) {
+	s := New()
+	var mu sync.Mutex
+	var gotID string
+	var gotErr error
+	s.OnError = func(id string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotID, gotErr = id, err
+	}
+	var survivor, after atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+
+	s.Schedule(Task{ID: "boom", At: time.Now().Add(time.Millisecond), Fn: func(context.Context) error {
+		panic("任务炸了")
+	}})
+	// 同一批到期的第二个任务必须照常执行
+	s.Schedule(Task{ID: "survivor", At: time.Now().Add(time.Millisecond), Fn: func(context.Context) error {
+		survivor.Store(true)
+		return nil
+	}})
+	waitFor(t, survivor.Load, 2*time.Second, "panic 后同批到期任务未执行")
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotID == "boom"
+	}, 2*time.Second, "panic 未回调 OnError")
+	mu.Lock()
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "panic") || !strings.Contains(gotErr.Error(), "任务炸了") {
+		t.Errorf("OnError 收到错误 %v，want 含 panic 标记与原 panic 值", gotErr)
+	}
+	mu.Unlock()
+
+	// 调度循环还活着：新任务照常触发
+	s.Schedule(Task{ID: "after", At: time.Now().Add(time.Millisecond), Fn: func(context.Context) error {
+		after.Store(true)
+		return nil
+	}})
+	waitFor(t, after.Load, 2*time.Second, "panic 后调度循环未存活")
 }

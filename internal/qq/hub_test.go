@@ -335,3 +335,57 @@ func TestBothFrontendsShareOneHandler(t *testing.T) {
 		t.Errorf("业务处理器跑了 %d 次，共用入口时应为 1 次", n)
 	}
 }
+
+// 处理器 panic 在 hub 边界就地吸收：Handle 返回 nil（外抛会让网关断连重连）、
+// 同事件后续处理器与后续事件照常、计数单列不混入 HandlerErr、日志带栈。
+// 变异负对照：注释掉 invokeHandler 的 recover，本测试必红（进程炸）。
+func TestHubAbsorbsHandlerPanic(t *testing.T) {
+	var logs []string
+	h := NewHub(nil, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	var after []string
+	h.OnMessage(EventGroupAtMessage, func(context.Context, *Message) error {
+		panic("处理器炸了")
+	})
+	h.OnMessage(EventGroupAtMessage, func(_ context.Context, m *Message) error {
+		after = append(after, m.Text())
+		return nil
+	})
+
+	if err := h.Handle(context.Background(), groupEvent(t, 1)); err != nil {
+		t.Fatalf("Handle 对处理器 panic 必须返回 nil，得到: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("panic 后同事件的后续处理器未执行: %v", after)
+	}
+
+	// 派发循环还活着：下一事件照常处理（c2c 的 Kind 不同，不会被去重挡下）
+	c2cEv := Event{Seq: 2, Type: EventC2CMessage, Data: loadFixture(t, "c2c_message_create.json")}
+	h.OnMessage(EventC2CMessage, func(_ context.Context, m *Message) error {
+		after = append(after, m.Text())
+		return nil
+	})
+	if err := h.Handle(context.Background(), c2cEv); err != nil {
+		t.Fatalf("panic 后 Handle 返回错误: %v", err)
+	}
+	if len(after) != 2 {
+		t.Fatalf("panic 后续事件未照常处理: %v", after)
+	}
+
+	s := h.Stats()
+	if s.HandlerPanic != 1 {
+		t.Errorf("HandlerPanic = %d, want 1（第二条事件不 panic）", s.HandlerPanic)
+	}
+	if s.HandlerErr != 0 {
+		t.Errorf("panic 不得计入 HandlerErr: %+v", s)
+	}
+
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "panic") || !strings.Contains(joined, "处理器炸了") {
+		t.Errorf("panic 日志缺标记或原值: %q", joined)
+	}
+	if !strings.Contains(joined, "goroutine ") {
+		t.Error("panic 日志缺调用栈")
+	}
+}

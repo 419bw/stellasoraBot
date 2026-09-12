@@ -218,7 +218,7 @@ main.activeSink（只管出图与发送，不参与记账）
 
 ## 并发模型与实测基准数据
 
-- **hub.Handle**：单 goroutine（WS reader 串行），所有事件处理都在这一个 goroutine 上。
+- **hub.Handle**：跑在网关 attempt 主循环 goroutine 上，与心跳发送、ack 判死、重连**共享同一个循环**且同步调用（WS 读帧是独立 goroutine，经 64 缓冲 channel 喂入）。所以处理器不许做耗时活（会拖慢心跳直至判死断连），错误与 panic 也绝不能从 Handle 漏出去——返回错误 = 网关判定链路故障而断连重连（见硬坑 13）。
 - **calendar.Store**：`sync.RWMutex` 保护。写侧只有 annsync.loop 一个 goroutine；读侧命令 dispatch 共享。
 - **queue.Dispatcher**：独立 goroutine 消费 + 定时 flush + 2 个并发 worker 出队发送。
 - **biliwatch 单槽位与单飞合并**：
@@ -286,6 +286,7 @@ go run ./cmd/calshot -db data/xingta.db -repeat 1
 10. **HTTP 响应体排空与连接池复用**：`net/http` 客户端在读取非 2xx 或忽略正文时，若仅调用 `resp.Body.Close()` 而未排空，底层 TCP 连接无法放回空闲池，会导致长跑时产生大量 TIME_WAIT 并耗尽端口。必须统一采用 `io.Copy(io.Discard, resp.Body)` 排空后再关闭。
 11. **单槽位内存防爆（Single-Slot Memory Model）**：在低功耗 ARM64 (Termux 4GB 内存) 长期运行环境下，任何无上限的渲染缓存都会导致内存爬升并最终被 OOM 杀死。日历图基于 5 分钟时间桶量化单份缓存；B站动态基于 `latestID` 保持单槽位（约 400KB）内存缓存，旧图随 ID 变更由 GC 自然回收，确保常驻内存水平绝不随运行时间增加。
 12. **多主题订阅解耦与轻量持久化**：群管理与推送解耦，不硬编码业务主题。`kernel/target` 在 bbolt 中以 JSON 保存 `map[string]map[string]bool`，内存镜像单机支撑万级群目标仅消耗 ~1MB 内存，彻底将出站吞吐的控制权交给 `kernel/queue`。
+13. **机制层调用业务回调的边界必须装 panic 保险丝**：全库业务回调（queue worker 的 `Sink.Send`、调度器 `Task.Fn`、hub.dispatch 的处理器）都由机制层 goroutine 直接执行，而 Go 里任何 goroutine 的未恢复 panic 都终止整个进程——生产又是 screen 一次性拉起、无守护，业务偶发崩溃 = 停服到人工介入。三处边界各自带 `defer recover()` 把 panic 降级：Sink panic 走既有退避重试与终态上报；调度任务 panic 走 OnError；hub 处理器 panic 记日志 + `HandlerPanic` 计数后返回 nil（**绝不能外抛**——WS 上返回错误会让网关断连重连，webhook 上会 `dedup.Forget` 后遭平台无限重投，确定性 panic 两条路都成风暴）。guard 只包外部调用那一次，机制层自身的 bug 该炸还得炸。历史上曾误记"hub.Handle 在 WS reader goroutine 上"，读帧与处理的 goroutine 关系以并发模型一节为准。
 
 ## 仓库
 

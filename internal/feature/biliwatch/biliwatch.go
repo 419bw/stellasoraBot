@@ -46,7 +46,7 @@ func (c Config) withDefaults() Config {
 		c.UID = DefaultUID
 	}
 	if c.Interval <= 0 {
-		c.Interval = 3 * time.Minute
+		c.Interval = 5 * time.Minute
 	}
 	if c.Fetcher == nil {
 		c.Fetcher = NewHTTPClient()

@@ -146,7 +146,19 @@ func (c *HTTPClient) getWbiKeys(ctx context.Context) (string, string, error) {
 	return imgKey, subKey, nil
 }
 
-func (c *HTTPClient) FetchLatest(ctx context.Context, uid string) ([]DynamicItem, error) {
+var errRiskControl = errors.New("biliwatch: 动态接口业务错误: code=-352, msg=-352")
+
+func (c *HTTPClient) resetCookies() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	jar, _ := cookiejar.New(nil)
+	c.client.Jar = jar
+	c.imgKey = ""
+	c.subKey = ""
+	c.keyTime = time.Time{}
+}
+
+func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem, error) {
 	u, _ := url.Parse("https://bilibili.com")
 	if len(c.client.Jar.Cookies(u)) == 0 {
 		_ = c.initCookies(ctx)
@@ -161,6 +173,7 @@ func (c *HTTPClient) FetchLatest(ctx context.Context, uid string) ([]DynamicItem
 
 	params := map[string]string{
 		"host_mid": uid,
+		"features": "itemOpusStyle",
 	}
 	query := SignWbi(params, imgKey, subKey, 0)
 	apiURL := "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?" + query.Encode()
@@ -171,6 +184,14 @@ func (c *HTTPClient) FetchLatest(ctx context.Context, uid string) ([]DynamicItem
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Referer", fmt.Sprintf("https://space.bilibili.com/%s/dynamic", uid))
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Sec-Ch-Ua", `"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -197,8 +218,30 @@ func (c *HTTPClient) FetchLatest(ctx context.Context, uid string) ([]DynamicItem
 	}
 
 	if feed.Code != 0 {
+		if feed.Code == -352 {
+			return nil, errRiskControl
+		}
 		return nil, fmt.Errorf("biliwatch: 动态接口业务错误: code=%d, msg=%s", feed.Code, feed.Message)
 	}
 
 	return feed.Data.Items, nil
+}
+
+func (c *HTTPClient) FetchLatest(ctx context.Context, uid string) ([]DynamicItem, error) {
+	items, err := c.fetchSpace(ctx, uid)
+	if err != nil && errors.Is(err, errRiskControl) {
+		// 遭遇 -352 风控拦截：立即重置访客 Cookie，等待 5 秒度过 WAF IP 冷却期后自动重试 1 次全新会话
+		c.resetCookies()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+		items, err = c.fetchSpace(ctx, uid)
+		if err != nil && errors.Is(err, errRiskControl) {
+			// 重试后仍风控：再次重置 Cookie，确保下个周期起步使用全新身份
+			c.resetCookies()
+		}
+	}
+	return items, err
 }

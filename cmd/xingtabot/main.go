@@ -64,7 +64,7 @@ func run() error {
 		chrome       = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
 		warm         = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
 		biliUID      = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
-		biliInterval = flag.Duration("bili-interval", 3*time.Minute, "B站动态轮询间隔")
+		biliInterval = flag.Duration("bili-interval", 5*time.Minute, "B站动态轮询间隔")
 		admins       = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
 		apiBase   = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
 		intents   = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")

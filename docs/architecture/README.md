@@ -18,7 +18,7 @@ cmd/                      ← 唯一的组装点
 internal/
   qq/                     ← QQ 平台薄客户端（token/签名/HTTP/WS/去重/Hub/MediaCache）
   store/                  ← bbolt Doc 接口 + 实现 + memDoc 测试替身
-  render/                 ← 通用无头浏览器驱动（视口测量、无头 Chromium 截图，零业务词）
+  render/                 ← 通用无头浏览器驱动（视口测量、无头 Chromium 截图，零业务词；两趟各挂默认 60s 墙钟上限）
   kernel/                 ← 可插拔 Feature 运行时
     calendar/             ← 内存时间索引（二分查询，View/Writer 拆分）
     target/               ← 推送目标管理（持久化 + 内存镜像，主题 Topic 自声明与订阅）

@@ -2,14 +2,49 @@ package render
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	_ "image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestMain 兼任假浏览器：真测试跑之前先看环境变量。假件吃掉所有参数、不调 m.Run，
+// chrome 风格的未知 flag 就永远不会被 flag 包拒掉——这是 helper 形制能跑通的关键。
+func TestMain(m *testing.M) {
+	switch os.Getenv("XINGTA_RENDER_FAKE") {
+	case "hang":
+		// 卡死的浏览器：永不主动退，等真测试的 ctx 到点 kill。
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	case "leak":
+		// 起一个继承 stdout 的子进程再退出：主进程死了、管道被孙进程攥着，
+		// 复现 Chrome 渲染子进程残留、Output() 等不到 EOF 的经典挂法。
+		// 孙进程执行的是自身副本：Windows 上运行中的 exe 文件删不掉，若直接
+		// 执行测试二进制，会把 go test 收尾清理拖成假红（PASS 却 exit 1）。
+		stale, _ := filepath.Glob(filepath.Join(os.TempDir(), "xingta-render-fake-*.exe"))
+		for _, f := range stale {
+			os.Remove(f) // 运行中的那份删不掉（被锁），上一轮的死副本顺势清走
+		}
+		dst := filepath.Join(os.TempDir(), fmt.Sprintf("xingta-render-fake-%d.exe", os.Getpid()))
+		if b, err := os.ReadFile(os.Args[0]); err == nil && os.WriteFile(dst, b, 0o755) == nil {
+			c := exec.Command(dst)
+			c.Env = append(os.Environ(), "XINGTA_RENDER_FAKE=hang")
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			if c.Start() == nil {
+				c.Process.Release()
+			}
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestURLOfEscapesNonASCII(t *testing.T) {
 	got := urlOf(filepath.Join(string(os.PathSeparator)+"tmp", "星塔", "cal.html"))
@@ -67,6 +102,65 @@ func TestArgBuilders(t *testing.T) {
 func TestCaptureValidatesInput(t *testing.T) {
 	if _, err := (&Browser{}).Capture([]byte("x"), "#x"); err == nil {
 		t.Error("没给浏览器路径却成功了")
+	}
+}
+
+func TestTimeoutDefault(t *testing.T) {
+	if got := (&Browser{}).timeout(); got != 60*time.Second {
+		t.Errorf("默认超时 = %s, 想 60s（夹在合法最坏 44s 与判死阈值 82.5s 之间）", got)
+	}
+	if got := (&Browser{Timeout: -1}).timeout(); got != 60*time.Second {
+		t.Errorf("负值没回落默认: %s", got)
+	}
+	if got := (&Browser{Timeout: 250 * time.Millisecond}).timeout(); got != 250*time.Millisecond {
+		t.Errorf("正值被改写: %s", got)
+	}
+}
+
+// 卡死的浏览器（hang 假件）必须在 Timeout 内被杀回来，而不是永远阻塞。
+// 变异负对照：command() 退回 exec.Command（不带 ctx）后，本测试由看门狗先判红。
+func TestCaptureTimesOutHangingBrowser(t *testing.T) {
+	b := &Browser{Bin: os.Args[0], WorkDir: t.TempDir(),
+		Env: []string{"XINGTA_RENDER_FAKE=hang"}, Timeout: 300 * time.Millisecond}
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Capture([]byte("<html><title>400x200</title></html>"), "")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("假浏览器卡死却成功了")
+		}
+		if !strings.Contains(err.Error(), "超时") {
+			t.Fatalf("错误没说超时: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("卡死的浏览器没能在超时内返回（CommandContext 被退回 Command 了？）")
+	}
+}
+
+// 主进程退出后孙进程攥着输出管道（Chrome 渲染子进程残局）时，WaitDelay 必须把
+// Output() 从等 EOF 里解放出来。变异负对照：摘掉 WaitDelay 后本测试要等满
+// 30s 假件时长，看门狗先判红。
+func TestCaptureReturnsWhenGrandchildHoldsPipe(t *testing.T) {
+	b := &Browser{Bin: os.Args[0], WorkDir: t.TempDir(),
+		Env: []string{"XINGTA_RENDER_FAKE=leak"}, Timeout: time.Minute}
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Capture([]byte("<html><title>400x200</title></html>"), "")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("管道被攥住却成功了")
+		}
+		if !strings.Contains(err.Error(), "管道") {
+			t.Fatalf("错误没说管道未收尾: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("WaitDelay 没生效：主进程死后还在等孙进程松手（等满 30s 假件时长）")
 	}
 }
 

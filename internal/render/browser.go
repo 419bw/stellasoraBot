@@ -2,6 +2,8 @@ package render
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,12 +21,26 @@ type Capturer interface {
 // StagePad 是出图视口的默认留白补正。
 const StagePad = 24
 
+const (
+	// defaultTripTimeout 是单趟浏览器进程的默认墙钟上限。合法最坏实测 ≈44s（页面等
+	// 远程资源慢速吐字节），而一次 ~82.5s 的同步阻塞会让上游心跳判死断链——超时值
+	// 夹在这两条线中间：更小误杀慢网络，更大就没有余量。
+	defaultTripTimeout = 60 * time.Second
+	// waitDelay 是 kill 之后等输出管道收尾的余量：Chrome 的渲染子进程可能攥着
+	// 继承来的输出管道不撒手，没有它 Output() 在主进程死后仍可能等不到 EOF。
+	waitDelay = 5 * time.Second
+)
+
 // Browser 用无头浏览器把页面截成 PNG。
 type Browser struct {
 	// Bin 是浏览器可执行文件，由调用方给（包不猜装在哪）。
 	Bin string
 	// Budget 是每趟给浏览器的虚拟时间上限；要等远程配图加载，默认 8 秒。
 	Budget int
+	// Timeout 是单趟浏览器进程的墙钟上限（量尺寸、截图各算一趟，各挂各的）。
+	// --virtual-time-budget 只限页面里的虚拟时钟：页面挂着网络不吐字节时虚拟时间
+	// 也走不动，挡不住进程整体卡死。这里到点 kill 进程，零值取默认。
+	Timeout time.Duration
 	// WorkDir 放临时页面与截图，必须是纯 ASCII 路径（含中文的 --screenshot 参数会被
 	// Windows 的 argv 转换搞坏）。空 = os.TempDir()。
 	WorkDir string
@@ -41,11 +57,19 @@ func (b *Browser) logf(format string, args ...any) {
 	}
 }
 
-func (b *Browser) command(args ...string) *exec.Cmd {
-	cmd := exec.Command(b.Bin, args...)
+func (b *Browser) timeout() time.Duration {
+	if b.Timeout <= 0 {
+		return defaultTripTimeout
+	}
+	return b.Timeout
+}
+
+func (b *Browser) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, b.Bin, args...)
 	if len(b.Env) > 0 {
 		cmd.Env = append(os.Environ(), b.Env...)
 	}
+	cmd.WaitDelay = waitDelay
 	return cmd
 }
 
@@ -92,9 +116,18 @@ func (b *Browser) Capture(page []byte, route string) ([]byte, error) {
 	shotFile.Close()
 	_ = os.Remove(shot) // Chrome 要求目标不存在或可覆盖，先让位给它
 	cStart := time.Now()
-	cmd := b.command(b.captureArgs(path, route, w, h, shot)...)
+	ctx, cancel := context.WithTimeout(context.Background(), b.timeout())
+	defer cancel()
+	cmd := b.command(ctx, b.captureArgs(path, route, w, h, shot)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("render: 截图失败: %v（%s）", err, tail(out))
+		switch {
+		case ctx.Err() != nil:
+			return nil, fmt.Errorf("render: 截图超时（>%s）", b.timeout())
+		case errors.Is(err, exec.ErrWaitDelay):
+			return nil, fmt.Errorf("render: 截图失败: 浏览器已退出但输出管道未收尾（残留渲染子进程攥着管道）")
+		default:
+			return nil, fmt.Errorf("render: 截图失败: %v（%s）", err, tail(out))
+		}
 	}
 	raw, err := os.ReadFile(shot)
 	if err != nil {
@@ -136,9 +169,19 @@ func parseTitle(dom []byte) (int, int, error) {
 
 // measure 跑一趟 --dump-dom 读回页面自己解出的卡片尺寸。
 func (b *Browser) measure(page, hash string) (w, h int, err error) {
-	out, err := b.command(b.measureArgs(page, hash)...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), b.timeout())
+	defer cancel()
+	cmd := b.command(ctx, b.measureArgs(page, hash)...)
+	out, err := cmd.Output()
 	if err != nil {
-		return 0, 0, fmt.Errorf("render: 量尺寸失败: %v（%s）", err, tail(out))
+		switch {
+		case ctx.Err() != nil:
+			return 0, 0, fmt.Errorf("render: 量尺寸超时（>%s）", b.timeout())
+		case errors.Is(err, exec.ErrWaitDelay):
+			return 0, 0, fmt.Errorf("render: 量尺寸失败: 浏览器已退出但输出管道未收尾（残留渲染子进程攥着管道）")
+		default:
+			return 0, 0, fmt.Errorf("render: 量尺寸失败: %v（%s）", err, tail(out))
+		}
 	}
 	return parseTitle(out)
 }

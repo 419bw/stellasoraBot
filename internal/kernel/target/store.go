@@ -30,8 +30,13 @@ type Record struct {
 }
 
 // Store 负责维护主动推送目标，包含内存镜像与底层 store.Doc 持久化。
-// 写入模式：先落盘（bbolt）后更新内存镜像，保证崩溃安全性与状态一致性；
+// 写入模式：先落盘（bbolt）后更新内存镜像，保证崩溃安全性与状态一致性——
+// 写盘失败时内存必须原样停在调用前状态（与磁盘一致），错误返回才算诚实。
 // 读取模式：基于 RWMutex 的纯内存查读，避免热路径频繁开启 bbolt 只读事务。
+//
+// 不变量：镜像里 Record 的 Topics map 一经放入即视为不可变，修改一律
+// cloneTopics 出新 map、落盘成功后才替换——Record 是值拷贝语义，直接改
+// 拷贝体的 map 会经别名污染镜像本身。
 type Store struct {
 	doc store.Doc
 	now func() time.Time
@@ -153,6 +158,16 @@ func (s *Store) Enable(target string) error {
 	return nil
 }
 
+// cloneTopics 复制一份主题集。这是镜像不变量的执行点：新 map 只挂在本地
+// 待写的 rec 上，落盘失败时镜像里的旧 map 分毫未动。
+func cloneTopics(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src)+1)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 // EnableTopic 启用目标的指定主题。
 func (s *Store) EnableTopic(target, topic string) error {
 	if err := Validate(target); err != nil {
@@ -168,16 +183,11 @@ func (s *Store) EnableTopic(target, topic string) error {
 
 	rec, exists := s.targets[target]
 	if !exists {
-		rec = Record{
-			Target:    target,
-			EnabledAt: s.now(),
-			Topics:    make(map[string]bool),
-		}
+		rec = Record{Target: target, EnabledAt: s.now()}
 	}
-	if rec.Topics == nil {
-		rec.Topics = make(map[string]bool)
-	}
-	rec.Topics[topic] = true
+	topics := cloneTopics(rec.Topics) // 不存在时 rec.Topics 为 nil，克隆即新 map
+	topics[topic] = true
+	rec.Topics = topics
 
 	if s.doc != nil {
 		if err := s.doc.Put(NS, target, rec); err != nil {
@@ -200,18 +210,14 @@ func (s *Store) Disable(target string) (bool, error) {
 
 	_, existed := s.targets[target]
 
-	var writeErr error
 	if s.doc != nil {
 		if err := s.doc.Delete(NS, target); err != nil {
-			writeErr = fmt.Errorf("target: 停用目标落盘删除失败: %w", err)
+			// 写盘失败：镜像原样保留，与磁盘一致，重试语义留给调用方
+			return existed, fmt.Errorf("target: 停用目标落盘删除失败: %w", err)
 		}
 	}
 
 	delete(s.targets, target)
-
-	if writeErr != nil {
-		return existed, writeErr
-	}
 	return existed, nil
 }
 
@@ -233,28 +239,27 @@ func (s *Store) DisableTopic(target, topic string) (bool, error) {
 		return false, nil
 	}
 
-	delete(rec.Topics, topic)
+	topics := cloneTopics(rec.Topics)
+	delete(topics, topic)
+	rec.Topics = topics
 
-	var writeErr error
-	if len(rec.Topics) == 0 {
-		delete(s.targets, target)
+	// 先落盘、成功才动镜像：失败路径上镜像与磁盘都停在调用前状态
+	if len(topics) == 0 {
 		if s.doc != nil {
 			if err := s.doc.Delete(NS, target); err != nil {
-				writeErr = fmt.Errorf("target: 移除空目标落盘失败: %w", err)
+				return true, fmt.Errorf("target: 移除空目标落盘失败: %w", err)
 			}
 		}
-	} else {
-		s.targets[target] = rec
-		if s.doc != nil {
-			if err := s.doc.Put(NS, target, rec); err != nil {
-				writeErr = fmt.Errorf("target: 停用主题落盘更新失败: %w", err)
-			}
-		}
+		delete(s.targets, target)
+		return true, nil
 	}
 
-	if writeErr != nil {
-		return true, writeErr
+	if s.doc != nil {
+		if err := s.doc.Put(NS, target, rec); err != nil {
+			return true, fmt.Errorf("target: 停用主题落盘更新失败: %w", err)
+		}
 	}
+	s.targets[target] = rec
 	return true, nil
 }
 

@@ -1,6 +1,7 @@
 package target_test
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -198,5 +199,141 @@ func TestStoreMultiTopic(t *testing.T) {
 	}
 	if s.Has("g:G1") {
 		t.Errorf("G1 关闭所有主题后应该被彻底移除")
+	}
+}
+
+// flakyDoc 包一层 MemDoc，按需让 Put/Delete 失败——扮演 bbolt 落盘失败
+// （磁盘满 / IO 错）。Doc 契约保证失败即无半提交，镜像与磁盘都应停在调用前。
+type flakyDoc struct {
+	*storetest.MemDoc
+	putErr    error
+	deleteErr error
+}
+
+func (f *flakyDoc) Put(ns, key string, v any) error {
+	if f.putErr != nil {
+		return f.putErr
+	}
+	return f.MemDoc.Put(ns, key, v)
+}
+
+func (f *flakyDoc) Delete(ns, key string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.MemDoc.Delete(ns, key)
+}
+
+// 写盘失败时镜像必须停在调用前状态：错误返回了、内存却变了，重启就会翻转
+// （目标复活 / 主题消失），管理员的失败提示从此与真实状态对不上。这也钉住
+// 「Topics map 不可变、修改一律克隆」的不变量——共享 map 的别名突变会让
+// 失败路径在落盘之前就污染镜像。
+func TestStoreWriteFailureKeepsMemoryInSyncWithDisk(t *testing.T) {
+	doc := &flakyDoc{MemDoc: storetest.NewMem()}
+	s, err := target.NewStore(doc)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	for _, key := range []string{"expiry", "poster"} {
+		if err := s.RegisterTopic(target.Topic{Key: key, Name: key}); err != nil {
+			t.Fatalf("RegisterTopic(%s): %v", key, err)
+		}
+	}
+	for _, g := range []string{"g:A", "g:B", "g:C", "g:D"} {
+		if err := s.Enable(g); err != nil {
+			t.Fatalf("Enable %s: %v", g, err)
+		}
+	}
+	// 之后再注册的主题无人订阅：给 EnableTopic 留出「往已有目标加主题」的空间
+	if err := s.RegisterTopic(target.Topic{Key: "bili", Name: "动态"}); err != nil {
+		t.Fatalf("RegisterTopic(bili): %v", err)
+	}
+
+	boltErr := errors.New("bbolt: 磁盘满")
+
+	// 对照组：Enable 本就守约——失败不得在内存留下痕迹
+	doc.putErr = boltErr
+	if err := s.Enable("g:E"); err == nil {
+		t.Fatal("Enable 写盘竟然成功")
+	}
+	if s.Has("g:E") {
+		t.Error("Enable 失败后内存出现了 g:E")
+	}
+
+	// Disable：Delete 失败，目标必须原样还在
+	doc.deleteErr = boltErr
+	if _, err := s.Disable("g:A"); err == nil {
+		t.Fatal("Disable 写盘竟然成功")
+	}
+	if !s.Has("g:A") {
+		t.Error("Disable 失败后内存删除了 g:A——重启会复活")
+	}
+	doc.deleteErr = nil
+
+	// EnableTopic：Put 失败，新主题不得经共享 map 泄漏进镜像
+	doc.putErr = boltErr
+	if err := s.EnableTopic("g:C", "bili"); err == nil {
+		t.Fatal("EnableTopic 写盘竟然成功")
+	}
+	if s.HasTopic("g:C", "bili") {
+		t.Error("EnableTopic 失败后内存开启了 g:C/bili——别名突变，重启会消失")
+	}
+	if !s.HasTopic("g:C", "expiry") {
+		t.Error("EnableTopic 失败不得波及原有主题")
+	}
+
+	// DisableTopic·Put 分支（剩主题非空）：被关的主题必须仍然开启
+	if _, err := s.DisableTopic("g:B", "poster"); err == nil {
+		t.Fatal("DisableTopic 写盘竟然成功")
+	}
+	if !s.HasTopic("g:B", "poster") {
+		t.Error("DisableTopic 失败后内存关闭了 g:B/poster——重启会复活")
+	}
+	if !s.Has("g:B") {
+		t.Error("DisableTopic 失败不得移除目标")
+	}
+	doc.putErr = nil
+
+	// DisableTopic·Delete 分支（主题清空）：目标必须原样还在
+	doc.deleteErr = boltErr
+	if _, err := s.DisableTopic("g:A", "poster"); err != nil {
+		t.Fatalf("关掉 g:A/poster（剩 expiry，Put 分支应成功）: %v", err)
+	}
+	if _, err := s.DisableTopic("g:A", "expiry"); err == nil {
+		t.Fatal("DisableTopic 写盘竟然成功")
+	}
+	if !s.Has("g:A") || !s.HasTopic("g:A", "expiry") {
+		t.Error("DisableTopic 失败后内存移除了 g:A——重启会复活")
+	}
+	doc.deleteErr = nil
+
+	// 重启视角：重新载入同一份 doc，两边完整状态必须逐项一致
+	s2, err := target.NewStore(doc)
+	if err != nil {
+		t.Fatalf("重启 NewStore: %v", err)
+	}
+	for _, g := range []string{"g:A", "g:B", "g:C", "g:D", "g:E"} {
+		if s.Has(g) != s2.Has(g) {
+			t.Errorf("%s 存在性：内存=%v 磁盘=%v", g, s.Has(g), s2.Has(g))
+		}
+		for _, topic := range []string{"expiry", "poster", "bili"} {
+			if s.HasTopic(g, topic) != s2.HasTopic(g, topic) {
+				t.Errorf("%s/%s：内存=%v 磁盘=%v", g, topic, s.HasTopic(g, topic), s2.HasTopic(g, topic))
+			}
+		}
+	}
+
+	// 失败后重试：注入撤掉，同一操作应成功并让镜像追上磁盘
+	if err := s.EnableTopic("g:C", "bili"); err != nil {
+		t.Fatalf("重试 EnableTopic: %v", err)
+	}
+	if !s.HasTopic("g:C", "bili") {
+		t.Error("重试成功后 g:C/bili 应开启")
+	}
+	if _, err := s.Disable("g:A"); err != nil {
+		t.Fatalf("重试 Disable: %v", err)
+	}
+	if s.Has("g:A") {
+		t.Error("重试成功后 g:A 应被移除")
 	}
 }

@@ -60,7 +60,6 @@ func run() error {
 		refresh      = flag.Duration("refresh", 30*time.Minute, "公告刷新间隔")
 		lead         = flag.Duration("lead", 48*time.Hour, "活动结束前多久开始提醒")
 		scan         = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
-		push         = flag.String("push", "", "主动消息目标，逗号分隔：g:<群 openid> / u:<用户 openid>；留空只记日志。到期提醒与版本日历图共用这一份")
 		chrome       = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
 		warm         = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
 		biliUID      = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
@@ -76,10 +75,6 @@ func run() error {
 	}
 
 	zone, err := parseZone(*tz)
-	if err != nil {
-		return err
-	}
-	targets, err := parseTargets(*push)
 	if err != nil {
 		return err
 	}
@@ -101,7 +96,7 @@ func run() error {
 
 	cal := calendar.NewStore() // 同时满足 calendar.View（给功能）与 calendar.Writer（给同步引擎）
 
-	targetStore, err := target.NewStore(doc, targets)
+	targetStore, err := target.NewStore(doc)
 	if err != nil {
 		return fmt.Errorf("初始化推送目标存储失败: %w", err)
 	}
@@ -140,7 +135,6 @@ func run() error {
 			Zone:    zone,
 			Warm:    *warm,
 			Client:  &http.Client{Timeout: 30 * time.Second},
-			Targets: targets,
 			Reg:     reg,
 			Logf:    logf,
 		})
@@ -163,7 +157,7 @@ func run() error {
 		Logf:   logf,
 	}))
 	rt.Register(calexpiry.New(doc, calexpiry.Config{
-		Lead: *lead, Every: *scan, Targets: targets, Zone: zone, Logf: logf,
+		Lead: *lead, Every: *scan, Zone: zone, Logf: logf,
 	}))
 	rt.Register(calops.New(doc, reg, calops.Config{
 		Source: src.Name(), Zone: zone, Refresh: sync, Logf: logf,
@@ -200,7 +194,7 @@ func run() error {
 	logf("数据库: %s｜时区: %s｜刷新: %s｜提醒: 提前 %s，每 %s 扫一次｜主动消息 %d 个目标｜日历图: %s",
 		*dbPath, zone.String(), *refresh, *lead, *scan, len(activeTargets), map[bool]string{true: *chrome, false: "未启用"}[poster != nil])
 	if len(activeTargets) == 0 {
-		logf("当前无主动推送目标（群管可在群内发 push on 开启，或启动时传 -push），主动消息暂不发送")
+		logf("当前无主动推送目标（群管可在群内发 push on 开启），主动消息暂不发送")
 	}
 	logf("命令: %s", strings.ReplaceAll(reg.HelpText(), "\n", "／"))
 	logf("开始监听，Ctrl-C 退出。去 @ 机器人发「帮助」看看。")
@@ -324,20 +318,6 @@ func splitTarget(target string) (openID string, group bool, err error) {
 		return "", false, fmt.Errorf("提醒目标 %q 的 openid 带了空白，去掉空格再写", target)
 	}
 	return id, group, nil
-}
-
-// parseTargets 在启动时就把目标校验一遍：写错前缀的话，提醒会一直投不出去，
-// 而队列只会安静地重试到丢弃——线上看就是"没提醒"，查不出原因。
-func parseTargets(list string) ([]string, error) {
-	items := splitList(list)
-	out := make([]string, 0, len(items))
-	for _, t := range items {
-		if _, _, err := splitTarget(t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, nil
 }
 
 func splitList(s string) []string {

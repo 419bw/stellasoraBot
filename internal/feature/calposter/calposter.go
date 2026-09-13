@@ -55,13 +55,10 @@ type Config struct {
 	OpenAt time.Duration // 开闸估计，默认 17h：见 dataset.go 的 Current
 	Client *http.Client  // nil = 不下载海报（海报位画斜纹占位）
 	Warm   time.Duration // 多久看一次数据有没有变，变了就去预热海报，默认 5m
-	// Targets 是版本开启日主动推图的目标，形如 "g:<群 openid>" / "u:<用户 openid>"，
-	// 前缀由发送侧解释。空 = 只记日志不发送。
 	// ArtDir 非空时海报字节落盘：海报 CDN 会掐反复整窗拉取的客户端，
 	// 只放内存等于每次重启都重新捶一遍。
 	ArtDir   string
 	Template []byte // nil = 用 render 内嵌的那一份模板
-	Targets  []string
 	// Reg 非空就注册「日历」命令；留空表示这个功能只负责主动推图。
 	Reg  command.Registrar
 	Now  func() time.Time
@@ -452,13 +449,9 @@ func (p *Poster) push(_ context.Context, key string) error {
 	return nil
 }
 
+// targets 返回当前订阅了 poster 主题的目标；无订阅者时返回空，push 走"只记日志"。
 func (p *Poster) targets() []string {
-	if p.api != nil {
-		if t := p.api.TargetsFor("poster"); len(t) > 0 {
-			return t
-		}
-	}
-	return p.cfg.Targets
+	return p.api.TargetsFor("poster")
 }
 
 // MarkPushed 由队列条目的 OnDelivered 在"这条真的发出去了"之后调用：账本唯一的

@@ -39,7 +39,6 @@ type Store struct {
 	mu      sync.RWMutex
 	targets map[string]Record
 	topics  map[string]Topic
-	static  map[string]bool
 }
 
 // Validate 校验目标格式：必须以 "g:"（群）或 "u:"（用户）为前缀，且 openid 不能为空且不含空格。
@@ -58,18 +57,16 @@ func Validate(target string) error {
 }
 
 // NewStore 创建目标存储。
-// doc 可为空（测试或无持久化场景）；
-// staticTargets 是启动时注入的静态种子目标（如命令行 -push），会经过校验并载入内存。
-func NewStore(doc store.Doc, staticTargets []string) (*Store, error) {
+// doc 可为空（测试或无持久化场景）。目标一律来自运行期的命令订阅，落盘持久化。
+func NewStore(doc store.Doc) (*Store, error) {
 	s := &Store{
 		doc:     doc,
 		now:     time.Now,
 		targets: make(map[string]Record),
 		topics:  make(map[string]Topic),
-		static:  make(map[string]bool),
 	}
 
-	// 1. 从持久化存储载入
+	// 从持久化存储载入
 	if doc != nil {
 		err := doc.Scan(NS, "", func(key string, raw []byte) error {
 			var rec Record
@@ -89,30 +86,10 @@ func NewStore(doc store.Doc, staticTargets []string) (*Store, error) {
 		}
 	}
 
-	// 2. 载入静态目标种子（例如 -push 参数）
-	for _, st := range staticTargets {
-		st = strings.TrimSpace(st)
-		if st == "" {
-			continue
-		}
-		if err := Validate(st); err != nil {
-			return nil, fmt.Errorf("target: 静态目标格式错误: %w", err)
-		}
-		s.static[st] = true
-		if _, exists := s.targets[st]; !exists {
-			s.targets[st] = Record{
-				Target:    st,
-				EnabledAt: s.now(),
-				Topics:    make(map[string]bool),
-			}
-		}
-	}
-
 	return s, nil
 }
 
 // RegisterTopic 注册一个可用主题。
-// 会将已载入的静态种子目标自动开启该主题。
 func (s *Store) RegisterTopic(t Topic) error {
 	if strings.TrimSpace(t.Key) == "" {
 		return errors.New("target: topic key 不能为空")
@@ -122,18 +99,6 @@ func (s *Store) RegisterTopic(t Topic) error {
 	defer s.mu.Unlock()
 
 	s.topics[t.Key] = t
-
-	// 静态种子目标自动开启新注册的主题
-	for st := range s.static {
-		if rec, ok := s.targets[st]; ok {
-			if rec.Topics == nil {
-				rec.Topics = make(map[string]bool)
-			}
-			rec.Topics[t.Key] = true
-			s.targets[st] = rec
-		}
-	}
-
 	return nil
 }
 
@@ -224,7 +189,7 @@ func (s *Store) EnableTopic(target, topic string) error {
 	return nil
 }
 
-// Disable 停用目标并清除所有主题。无论此前来自静态种子还是动态添加，均彻底移除。
+// Disable 停用目标并清除所有主题，彻底从存储移除。
 func (s *Store) Disable(target string) (bool, error) {
 	if err := Validate(target); err != nil {
 		return false, err
@@ -233,7 +198,7 @@ func (s *Store) Disable(target string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.static, target)
+	_, existed := s.targets[target]
 
 	var writeErr error
 	if s.doc != nil {
@@ -242,7 +207,6 @@ func (s *Store) Disable(target string) (bool, error) {
 		}
 	}
 
-	_, existed := s.targets[target]
 	delete(s.targets, target)
 
 	if writeErr != nil {
@@ -270,7 +234,6 @@ func (s *Store) DisableTopic(target, topic string) (bool, error) {
 	}
 
 	delete(rec.Topics, topic)
-	delete(s.static, target)
 
 	var writeErr error
 	if len(rec.Topics) == 0 {

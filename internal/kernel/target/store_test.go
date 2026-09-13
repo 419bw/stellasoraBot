@@ -40,44 +40,42 @@ func TestValidate(t *testing.T) {
 
 func TestStoreEnableAndDisable(t *testing.T) {
 	doc := storetest.NewMem()
-	s, err := target.NewStore(doc, []string{"g:STATIC_1"})
+	s, err := target.NewStore(doc)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	// 初始状态包含静态种子
-	if !s.Has("g:STATIC_1") {
-		t.Errorf("期望包含静态种子 g:STATIC_1")
-	}
-	if !reflect.DeepEqual(s.Targets(), []string{"g:STATIC_1"}) {
-		t.Errorf("Targets() = %v, 期望 [g:STATIC_1]", s.Targets())
+	if !reflect.DeepEqual(s.Targets(), []string{}) {
+		t.Errorf("Targets() = %v, 期望空", s.Targets())
 	}
 
-	// 动态启用新群
-	if err := s.Enable("g:DYNAMIC_2"); err != nil {
-		t.Fatalf("Enable: %v", err)
+	// 动态启用两个群
+	if err := s.Enable("g:G1"); err != nil {
+		t.Fatalf("Enable G1: %v", err)
 	}
-	if !s.Has("g:DYNAMIC_2") {
-		t.Errorf("期望包含动态启用的 g:DYNAMIC_2")
+	if !s.Has("g:G1") {
+		t.Errorf("期望包含动态启用的 g:G1")
 	}
-	expected := []string{"g:DYNAMIC_2", "g:STATIC_1"}
-	if !reflect.DeepEqual(s.Targets(), expected) {
-		t.Errorf("Targets() = %v, 期望 %v", s.Targets(), expected)
+	if err := s.Enable("g:G2"); err != nil {
+		t.Fatalf("Enable G2: %v", err)
+	}
+	if !reflect.DeepEqual(s.Targets(), []string{"g:G1", "g:G2"}) {
+		t.Errorf("Targets() = %v, 期望 [g:G1 g:G2]", s.Targets())
 	}
 
-	// 停用静态种子
-	existed, err := s.Disable("g:STATIC_1")
+	// 停用其中一个
+	existed, err := s.Disable("g:G1")
 	if err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
 	if !existed {
 		t.Errorf("Disable 期望返回 existed = true")
 	}
-	if s.Has("g:STATIC_1") {
-		t.Errorf("g:STATIC_1 被停用后不应再存在")
+	if s.Has("g:G1") {
+		t.Errorf("g:G1 被停用后不应再存在")
 	}
-	if !reflect.DeepEqual(s.Targets(), []string{"g:DYNAMIC_2"}) {
-		t.Errorf("Targets() = %v, 期望 [g:DYNAMIC_2]", s.Targets())
+	if !reflect.DeepEqual(s.Targets(), []string{"g:G2"}) {
+		t.Errorf("Targets() = %v, 期望 [g:G2]", s.Targets())
 	}
 
 	// 停用不存在的目标
@@ -94,7 +92,7 @@ func TestStorePersistenceAcrossRestarts(t *testing.T) {
 	doc := storetest.NewMem()
 
 	// 第一任进程：启用 G1 与 G2，随后退订 G1
-	s1, err := target.NewStore(doc, nil)
+	s1, err := target.NewStore(doc)
 	if err != nil {
 		t.Fatalf("s1 NewStore: %v", err)
 	}
@@ -108,8 +106,8 @@ func TestStorePersistenceAcrossRestarts(t *testing.T) {
 		t.Fatalf("Disable G1: %v", err)
 	}
 
-	// 第二任进程：模拟重启，不带静态种子
-	s2, err := target.NewStore(doc, nil)
+	// 第二任进程：模拟重启
+	s2, err := target.NewStore(doc)
 	if err != nil {
 		t.Fatalf("s2 NewStore: %v", err)
 	}
@@ -127,7 +125,7 @@ func TestStorePersistenceAcrossRestarts(t *testing.T) {
 
 func TestStoreMultiTopic(t *testing.T) {
 	doc := storetest.NewMem()
-	s, err := target.NewStore(doc, nil)
+	s, err := target.NewStore(doc)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -200,32 +198,5 @@ func TestStoreMultiTopic(t *testing.T) {
 	}
 	if s.Has("g:G1") {
 		t.Errorf("G1 关闭所有主题后应该被彻底移除")
-	}
-}
-
-func TestStaticSeedTopics(t *testing.T) {
-	doc := storetest.NewMem()
-	s, err := target.NewStore(doc, []string{"g:STATIC"})
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-
-	// 此时注册主题，静态目标自动挂载
-	if err := s.RegisterTopic(target.Topic{Key: "expiry", Name: "活动"}); err != nil {
-		t.Fatalf("RegisterTopic: %v", err)
-	}
-	if !s.HasTopic("g:STATIC", "expiry") {
-		t.Errorf("静态目标应自动拥有新注册的主题")
-	}
-	if !reflect.DeepEqual(s.TargetsFor("expiry"), []string{"g:STATIC"}) {
-		t.Errorf("TargetsFor(expiry) 期望包含静态目标")
-	}
-
-	// 允许单独关闭静态目标的某主题
-	if _, err := s.DisableTopic("g:STATIC", "expiry"); err != nil {
-		t.Fatalf("DisableTopic: %v", err)
-	}
-	if s.HasTopic("g:STATIC", "expiry") {
-		t.Errorf("静态目标关闭主题后不应再生效")
 	}
 }

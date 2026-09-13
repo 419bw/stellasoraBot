@@ -8,7 +8,7 @@ import (
 
 // 主入口里只有两个手写的解析件：时区与提醒目标前缀。
 // 这两个错了都是静默的——时区偏 1 小时不会报错，只会让所有活动时间都错；
-// 前缀写错不会报错，只会让提醒一直投不出去、被队列重试到丢弃。所以钉死它们。
+// 前缀写错不会报错，只会让投递永远失败。所以钉死它们。
 
 func TestParseZoneOffsets(t *testing.T) {
 	cases := []struct {
@@ -87,28 +87,6 @@ func TestSplitTarget(t *testing.T) {
 		if id, group, err := splitTarget(in); err == nil {
 			t.Errorf("splitTarget(%q) = %q, %v：没有前缀就分不清群还是单聊，必须报错", in, id, group)
 		}
-	}
-}
-
-func TestParseTargetsTrimsAndValidates(t *testing.T) {
-	got, err := parseTargets(" g:A1 , u:U2 ,, u:U3 ")
-	if err != nil {
-		t.Fatalf("parseTargets: %v", err)
-	}
-	want := []string{"g:A1", "u:U2", "u:U3"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("parseTargets = %v, want %v", got, want)
-	}
-
-	empty, err := parseTargets("")
-	if err != nil || len(empty) != 0 {
-		t.Errorf("空目标该是「只记日志」而不是错误：%v, %v", empty, err)
-	}
-
-	if _, err := parseTargets("g:A1,写错了"); err == nil {
-		t.Error("混进一个没有前缀的目标却没报错：线上就是一直投不出去还查不出原因")
-	} else if !strings.Contains(err.Error(), "写错了") {
-		t.Errorf("错误里没点名是哪个目标：%v", err)
 	}
 }
 

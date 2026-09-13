@@ -12,11 +12,11 @@ import (
 	"xingta/internal/store/storetest"
 )
 
-func newTestRig(t *testing.T, staticTargets []string) (*command.Registry, *target.Store, command.Cmd) {
+func newTestRig(t *testing.T) (*command.Registry, *target.Store, command.Cmd) {
 	t.Helper()
 	reg := command.NewRegistry()
 	doc := storetest.NewMem()
-	store, err := target.NewStore(doc, staticTargets)
+	store, err := target.NewStore(doc)
 	if err != nil {
 		t.Fatalf("target.NewStore: %v", err)
 	}
@@ -34,7 +34,7 @@ func newTestRig(t *testing.T, staticTargets []string) (*command.Registry, *targe
 }
 
 func TestPushCommandRegisteredAsAdminOnly(t *testing.T) {
-	_, _, cmd := newTestRig(t, nil)
+	_, _, cmd := newTestRig(t)
 	if !cmd.Admin {
 		t.Error("push 命令应配置为 Admin: true")
 	}
@@ -47,7 +47,7 @@ func TestPushCommandRegisteredAsAdminOnly(t *testing.T) {
 }
 
 func TestPushToggleInGroup(t *testing.T) {
-	_, store, cmd := newTestRig(t, nil)
+	_, store, cmd := newTestRig(t)
 	_ = store.RegisterTopic(target.Topic{Key: "expiry", Name: "活动到期提醒"})
 	_ = store.RegisterTopic(target.Topic{Key: "poster", Name: "版本日历海报"})
 
@@ -144,7 +144,7 @@ func TestPushToggleInGroup(t *testing.T) {
 }
 
 func TestPushRejectsDirectMessage(t *testing.T) {
-	_, _, cmd := newTestRig(t, nil)
+	_, _, cmd := newTestRig(t)
 
 	msgC2C := &qq.Message{
 		Kind:   qq.EventC2CMessage,
@@ -162,7 +162,7 @@ func TestPushRejectsDirectMessage(t *testing.T) {
 }
 
 func TestPushUnknownSubcommand(t *testing.T) {
-	_, _, cmd := newTestRig(t, nil)
+	_, _, cmd := newTestRig(t)
 
 	msgGroup := &qq.Message{
 		Kind:        qq.EventGroupAtMessage,

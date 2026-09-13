@@ -45,15 +45,10 @@ func (r *remindRec) newest() time.Time {
 	return t
 }
 
-// Config 的零值必须可用（除了 Targets：空 = 只记日志不发送）。
+// Config 的零值必须可用。
 type Config struct {
 	Lead  time.Duration // 提前多久提醒，默认 48h
 	Every time.Duration // 扫描间隔，默认 10m
-
-	// Targets 是主动消息的投递目标，形如 "g:<group_openid>" / "u:<user_openid>"，
-	// 由发送侧（main 里的 Sink）解释前缀。空表示只记日志——还没决定往哪发时，
-	// 提醒链路照样能跑通并留下痕迹，不会静默地什么都不做。
-	Targets []string
 
 	Zone *time.Location
 	Now  func() time.Time
@@ -227,13 +222,9 @@ func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activit
 	return nil
 }
 
+// targets 返回当前订阅了 expiry 主题的目标；无订阅者时返回空，remind 走"只记日志"。
 func (f *feature) targets(api kernel.API) []string {
-	if api != nil {
-		if t := api.TargetsFor("expiry"); len(t) > 0 {
-			return t
-		}
-	}
-	return f.cfg.Targets
+	return api.TargetsFor("expiry")
 }
 
 func (f *feature) message(a calendar.Activity, now time.Time) string {

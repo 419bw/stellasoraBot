@@ -215,10 +215,15 @@ func newRig(t *testing.T) *rig {
 }
 
 // start 起一个功能实例。Every 压到 5ms，测试靠轮询等效果，不用睡固定时长。
+// 目标走 fakeAPI 的订阅表（与生产一致，功能只认 api.TargetsFor）；
+// 传空则不动 api.targets，允许用例先自行预置订阅再启动。
 func (r *rig) start(t *testing.T, api *fakeAPI, targets ...string) {
 	t.Helper()
+	if len(targets) > 0 {
+		api.targets = targets
+	}
 	f := calexpiry.New(r.doc, calexpiry.Config{
-		Lead: lead, Every: 5 * time.Millisecond, Targets: targets,
+		Lead: lead, Every: 5 * time.Millisecond,
 		Zone: zone, Now: func() time.Time { return now }, Logf: r.logs.logf,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -534,12 +539,13 @@ func TestStartRejectsMissingDependencies(t *testing.T) {
 func TestPrunesExpiredRecordsWhenActivityEnds(t *testing.T) {
 	r := newRig(t)
 	api := newAPI(r.cal)
+	api.targets = []string{"g:GROUP1"}
 
 	var mu sync.Mutex
 	curNow := now
 
 	f := calexpiry.New(r.doc, calexpiry.Config{
-		Lead: lead, Every: 5 * time.Millisecond, Targets: []string{"g:GROUP1"},
+		Lead: lead, Every: 5 * time.Millisecond,
 		Zone: zone, Now: func() time.Time {
 			mu.Lock()
 			defer mu.Unlock()

@@ -97,7 +97,6 @@ go run ./cmd/xingtabot -creds creds.json -db data/xingta.db -chrome "C:/Program 
 * `-chrome`：无头浏览器可执行文件路径；留空则不启用出图相关功能（日历海报与 B站动态推图）。
 * `-bili-uid`：监听的 B站官方账号 UID（默认内置星塔旅人官方 UID）。
 * `-bili-interval`：B站动态轮询间隔（默认 `3m`）。
-* `-push`：初始静态主动推送目标（以 `g:<群 openid>` 或 `u:<私聊 openid>` 格式逗号分隔）。
 * `-refresh`：官网公告同步间隔（默认 `30m`）。
 * `-lead`：活动结束前提早提醒时长（默认 `48h`）。
 

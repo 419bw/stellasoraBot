@@ -181,9 +181,10 @@ func (c *flakyCap) count() int {
 func featureFor(t *testing.T, recs *recBox, cap Capturer, doc store.Doc, now time.Time, targets ...string) (*Poster, *fakeAPI) {
 	t.Helper()
 	api := newAPI()
+	api.targets = targets // 与生产一致：目标来自 api.TargetsFor 的订阅表
 	p := New(Config{
 		Doc: doc, Records: recs.recs,
-		Cap: cap, Label: "version", Zone: zone, Targets: targets,
+		Cap: cap, Label: "version", Zone: zone,
 		Now: func() time.Time { return now },
 	})
 	if err := p.Start(context.Background(), api); err != nil {

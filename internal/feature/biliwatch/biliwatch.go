@@ -38,6 +38,7 @@ type Config struct {
 	Fetcher  Fetcher
 	UID      string
 	Interval time.Duration
+	Cookie   string // B站登录态 Cookie（如 SESSDATA 等），大幅降低风控概率
 	Logf     func(format string, args ...any)
 }
 
@@ -49,7 +50,7 @@ func (c Config) withDefaults() Config {
 		c.Interval = 5 * time.Minute
 	}
 	if c.Fetcher == nil {
-		c.Fetcher = NewHTTPClient()
+		c.Fetcher = NewHTTPClient(c.Cookie)
 	}
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}

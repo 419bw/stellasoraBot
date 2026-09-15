@@ -21,20 +21,26 @@ type Fetcher interface {
 
 // HTTPClient 实现真实的 B站动态抓取。
 type HTTPClient struct {
-	client  *http.Client
-	mu      sync.Mutex
-	imgKey  string
-	subKey  string
-	keyTime time.Time
+	client    *http.Client
+	rawCookie string
+	mu        sync.Mutex
+	imgKey    string
+	subKey    string
+	keyTime   time.Time
 }
 
-func NewHTTPClient() *HTTPClient {
+func NewHTTPClient(cookie ...string) *HTTPClient {
 	jar, _ := cookiejar.New(nil)
+	var raw string
+	if len(cookie) > 0 {
+		raw = strings.TrimSpace(cookie[0])
+	}
 	return &HTTPClient{
 		client: &http.Client{
 			Jar:     jar,
 			Timeout: 15 * time.Second,
 		},
+		rawCookie: raw,
 	}
 }
 
@@ -106,6 +112,9 @@ func (c *HTTPClient) getWbiKeys(ctx context.Context) (string, string, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Referer", "https://www.bilibili.com/")
+	if c.rawCookie != "" {
+		req.Header.Set("Cookie", c.rawCookie)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -159,9 +168,11 @@ func (c *HTTPClient) resetCookies() {
 }
 
 func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem, error) {
-	u, _ := url.Parse("https://bilibili.com")
-	if len(c.client.Jar.Cookies(u)) == 0 {
-		_ = c.initCookies(ctx)
+	if c.rawCookie == "" {
+		u, _ := url.Parse("https://bilibili.com")
+		if len(c.client.Jar.Cookies(u)) == 0 {
+			_ = c.initCookies(ctx)
+		}
 	}
 
 	imgKey, subKey, err := c.getWbiKeys(ctx)
@@ -192,6 +203,9 @@ func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem,
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
+	if c.rawCookie != "" {
+		req.Header.Set("Cookie", c.rawCookie)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {

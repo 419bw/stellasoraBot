@@ -62,11 +62,12 @@ func run() error {
 		scan         = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
 		chrome       = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
 		warm         = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
-		biliUID      = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
-		biliInterval = flag.Duration("bili-interval", 5*time.Minute, "B站动态轮询间隔")
-		admins       = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
-		apiBase      = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
-		intents      = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
+		biliUID        = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
+		biliInterval   = flag.Duration("bili-interval", 5*time.Minute, "B站动态轮询间隔")
+		biliCookieFlag = flag.String("bili-cookie", "", "B站账号 Cookie（留空优先从 creds.json 读取）")
+		admins         = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
+		apiBase        = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
+		intents        = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
 	)
 	flag.Parse()
 
@@ -138,11 +139,21 @@ func run() error {
 			Reg:     reg,
 			Logf:    logf,
 		})
+		biliCookie := strings.TrimSpace(*biliCookieFlag)
+		if biliCookie == "" {
+			biliCookie = strings.TrimSpace(creds.BiliCookie)
+		}
+		if biliCookie != "" {
+			logf("biliwatch: 已配置 B站登录态 Cookie (长度 %d 字节)，防风控模式已就绪", len(biliCookie))
+		} else {
+			logf("biliwatch: 未配置 B站登录态 Cookie，使用匿名访客模式")
+		}
 		bili = biliwatch.New(biliwatch.Config{
 			Doc:      doc,
 			Cap:      browser,
 			UID:      *biliUID,
 			Interval: *biliInterval,
+			Cookie:   biliCookie,
 			Logf:     logf,
 		})
 	} else {
@@ -387,8 +398,9 @@ func parentDir(path string) string {
 }
 
 type creds struct {
-	AppID     string `json:"appId"`
-	AppSecret string `json:"clientSecret"`
+	AppID      string `json:"appId"`
+	AppSecret  string `json:"clientSecret"`
+	BiliCookie string `json:"biliCookie,omitempty"`
 }
 
 func loadCreds(path string) (creds, error) {

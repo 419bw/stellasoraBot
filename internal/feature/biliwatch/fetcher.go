@@ -23,24 +23,25 @@ type Fetcher interface {
 type HTTPClient struct {
 	client    *http.Client
 	rawCookie string
+	logf      func(format string, args ...any)
 	mu        sync.Mutex
 	imgKey    string
 	subKey    string
 	keyTime   time.Time
 }
 
-func NewHTTPClient(cookie ...string) *HTTPClient {
+func NewHTTPClient(cookie string, logf func(string, ...any)) *HTTPClient {
 	jar, _ := cookiejar.New(nil)
-	var raw string
-	if len(cookie) > 0 {
-		raw = strings.TrimSpace(cookie[0])
+	if logf == nil {
+		logf = func(string, ...any) {}
 	}
 	return &HTTPClient{
 		client: &http.Client{
 			Jar:     jar,
 			Timeout: 15 * time.Second,
 		},
-		rawCookie: raw,
+		rawCookie: strings.TrimSpace(cookie),
+		logf:      logf,
 	}
 }
 
@@ -97,6 +98,30 @@ func (c *HTTPClient) initCookies(ctx context.Context) error {
 	return nil
 }
 
+func (c *HTTPClient) getRawCookie() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rawCookie
+}
+
+// downgradeToVisitor 当配置的 Cookie 失效时调用，清空 Cookie 状态、重置 Jar 并记录醒目的警告日志。
+// 若此前确实配置了 Cookie 则返回 true，若此前已是访客模式则返回 false（避免重复告警）。
+func (c *HTTPClient) downgradeToVisitor(reason string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rawCookie == "" {
+		return false
+	}
+	c.rawCookie = ""
+	jar, _ := cookiejar.New(nil)
+	c.client.Jar = jar
+	c.imgKey = ""
+	c.subKey = ""
+	c.keyTime = time.Time{}
+	c.logf("biliwatch: [警告] 配置的 B站账号 Cookie 已失效 (%s)，已自动临时降级为匿名访客模式，请抽空更新 Cookie！", reason)
+	return true
+}
+
 func (c *HTTPClient) getWbiKeys(ctx context.Context) (string, string, error) {
 	c.mu.Lock()
 	if c.imgKey != "" && c.subKey != "" && time.Since(c.keyTime) < 2*time.Hour {
@@ -112,8 +137,9 @@ func (c *HTTPClient) getWbiKeys(ctx context.Context) (string, string, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Referer", "https://www.bilibili.com/")
-	if c.rawCookie != "" {
-		req.Header.Set("Cookie", c.rawCookie)
+	cookie := c.getRawCookie()
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 
 	resp, err := c.client.Do(req)
@@ -130,7 +156,8 @@ func (c *HTTPClient) getWbiKeys(ctx context.Context) (string, string, error) {
 	var navData struct {
 		Code int `json:"code"`
 		Data struct {
-			WbiImg struct {
+			IsLogin bool `json:"isLogin"`
+			WbiImg  struct {
 				ImgUrl string `json:"img_url"`
 				SubUrl string `json:"sub_url"`
 			} `json:"wbi_img"`
@@ -138,6 +165,10 @@ func (c *HTTPClient) getWbiKeys(ctx context.Context) (string, string, error) {
 	}
 	if err := json.Unmarshal(body, &navData); err != nil {
 		return "", "", fmt.Errorf("biliwatch: 解析 nav 失败: %w", err)
+	}
+
+	if cookie != "" && (navData.Code == -101 || !navData.Data.IsLogin) {
+		c.downgradeToVisitor(fmt.Sprintf("nav 接口 code=%d, isLogin=%v", navData.Code, navData.Data.IsLogin))
 	}
 
 	imgKey := getKeyFromURL(navData.Data.WbiImg.ImgUrl)
@@ -168,7 +199,7 @@ func (c *HTTPClient) resetCookies() {
 }
 
 func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem, error) {
-	if c.rawCookie == "" {
+	if c.getRawCookie() == "" {
 		u, _ := url.Parse("https://bilibili.com")
 		if len(c.client.Jar.Cookies(u)) == 0 {
 			_ = c.initCookies(ctx)
@@ -180,6 +211,15 @@ func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem,
 		// 容错：使用静态 fallback key（B 站公开常用的备选）
 		imgKey = "7cd084941338484a827105b93b682852"
 		subKey = "4932c493102447f8816041d33203235b"
+	}
+
+	rawCookie := c.getRawCookie()
+	if rawCookie == "" {
+		// 若 getWbiKeys 刚刚触发了降级或本就是访客模式，确保 Jar 中已初始化 buvid3/buvid4
+		u, _ := url.Parse("https://bilibili.com")
+		if len(c.client.Jar.Cookies(u)) == 0 {
+			_ = c.initCookies(ctx)
+		}
 	}
 
 	params := map[string]string{
@@ -203,8 +243,8 @@ func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem,
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
-	if c.rawCookie != "" {
-		req.Header.Set("Cookie", c.rawCookie)
+	if rawCookie != "" {
+		req.Header.Set("Cookie", rawCookie)
 	}
 
 	resp, err := c.client.Do(req)
@@ -232,6 +272,12 @@ func (c *HTTPClient) fetchSpace(ctx context.Context, uid string) ([]DynamicItem,
 	}
 
 	if feed.Code != 0 {
+		if feed.Code == -101 {
+			if c.downgradeToVisitor(fmt.Sprintf("动态接口 code=-101: %s", feed.Message)) {
+				// Cookie 已失效，已自动降级为匿名访客；立即重新发起拉取，确保当前周期不丢动态
+				return c.fetchSpace(ctx, uid)
+			}
+		}
 		if feed.Code == -352 {
 			return nil, errRiskControl
 		}

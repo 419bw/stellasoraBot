@@ -49,11 +49,11 @@ func (c Config) withDefaults() Config {
 	if c.Interval <= 0 {
 		c.Interval = 5 * time.Minute
 	}
-	if c.Fetcher == nil {
-		c.Fetcher = NewHTTPClient(c.Cookie)
-	}
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
+	}
+	if c.Fetcher == nil {
+		c.Fetcher = NewHTTPClient(c.Cookie, c.Logf)
 	}
 	return c
 }

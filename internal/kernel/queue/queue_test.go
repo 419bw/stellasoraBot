@@ -437,6 +437,108 @@ func TestDailyQuotaBlocksFurtherSends(t *testing.T) {
 	waitForStats(t, d, func(s Stats) bool { return s.Sent == 3 && s.DailyBlocked > 0 }, 3*time.Second, "日额度未生效")
 }
 
+// 日额度已用满的群不能垄断选点：它自己派不出去，但不能把还有额度的群饿到超期。
+//
+// 控住变量：受害者 gB 自己额度还有富余（发过 1 条、上限 2），所以它发不出去只可能是被
+// gA 挡住——这正是修复前那版复现的坑（当时受害者额度也是 1，被自己的上限拦住，观察到的
+// 现象无法归因）。这条同时是"选点跳过谓词存在"的守卫：日上限只由那个跳过承担，删掉它
+// 这里会立刻变红。
+func TestDailyBlockedTargetDoesNotStarveOthers(t *testing.T) {
+	sink := &recSink{}
+	p := fastPolicy()
+	p.TargetPerDay = 2
+	p.Deadline = 1500 * time.Millisecond
+	d := New(sink, p)
+	startDispatcher(t, d)
+
+	// gA 用满当日额度（2 条），此刻它是"最久没被服务"的那个
+	d.Submit(Item{ID: "a1", Target: "gA", Text: "a1"})
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 1 }, 2*time.Second, "gA 第一条未发出")
+	d.Submit(Item{ID: "a2", Target: "gA", Text: "a2"})
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 2 }, 2*time.Second, "gA 第二条未发出")
+	if n := dayUsed(d, "gA"); n != 2 {
+		t.Fatalf("前置条件不成立：gA 当日已用 %d 条，want 2（额度已满）", n)
+	}
+
+	// gB 发一条，把它的 served 推到 gA 之后（选点挑最久没被服务的，gA 才会被选中）
+	d.Submit(Item{ID: "b0", Target: "gB", Text: "b0"})
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 3 }, 2*time.Second, "gB 首条未发出")
+	if n := dayUsed(d, "gB"); n != 1 {
+		t.Fatalf("前置条件不成立：gB 当日已用 %d 条，want 1（还有富余）", n)
+	}
+
+	// 同时压入：gA 一条（必被日额度挡下）、gB 一条（额度还有富余）
+	d.Submit(Item{ID: "a3", Target: "gA", Text: "a3"})
+	d.Submit(Item{ID: "b1", Target: "gB", Text: "b1"})
+
+	// 修复前：选点每轮选中 gA → 被挡 → 整轮睡到最近 deadline，b1 跟着超期丢。
+	// 修复后：gA 被跳过 → b1 正常发出，只有 a3 超期（跳过是"不选它"，不是"销毁它"）。
+	waitForStats(t, d, func(s Stats) bool { return s.Sent == 4 && s.DroppedExpired == 1 },
+		4*time.Second, "gB 还有额度，b1 却没发出（被额度已满的 gA 饿死）")
+	if got := d.Stats(); got.DailyBlocked == 0 {
+		t.Error("gA 的日额度拦截没有发生")
+	}
+}
+
+// dayUsed 读某目标当日已用额度——测试用它钉住"受害者确实还有富余"这个控制变量。
+func dayUsed(d *Dispatcher, target string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if dc := d.days[target]; dc != nil {
+		return dc.n
+	}
+	return 0
+}
+
+// 全部目标的日额度都用满时，pump 必须返回正的等待时长：返回 0 会让 Run 定一个 0 秒
+// 定时器、立刻再醒，而醒来依旧无事可做 → 热自旋。注入 clock 直呼 pump，不依赖真实
+// 时间；顺带钉住"跨过日界线恢复派发"。
+func TestDailyExhaustedTargetsDoNotSpinAndRecoverNextDay(t *testing.T) {
+	p := fastPolicy()
+	p.TargetPerDay = 1
+	p.Deadline = 48 * time.Hour // 别让条目在跨日途中超期
+	d := New(&recSink{}, p)
+
+	now := time.Date(2026, 9, 13, 10, 0, 0, 0, p.DayZone)
+	d.clock = func() time.Time { return now }
+
+	jobs := make(chan *job, 8)
+
+	// 两个群各一条，把各自当日额度用满
+	d.enqueue(Item{ID: "a1", Target: "gA", Text: "a1"})
+	d.enqueue(Item{ID: "b1", Target: "gB", Text: "b1"})
+	if got := d.pump(jobs); got <= 0 {
+		t.Fatalf("派发后应返回正的等待时长，得到 %v", got)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("首轮应派发 2 个 job，得到 %d", len(jobs))
+	}
+	for len(jobs) > 0 {
+		<-jobs
+	}
+
+	// 额度用满后再各来一条：都到点，但都发不出去
+	d.enqueue(Item{ID: "a2", Target: "gA", Text: "a2"})
+	d.enqueue(Item{ID: "b2", Target: "gB", Text: "b2"})
+	now = now.Add(time.Second) // 让这两条的 readyAt 落在过去——热自旋的触发条件
+
+	if got := d.pump(jobs); got <= 0 {
+		t.Fatalf("全目标被日额度挡住时 pump 返回 %v：Run 会立刻再醒（热自旋）", got)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("被日额度挡住的条目不应被派发，却产出 %d 个 job", len(jobs))
+	}
+
+	// 跨过日界线：额度重置，积压恢复派发
+	now = time.Date(2026, 9, 14, 0, 0, 1, 0, p.DayZone)
+	if got := d.pump(jobs); got <= 0 {
+		t.Fatalf("跨日后 pump 返回 %v", got)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("跨日后应恢复派发 2 个 job，得到 %d", len(jobs))
+	}
+}
+
 func TestExpiredMessagesAreDroppedNotSent(t *testing.T) {
 	sink := &recSink{}
 	p := fastPolicy()

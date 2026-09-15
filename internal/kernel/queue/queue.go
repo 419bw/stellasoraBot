@@ -117,7 +117,9 @@ type Stats struct {
 	DroppedFailed  int
 	DroppedOverflw int
 	Retries        int
-	DailyBlocked   int
+	// DailyBlocked 是选点跳过"当日额度已用满"目标的次数（pump 侧诊断计数，
+	// 不是被挡下的消息条数：一次跳过可能对应那个群的整条积压）。
+	DailyBlocked int
 }
 
 type itemState struct {
@@ -359,6 +361,9 @@ func (d *Dispatcher) pump(jobs chan<- *job) time.Duration {
 		target, st := d.nextReadyLocked(now)
 		switch {
 		case st == nil:
+			// 没有可派发的目标：要么都得等（未来的 readyAt），要么全被日额度挡着
+			// （它们的队头已到点，被 nextFutureReadyLocked 按"只收未到点"排除在外）。
+			// 两种情况都靠 nextDeadlineLocked 兜住超期清理。
 			wait = minDuration(d.nextFutureReadyLocked(now), d.nextDeadlineLocked(now))
 
 		case len(jobs) == cap(jobs):
@@ -370,9 +375,11 @@ func (d *Dispatcher) pump(jobs chan<- *job) time.Duration {
 			switch {
 			case !gok || !tok:
 				wait = minDuration(maxDuration(gwait, twait), d.nextDeadlineLocked(now))
-			case d.dailyLimitReachedLocked(target, now):
-				wait = minDuration(d.nextDayBoundaryLocked(now), d.nextDeadlineLocked(now))
 			default:
+				// 日额度在真正派发这一刻落账（一批一次，合并批一份）。选点已把额度已满的
+				// 目标滤掉，所以旧的那支"日额度检查"分支不可达、已删——日上限由此**只**由
+				// 选点跳过承担，别只删跳过逻辑：删了它额度就不再有任何拦截。
+				d.dailyConsumeLocked(target, now)
 				d.global = gnext
 				d.targets[target] = &tnext
 				d.served[target] = now
@@ -395,7 +402,7 @@ func (d *Dispatcher) pump(jobs chan<- *job) time.Duration {
 	}
 }
 
-// nextReadyLocked 在队头已到期的目标里挑"最久没被服务"的那个。
+// nextReadyLocked 在队头已到期、且当日额度未用满的目标里挑"最久没被服务"的那个。
 // 之前按 readyAt 挑，先灌进来的群会长期占住队头把后面的群饿死。
 func (d *Dispatcher) nextReadyLocked(now time.Time) (string, *itemState) {
 	bestTarget := ""
@@ -403,6 +410,16 @@ func (d *Dispatcher) nextReadyLocked(now time.Time) (string, *itemState) {
 	var bestServed time.Time
 	for target, q := range d.pending {
 		if len(q) == 0 || q[0].readyAt.After(now) {
+			continue
+		}
+		if d.dailyExhaustedLocked(target, now) {
+			// 日额度已用满的群必须跳过：served 只在成功派发时更新，被挡的目标派不出去、
+			// served 永不前进，于是永远"最久没被服务"、永远第一个被选中，把还有额度的群
+			// 饿到超期（2026-09-13 控制变量实证：gA 用满额度且 served 更旧、gB 还有富余，
+			// 修复前 gB 那条有额度却被饿成 DroppedExpired）。跳过不是销毁——它的条目照旧
+			// 按 deadline 超期丢，不新增死因；跨日恢复也不靠"睡到午夜"的专门唤醒：积压的
+			// deadline 远短于一天，新消息进来又必然唤醒 pump。
+			d.stats.DailyBlocked++
 			continue
 		}
 		last := d.served[target] // 从未服务过的目标排最前
@@ -418,10 +435,16 @@ func (d *Dispatcher) nextReadyLocked(now time.Time) (string, *itemState) {
 	return bestTarget, best
 }
 
+// nextFutureReadyLocked 返回"离最近一条还没到点的队头还有多久"。
+//
+// 必须只收严格未来的队头：选点开始跳过日额度已满的目标后，"没选中"不再等价于
+// "没有已到点的条目"——被跳过目标的队头正是"已到点但派不出去"，它的 readyAt−now
+// 是负数，会让这个最小值变成负数、经 clampDelay 归零，于是 Run 定一个 0 秒定时器、
+// pump 立刻再醒又无事可做，空转热自旋。按字面语义收紧，同时也解除与日额度判定的耦合。
 func (d *Dispatcher) nextFutureReadyLocked(now time.Time) time.Duration {
 	wait := time.Hour
 	for _, q := range d.pending {
-		if len(q) == 0 {
+		if len(q) == 0 || !q[0].readyAt.After(now) {
 			continue
 		}
 		if d := q[0].readyAt.Sub(now); d < wait {
@@ -501,29 +524,34 @@ func (d *Dispatcher) targetBucketLocked(target string, now time.Time) bucket {
 	return b
 }
 
-// dailyLimitReachedLocked 检查并占用当日额度，返回 true 表示已到顶应挡下；TargetPerDay<=0 表示不设日上限。
-func (d *Dispatcher) dailyLimitReachedLocked(target string, now time.Time) bool {
+func (d *Dispatcher) dayKey(now time.Time) string {
+	return now.In(d.p.DayZone).Format("2006-01-02")
+}
+
+// dailyExhaustedLocked 只读判断该目标当日额度是否已用满；TargetPerDay<=0 表示不设日上限。
+// 选点用它决定"这个群现在能不能发"——纯读、不落账，所以看一眼不会动账。
+func (d *Dispatcher) dailyExhaustedLocked(target string, now time.Time) bool {
 	if d.p.TargetPerDay <= 0 {
 		return false
 	}
-	day := now.In(d.p.DayZone).Format("2006-01-02")
+	dc := d.days[target]
+	return dc != nil && dc.day == d.dayKey(now) && dc.n >= d.p.TargetPerDay
+}
+
+// dailyConsumeLocked 扣一份当日额度（跨日自重置）。只在真正派发那一刻调用，一批一次、
+// 合并批算一份（一条平台消息）。被额度挡下的尝试不扣、发送失败的尝试照扣——与旧
+// dailyLimitReachedLocked 返回 false 的那条路径逐条等价，记账口径未变（P1-05 另议）。
+func (d *Dispatcher) dailyConsumeLocked(target string, now time.Time) {
+	if d.p.TargetPerDay <= 0 {
+		return
+	}
+	day := d.dayKey(now)
 	dc := d.days[target]
 	if dc == nil || dc.day != day {
 		dc = &dayCount{day: day}
 		d.days[target] = dc
 	}
-	if dc.n >= d.p.TargetPerDay {
-		d.stats.DailyBlocked++
-		return true
-	}
 	dc.n++
-	return false
-}
-
-func (d *Dispatcher) nextDayBoundaryLocked(now time.Time) time.Duration {
-	local := now.In(d.p.DayZone)
-	next := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, d.p.DayZone)
-	return next.Sub(now)
 }
 
 func (d *Dispatcher) sweepExpiredLocked(now time.Time) []Item {

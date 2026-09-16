@@ -5,6 +5,9 @@ creds*.json
 data/
 *.db
 
+# macOS 目录元数据
+.DS_Store
+
 # 本地构建产物与容器暂存
 vendor/
 out/

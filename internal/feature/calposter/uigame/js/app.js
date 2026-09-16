@@ -159,7 +159,7 @@
     const f = frame(), cols = `repeat(${f.n},1fr)`;
     const all = groups(f);
 
-    document.getElementById('vname').textContent = f.v.name;
+    document.getElementById('vname').innerHTML = `<span class="tag-lead">★ VER</span><span class="tag-txt">${esc(f.v.name)}</span>`;
     document.getElementById('vers').innerHTML = VERSIONS.map((v, i) =>
       `<button data-i="${i}"${i === state.vi ? ' class="on"' : ''} title="活动一览 ${esc(v.src)}｜${esc(v.name)}">${vTag(i)}</button>`).join('');
     document.querySelectorAll('#vers button').forEach(b => b.onclick = () => { state.vi = +b.dataset.i; render(); });
@@ -249,7 +249,9 @@
         const tailEnds = `<span class="ends ${claimCls}${claimUrgent ? ' hot' : ''}" title="领奖/兑换截止：${fMD(dayOf(g.x1))}">${claimIco}${fMD(dayOf(g.x1))}</span>`;
         tail = `<span class="tail${g.oR ? ' oR' : ''}" style="left:${b}%;width:${r - b}%;${at}">${tailEnds}</span>`;
       }
-      const cnt = g.items.length > 1 ? `<span class="cnt">${g.items.length}项</span>` : '';
+      const cnt = g.items.length > 1
+        ? `<span class="cnt"><svg class="ico-cnt" viewBox="0 0 16 16"><rect x="2" y="3.5" width="8.5" height="9.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="5.5" y="2" width="8.5" height="9.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span>${g.items.length}项并排</span></span>`
+        : '';
       const tags = state.slot && !g.items[0].drop ? `<span class="tags"><i class="tag"></i><i class="tag"></i></span>` : '';
       const tip = g.items.map(r => `ID ${r.id}｜${r.lb}｜${r.st === 'fuzzy' ? 'fuzzy_start（原文"维护结束后"；库内存 00:00 下界，图上按开闸估计摆放）' : 'ok'}
 ${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
@@ -276,7 +278,7 @@ ${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
         <span class="key"><span class="sw hatch"></span>领奖尾段</span>
         <span class="key"><span class="sw open"></span>两端不封口＝跨窗口延续</span>
         <span class="key"><span class="sw" style="background:repeating-linear-gradient(45deg,#e2e8f3 0 4px,#f4f7fc 4px 8px)"></span>无海报</span>
-        <span class="key"><span class="sw" style="background:#ffe07a"></span>N项＝一条带并排几条玩法</span>
+        <span class="key"><span class="sw" style="background:#fff;border:1.2px dashed #7894b6"></span>N项并排＝一条带并排多项玩法</span>
         <span class="key"><b>≈</b>起点是估的（按 ${OPEN / 3600e3}:00 开闸摆放）</span>
         ${inWin ? `<span class="key"><span class="sw" style="background:#e85a6a;border-radius:1px;width:3px"></span>红虚线＝出图时刻</span>` : ''}
       </div>

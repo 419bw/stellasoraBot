@@ -81,10 +81,31 @@ body{
   box-shadow:var(--shadow-card),inset 0 0 0 2.5px rgba(255,255,255,.9)}
 .win > *{position:relative;z-index:2}
 
-/* 纸面手账装饰（绝对定位，不挤占甘特） */
-.paper-watermark{display:none;position:absolute;right:128px;top:22px;z-index:1;pointer-events:none;
-  font-family:"Brush Script MT","Segoe Script",Georgia,serif;font-style:italic;
-  font-size:24px;color:rgba(120,104,64,.18);letter-spacing:1px;transform:rotate(-5deg)}
+/* ---------- 纸面手账点缀装饰（分散四处，极淡矢量暗纹，绝不压文字或遮挡Logo） ---------- */
+.handbook-decorations{position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden}
+
+/* 1. 顶栏居中手账文字涂鸦：在版本标与右侧星塔旅人Logo之间，安全居中 */
+.decor-doodle-center{position:absolute;top:14px;left:540px;opacity:0.50;transform:rotate(-1.5deg)}
+.doodle-title{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:19px;font-weight:900;letter-spacing:3.5px;color:#7885a5;opacity:0.36;text-transform:uppercase}
+.doodle-weekdays{position:relative;display:flex;gap:11px;margin-top:2px;padding-bottom:2px;border-bottom:1.5px solid rgba(120,133,165,.20)}
+.doodle-weekdays span{font-family:monospace,sans-serif;font-size:10px;font-weight:700;color:#7885a5;opacity:0.40;text-transform:uppercase}
+.doodle-pink-circle{position:absolute;left:17px;top:-5px;width:46px;height:23px;opacity:0.70;pointer-events:none}
+.doodle-dots{display:flex;gap:11px;margin-top:3px}
+.doodle-dots i{display:inline-block;width:7px;height:2px;background:rgba(120,133,165,.16);border-radius:1px}
+
+/* 2. 右上角网格上方小四角星：位于 Logo 正下方的网格空白处，不重叠 */
+.decor-star-topright{position:absolute;top:145px;right:55px;width:75px;height:75px;opacity:0.052;transform:rotate(16deg)}
+
+/* 3. 左侧分组栏旁边的小星芒涂鸦 */
+.decor-sparkle-left{position:absolute;top:360px;left:8px;width:24px;height:24px;opacity:0.09;transform:rotate(-12deg)}
+
+/* 4. 第3~4周中间大空白网格暗纹 */
+.decor-star-midright{position:absolute;top:480px;right:170px;width:140px;height:140px;opacity:0.045;transform:rotate(-8deg)}
+
+/* 5. 右下角复古手账印章 */
+.decor-stamp-bottom{position:absolute;bottom:46px;right:42px;border:1.4px dashed rgba(160,140,95,.32);border-radius:6px;padding:4px 10px;display:flex;flex-direction:column;align-items:center;transform:rotate(3deg);opacity:0.48}
+.decor-stamp-bottom .st-txt{font-size:8.5px;font-weight:900;letter-spacing:1.5px;color:#927e52}
+.decor-stamp-bottom .st-sub{font-size:7px;font-weight:800;letter-spacing:0.8px;color:#b59f6e;margin-top:1px}
 /* 边角矢量四角星点缀（手绘卡通风：凹边 sparkle + 深蓝描边 + 一点高光），纯 SVG 无图片资源 */
 .star{position:absolute;z-index:3;pointer-events:none;background-repeat:no-repeat;background-size:contain;
   filter:drop-shadow(0 2px 2px rgba(43,58,107,.18))}
@@ -120,9 +141,12 @@ h1::after{ /* 粉色荧光笔涂抹 */
   content:"";position:absolute;left:4px;right:4px;bottom:2px;height:11px;z-index:-1;
   background:rgba(255,170,190,.42);border-radius:50%/62%;transform:rotate(-1deg)}
 h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order:stroke fill}
-.vname{display:inline-block;margin-left:12px;font-size:12px;font-weight:700;color:#8a6a2a;
-  background:#fef3d0;border:1.5px solid #ecd596;border-radius:999px;padding:3px 12px;vertical-align:6px;
-  box-shadow:0 1px 2px rgba(138,106,42,.12)}
+.vname{display:inline-flex;align-items:center;margin-left:12px;vertical-align:6px;
+  background:linear-gradient(135deg,#fef8e7,#faebd0);border:1.5px solid #dcc28a;border-radius:4px;
+  box-shadow:0 2px 4px rgba(120,95,45,.12);overflow:hidden}
+.vname .tag-lead{background:#8a6a2a;color:#fff;font-size:9.5px;font-weight:900;letter-spacing:0.8px;
+  padding:3px 7px 2px;display:flex;align-items:center;gap:3px}
+.vname .tag-txt{font-size:12px;font-weight:800;color:#5c4516;padding:2px 10px 2px 8px;letter-spacing:0.5px}
 
 .tabs{display:flex;gap:8px;margin:10px 0 0}
 .tab{padding:6px 16px;border-radius:10px 10px 0 0;font-size:12.5px;font-weight:700;color:#98a2b8;
@@ -288,10 +312,12 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .ends.claim{background:#fdf4e2;color:#9a6a1e}
 .ends.claim .ico-state{color:#df9a34}
 .ends.hot{color:var(--red) !important;background:#fde7ea !important}
-.ends.hot .ico-clock,.ends.hot .ico-state{color:var(--red) !important}
-.cnt{flex:0 0 auto;align-self:stretch;display:flex;align-items:center;padding:0 8px;background:#fef3d0;
-  border-left:1.5px dashed #ecd596;font-size:9.5px;font-weight:800;color:#8a6a2a}
-.tags{display:flex;gap:3px;margin-right:5px}
+.cnt{display:inline-flex;align-items:center;gap:3.5px;flex:0 0 auto;
+  padding:2.5px 7px;border-radius:4px;background:#ffffff;
+  border:1.2px dashed #7894b6;color:#4a688e;font-size:10px;font-weight:800;
+  box-shadow:0 1px 2px rgba(43,58,107,.08);margin:0 4px}
+.cnt .ico-cnt{width:11px;height:11px;flex-shrink:0}
+.band.narrow .cnt span{display:none}
 .tag{position:relative;width:19px;height:26px;border-radius:4px;background:#fff;border:1.5px solid #d8dce6}
 .tag::before{content:"";position:absolute;top:-2px;left:-2px;right:-2px;height:5px;background:#d8dce6;border-radius:3px 3px 0 0}
 .tag::after{content:"";position:absolute;top:1px;left:50%;transform:translateX(-50%);width:7px;height:3px;border-radius:2px;background:#fff}
@@ -341,8 +367,45 @@ body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
 
   <!-- 双层卡纸：深藏青衬板 + 奶白主纸（甘特图铺在纸面上） -->
   <div class="win">
-    <!-- 纸面手账装饰（绝对定位，不占甘特布局） -->
-    <span class="paper-watermark">Calendar</span>
+    <!-- 纸面手账点缀装饰（分散四处，极淡矢量暗纹，不遮挡Logo与文字） -->
+    <div class="handbook-decorations" aria-hidden="true">
+      <!-- 1. 顶栏居中偏右：游戏同款 Calendar 涂鸦与粉色手绘圆圈 -->
+      <div class="decor-doodle-center">
+        <div class="doodle-title">Calendar</div>
+        <div class="doodle-weekdays">
+          <span>m</span><span>t</span><span>w</span><span>t</span><span>f</span><span>s</span><span>s</span>
+          <svg class="doodle-pink-circle" viewBox="0 0 70 32" fill="none">
+            <ellipse cx="35" cy="16" rx="31" ry="12" stroke="#e86a8a" stroke-width="2.6"
+                     stroke-linecap="round" stroke-dasharray="160 10" transform="rotate(-6 35 16)" />
+          </svg>
+        </div>
+        <div class="doodle-dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+
+      <!-- 2. 右上角网格上方小四角星：位于 Logo 正下方的网格空白处 -->
+      <svg class="decor-star-topright" viewBox="0 0 100 100">
+        <path d="M50 0 C53 30, 70 47, 100 50 C70 53, 53 70, 50 100 C47 70, 30 53, 0 50 C30 47, 47 30, 50 0 Z"
+              fill="#8a7042" />
+      </svg>
+
+      <!-- 3. 左侧分组栏旁边的小星芒涂鸦 -->
+      <svg class="decor-sparkle-left" viewBox="0 0 40 40">
+        <path d="M20 0 C21 12, 28 19, 40 20 C28 21, 21 28, 20 40 C19 28, 12 21, 0 20 C12 19, 19 12, 20 0 Z"
+              fill="#3d58b8" />
+      </svg>
+
+      <!-- 4. 第3~4周中间大空白网格暗纹 -->
+      <svg class="decor-star-midright" viewBox="0 0 160 160">
+        <path d="M80 0 C85 48, 112 75, 160 80 C112 85, 85 112, 80 160 C75 112, 48 85, 0 80 C48 75, 75 48, 80 0 Z"
+              fill="#786840" />
+      </svg>
+
+      <!-- 5. 右下角复古手账印章 -->
+      <div class="decor-stamp-bottom">
+        <span class="st-txt">STELLASORA</span>
+        <span class="st-sub">★ OFFICIAL SCHEDULE ★</span>
+      </div>
+    </div>
 
     <div class="bar">
       <div class="corner-logo" title="星塔旅人" aria-label="星塔旅人"></div>
@@ -544,7 +607,7 @@ body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
     const f = frame(), cols = `repeat(${f.n},1fr)`;
     const all = groups(f);
 
-    document.getElementById('vname').textContent = f.v.name;
+    document.getElementById('vname').innerHTML = `<span class="tag-lead">★ VER</span><span class="tag-txt">${esc(f.v.name)}</span>`;
     document.getElementById('vers').innerHTML = VERSIONS.map((v, i) =>
       `<button data-i="${i}"${i === state.vi ? ' class="on"' : ''} title="活动一览 ${esc(v.src)}｜${esc(v.name)}">${vTag(i)}</button>`).join('');
     document.querySelectorAll('#vers button').forEach(b => b.onclick = () => { state.vi = +b.dataset.i; render(); });
@@ -634,7 +697,9 @@ body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
         const tailEnds = `<span class="ends ${claimCls}${claimUrgent ? ' hot' : ''}" title="领奖/兑换截止：${fMD(dayOf(g.x1))}">${claimIco}${fMD(dayOf(g.x1))}</span>`;
         tail = `<span class="tail${g.oR ? ' oR' : ''}" style="left:${b}%;width:${r - b}%;${at}">${tailEnds}</span>`;
       }
-      const cnt = g.items.length > 1 ? `<span class="cnt">${g.items.length}项</span>` : '';
+      const cnt = g.items.length > 1
+        ? `<span class="cnt"><svg class="ico-cnt" viewBox="0 0 16 16"><rect x="2" y="3.5" width="8.5" height="9.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="5.5" y="2" width="8.5" height="9.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span>${g.items.length}项并排</span></span>`
+        : '';
       const tags = state.slot && !g.items[0].drop ? `<span class="tags"><i class="tag"></i><i class="tag"></i></span>` : '';
       const tip = g.items.map(r => `ID ${r.id}｜${r.lb}｜${r.st === 'fuzzy' ? 'fuzzy_start（原文"维护结束后"；库内存 00:00 下界，图上按开闸估计摆放）' : 'ok'}
 ${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
@@ -661,7 +726,7 @@ ${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
         <span class="key"><span class="sw hatch"></span>领奖尾段</span>
         <span class="key"><span class="sw open"></span>两端不封口＝跨窗口延续</span>
         <span class="key"><span class="sw" style="background:repeating-linear-gradient(45deg,#e2e8f3 0 4px,#f4f7fc 4px 8px)"></span>无海报</span>
-        <span class="key"><span class="sw" style="background:#ffe07a"></span>N项＝一条带并排几条玩法</span>
+        <span class="key"><span class="sw" style="background:#fff;border:1.2px dashed #7894b6"></span>N项并排＝一条带并排多项玩法</span>
         <span class="key"><b>≈</b>起点是估的（按 ${OPEN / 3600e3}:00 开闸摆放）</span>
         ${inWin ? `<span class="key"><span class="sw" style="background:#e85a6a;border-radius:1px;width:3px"></span>红虚线＝出图时刻</span>` : ''}
       </div>

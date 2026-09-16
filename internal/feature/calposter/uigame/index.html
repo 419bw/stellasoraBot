@@ -29,8 +29,45 @@
 
   <!-- 双层卡纸：深藏青衬板 + 奶白主纸（甘特图铺在纸面上） -->
   <div class="win">
-    <!-- 纸面手账装饰（绝对定位，不占甘特布局） -->
-    <span class="paper-watermark">Calendar</span>
+    <!-- 纸面手账点缀装饰（分散四处，极淡矢量暗纹，不遮挡Logo与文字） -->
+    <div class="handbook-decorations" aria-hidden="true">
+      <!-- 1. 顶栏居中偏右：游戏同款 Calendar 涂鸦与粉色手绘圆圈 -->
+      <div class="decor-doodle-center">
+        <div class="doodle-title">Calendar</div>
+        <div class="doodle-weekdays">
+          <span>m</span><span>t</span><span>w</span><span>t</span><span>f</span><span>s</span><span>s</span>
+          <svg class="doodle-pink-circle" viewBox="0 0 70 32" fill="none">
+            <ellipse cx="35" cy="16" rx="31" ry="12" stroke="#e86a8a" stroke-width="2.6"
+                     stroke-linecap="round" stroke-dasharray="160 10" transform="rotate(-6 35 16)" />
+          </svg>
+        </div>
+        <div class="doodle-dots"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+
+      <!-- 2. 右上角网格上方小四角星：位于 Logo 正下方的网格空白处 -->
+      <svg class="decor-star-topright" viewBox="0 0 100 100">
+        <path d="M50 0 C53 30, 70 47, 100 50 C70 53, 53 70, 50 100 C47 70, 30 53, 0 50 C30 47, 47 30, 50 0 Z"
+              fill="#8a7042" />
+      </svg>
+
+      <!-- 3. 左侧分组栏旁边的小星芒涂鸦 -->
+      <svg class="decor-sparkle-left" viewBox="0 0 40 40">
+        <path d="M20 0 C21 12, 28 19, 40 20 C28 21, 21 28, 20 40 C19 28, 12 21, 0 20 C12 19, 19 12, 20 0 Z"
+              fill="#3d58b8" />
+      </svg>
+
+      <!-- 4. 第3~4周中间大空白网格暗纹 -->
+      <svg class="decor-star-midright" viewBox="0 0 160 160">
+        <path d="M80 0 C85 48, 112 75, 160 80 C112 85, 85 112, 80 160 C75 112, 48 85, 0 80 C48 75, 75 48, 80 0 Z"
+              fill="#786840" />
+      </svg>
+
+      <!-- 5. 右下角复古手账印章 -->
+      <div class="decor-stamp-bottom">
+        <span class="st-txt">STELLASORA</span>
+        <span class="st-sub">★ OFFICIAL SCHEDULE ★</span>
+      </div>
+    </div>
 
     <div class="bar">
       <div class="corner-logo" title="星塔旅人" aria-label="星塔旅人"></div>

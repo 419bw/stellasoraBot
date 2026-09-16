@@ -74,10 +74,31 @@ body{
   box-shadow:var(--shadow-card),inset 0 0 0 2.5px rgba(255,255,255,.9)}
 .win > *{position:relative;z-index:2}
 
-/* 纸面手账装饰（绝对定位，不挤占甘特） */
-.paper-watermark{display:none;position:absolute;right:128px;top:22px;z-index:1;pointer-events:none;
-  font-family:"Brush Script MT","Segoe Script",Georgia,serif;font-style:italic;
-  font-size:24px;color:rgba(120,104,64,.18);letter-spacing:1px;transform:rotate(-5deg)}
+/* ---------- 纸面手账点缀装饰（分散四处，极淡矢量暗纹，绝不压文字或遮挡Logo） ---------- */
+.handbook-decorations{position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden}
+
+/* 1. 顶栏居中手账文字涂鸦：在版本标与右侧星塔旅人Logo之间，安全居中 */
+.decor-doodle-center{position:absolute;top:14px;left:540px;opacity:0.50;transform:rotate(-1.5deg)}
+.doodle-title{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:19px;font-weight:900;letter-spacing:3.5px;color:#7885a5;opacity:0.36;text-transform:uppercase}
+.doodle-weekdays{position:relative;display:flex;gap:11px;margin-top:2px;padding-bottom:2px;border-bottom:1.5px solid rgba(120,133,165,.20)}
+.doodle-weekdays span{font-family:monospace,sans-serif;font-size:10px;font-weight:700;color:#7885a5;opacity:0.40;text-transform:uppercase}
+.doodle-pink-circle{position:absolute;left:17px;top:-5px;width:46px;height:23px;opacity:0.70;pointer-events:none}
+.doodle-dots{display:flex;gap:11px;margin-top:3px}
+.doodle-dots i{display:inline-block;width:7px;height:2px;background:rgba(120,133,165,.16);border-radius:1px}
+
+/* 2. 右上角网格上方小四角星：位于 Logo 正下方的网格空白处，不重叠 */
+.decor-star-topright{position:absolute;top:145px;right:55px;width:75px;height:75px;opacity:0.052;transform:rotate(16deg)}
+
+/* 3. 左侧分组栏旁边的小星芒涂鸦 */
+.decor-sparkle-left{position:absolute;top:360px;left:8px;width:24px;height:24px;opacity:0.09;transform:rotate(-12deg)}
+
+/* 4. 第3~4周中间大空白网格暗纹 */
+.decor-star-midright{position:absolute;top:480px;right:170px;width:140px;height:140px;opacity:0.045;transform:rotate(-8deg)}
+
+/* 5. 右下角复古手账印章 */
+.decor-stamp-bottom{position:absolute;bottom:46px;right:42px;border:1.4px dashed rgba(160,140,95,.32);border-radius:6px;padding:4px 10px;display:flex;flex-direction:column;align-items:center;transform:rotate(3deg);opacity:0.48}
+.decor-stamp-bottom .st-txt{font-size:8.5px;font-weight:900;letter-spacing:1.5px;color:#927e52}
+.decor-stamp-bottom .st-sub{font-size:7px;font-weight:800;letter-spacing:0.8px;color:#b59f6e;margin-top:1px}
 /* 边角矢量四角星点缀（手绘卡通风：凹边 sparkle + 深蓝描边 + 一点高光），纯 SVG 无图片资源 */
 .star{position:absolute;z-index:3;pointer-events:none;background-repeat:no-repeat;background-size:contain;
   filter:drop-shadow(0 2px 2px rgba(43,58,107,.18))}
@@ -113,9 +134,12 @@ h1::after{ /* 粉色荧光笔涂抹 */
   content:"";position:absolute;left:4px;right:4px;bottom:2px;height:11px;z-index:-1;
   background:rgba(255,170,190,.42);border-radius:50%/62%;transform:rotate(-1deg)}
 h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order:stroke fill}
-.vname{display:inline-block;margin-left:12px;font-size:12px;font-weight:700;color:#8a6a2a;
-  background:#fef3d0;border:1.5px solid #ecd596;border-radius:999px;padding:3px 12px;vertical-align:6px;
-  box-shadow:0 1px 2px rgba(138,106,42,.12)}
+.vname{display:inline-flex;align-items:center;margin-left:12px;vertical-align:6px;
+  background:linear-gradient(135deg,#fef8e7,#faebd0);border:1.5px solid #dcc28a;border-radius:4px;
+  box-shadow:0 2px 4px rgba(120,95,45,.12);overflow:hidden}
+.vname .tag-lead{background:#8a6a2a;color:#fff;font-size:9.5px;font-weight:900;letter-spacing:0.8px;
+  padding:3px 7px 2px;display:flex;align-items:center;gap:3px}
+.vname .tag-txt{font-size:12px;font-weight:800;color:#5c4516;padding:2px 10px 2px 8px;letter-spacing:0.5px}
 
 .tabs{display:flex;gap:8px;margin:10px 0 0}
 .tab{padding:6px 16px;border-radius:10px 10px 0 0;font-size:12.5px;font-weight:700;color:#98a2b8;
@@ -281,10 +305,12 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .ends.claim{background:#fdf4e2;color:#9a6a1e}
 .ends.claim .ico-state{color:#df9a34}
 .ends.hot{color:var(--red) !important;background:#fde7ea !important}
-.ends.hot .ico-clock,.ends.hot .ico-state{color:var(--red) !important}
-.cnt{flex:0 0 auto;align-self:stretch;display:flex;align-items:center;padding:0 8px;background:#fef3d0;
-  border-left:1.5px dashed #ecd596;font-size:9.5px;font-weight:800;color:#8a6a2a}
-.tags{display:flex;gap:3px;margin-right:5px}
+.cnt{display:inline-flex;align-items:center;gap:3.5px;flex:0 0 auto;
+  padding:2.5px 7px;border-radius:4px;background:#ffffff;
+  border:1.2px dashed #7894b6;color:#4a688e;font-size:10px;font-weight:800;
+  box-shadow:0 1px 2px rgba(43,58,107,.08);margin:0 4px}
+.cnt .ico-cnt{width:11px;height:11px;flex-shrink:0}
+.band.narrow .cnt span{display:none}
 .tag{position:relative;width:19px;height:26px;border-radius:4px;background:#fff;border:1.5px solid #d8dce6}
 .tag::before{content:"";position:absolute;top:-2px;left:-2px;right:-2px;height:5px;background:#d8dce6;border-radius:3px 3px 0 0}
 .tag::after{content:"";position:absolute;top:1px;left:50%;transform:translateX(-50%);width:7px;height:3px;border-radius:2px;background:#fff}

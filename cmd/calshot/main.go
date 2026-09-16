@@ -90,8 +90,11 @@ func main() {
 	var raw []byte
 	for i := 0; i < *repeat; i++ {
 		started := time.Now()
-		var err error
-		raw, err = ps.Image(ctx, k)
+		if *noArt {
+			raw, err = ps.Image(ctx, k)
+		} else {
+			raw, err = ps.Fetch(ctx, k)
+		}
 		if err != nil {
 			fail("%v", err)
 		}

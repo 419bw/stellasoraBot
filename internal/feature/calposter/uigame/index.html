@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>活动日历</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- 整屏：模糊明亮宿舍背景 + 顶部游戏导航 + 浮起的手账主卡（甘特图） -->
+<div class="screen">
+
+  <!-- 顶部游戏导航：圆形返回 / 斜切定位标签 / 房子（出图模式 body.x 下隐藏） -->
+  <nav class="topbar">
+    <span class="back" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M14 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+    <span class="navtag">
+      <span class="navtag-in">
+        <svg class="pin" viewBox="0 0 24 24"><path d="M12 22s7-6.4 7-12a7 7 0 10-14 0c0 5.6 7 12 7 12z" fill="currentColor"/><circle cx="12" cy="10" r="2.6" fill="#fff"/></svg>
+        活动日历
+      </span>
+    </span>
+    <span class="home" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9a1 1 0 01-1 1h-4v-6h-6v6H5a1 1 0 01-1-1v-9z" fill="currentColor"/></svg>
+    </span>
+  </nav>
+
+  <!-- 双层卡纸：深藏青衬板 + 奶白主纸（甘特图铺在纸面上） -->
+  <div class="win">
+    <!-- 纸面手账装饰（绝对定位，不占甘特布局） -->
+    <span class="paper-watermark">Calendar</span>
+
+    <div class="bar">
+      <div class="corner-logo" title="星塔旅人" aria-label="星塔旅人"></div>
+      <h1>活动<em>日历</em></h1><span class="vname" id="vname"></span>
+      <div class="tabs">
+        <span class="tab">丽都资讯</span><span class="tab new">游戏公告</span><span class="tab on">活动日历</span>
+      </div>
+      <div class="ctrl">
+        <div class="seg" id="vers"></div>
+        <div class="seg" id="dayseg"></div>
+        <button class="chip" id="tMerge">只合并招募</button>
+        <button class="chip" id="tDrop">含被过滤项</button>
+        <button class="chip" id="tSlot">素材占位</button>
+      </div>
+    </div>
+
+    <div class="valance"></div>
+
+    <!-- 周/日标尺 -->
+    <div class="axis">
+      <div class="wrow" id="weeks"></div>
+      <div class="drow" id="days"></div>
+    </div>
+
+    <!-- 三轨道甘特泳道，app.js 渲染 -->
+    <div class="plot" id="plot"></div>
+
+    <div class="foot" id="foot"></div>
+
+    <!-- 边角四角星点缀（纯矢量 SVG，黄/蓝/青） -->
+    <span class="star y s1" aria-hidden="true"></span>
+    <span class="star b s2" aria-hidden="true"></span>
+    <span class="star c s3" aria-hidden="true"></span>
+  </div>
+</div>
+
+<!-- 数据注入点：生产时由 Go calposter.Page 把数据标记替换为 const DATA={...};
+     本地 file:// 直接打开时，sample-data.js 检测没有 DATA 就用样本兜底。 -->
+<script>/*__DATA__*/</script>
+<script src="js/sample-data.js"></script>
+<script src="js/app.js"></script>
+<svg width="0" height="0" style="position:absolute">
+  <filter id="dissolve-filter">
+    <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="3" result="noise"/>
+    <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 5 -1.2" in="noise" result="grain"/>
+    <feComposite in="SourceGraphic" in2="grain" operator="in"/>
+  </filter>
+</svg>
+</body>
+</html>

@@ -33,6 +33,19 @@ import (
 //go:embed template.html
 var defaultTemplate []byte
 
+//go:embed template_legacy.html
+var legacyTemplate []byte // 保留旧版模板以备查阅或切回
+
+// DefaultTemplate 返回当前使用的默认出图模板（手账风新版 UI）。
+func DefaultTemplate() []byte {
+	return defaultTemplate
+}
+
+// LegacyTemplate 返回历史旧版单文件模板（保留备查或对比测试）。
+func LegacyTemplate() []byte {
+	return legacyTemplate
+}
+
 // Capturer 是"给一页 HTML，回一张 PNG"的能力，render.Browser 天然满足。
 // 抽出来是为了单测不必真起浏览器。
 type Capturer interface {

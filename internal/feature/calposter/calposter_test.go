@@ -187,7 +187,7 @@ func (f *fakeCap) Capture(page []byte, route string) ([]byte, error) {
 func (f *fakeCap) inlined() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return strings.Contains(string(f.lastPage), "data:image")
+	return strings.Contains(string(f.lastPage), "data:image/jpeg")
 }
 
 func (f *fakeCap) count() int {

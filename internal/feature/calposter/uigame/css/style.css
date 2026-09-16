@@ -64,10 +64,10 @@ body{
 .win::before{ /* 深藏青衬板：3°轻斜，未旋转时略小于主纸，仅靠旋转把左上/右上/下边各甩出一点 */
   content:"";position:absolute;top:19px;left:30px;right:12px;bottom:19px;
   border-radius:0;background:linear-gradient(150deg,#2a3a6e,var(--navy-deep));
-  z-index:0;transform:rotate(3deg);transform-origin:center center;
+  z-index:-1;transform:rotate(3deg);transform-origin:center center;
   box-shadow:0 18px 44px rgba(28,40,80,.34)}
 .win::after{ /* 暖米黄主纸 + 极淡点阵 + 边缘一圈细白边（保持正、不斜，内容好读） */
-  content:"";position:absolute;inset:0;border-radius:0;z-index:1;
+  content:"";position:absolute;inset:0;border-radius:0;z-index:0;
   background-color:var(--paper-warm);
   background-image:radial-gradient(rgba(120,104,64,.13) 1px,transparent 1.4px);
   background-size:22px 22px;
@@ -78,25 +78,25 @@ body{
 .handbook-decorations{position:absolute;inset:0;pointer-events:none;z-index:1;overflow:hidden}
 
 /* 1. 顶栏居中手账文字涂鸦：在版本标与右侧星塔旅人Logo之间，安全居中 */
-.decor-doodle-center{position:absolute;top:14px;left:540px;opacity:0.50;transform:rotate(-1.5deg)}
-.doodle-title{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:19px;font-weight:900;letter-spacing:3.5px;color:#7885a5;opacity:0.36;text-transform:uppercase}
-.doodle-weekdays{position:relative;display:flex;gap:11px;margin-top:2px;padding-bottom:2px;border-bottom:1.5px solid rgba(120,133,165,.20)}
-.doodle-weekdays span{font-family:monospace,sans-serif;font-size:10px;font-weight:700;color:#7885a5;opacity:0.40;text-transform:uppercase}
-.doodle-pink-circle{position:absolute;left:17px;top:-5px;width:46px;height:23px;opacity:0.70;pointer-events:none}
+.decor-doodle-center{position:absolute;top:14px;left:540px;opacity:0.60;transform:rotate(-1.5deg)}
+.doodle-title{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:19px;font-weight:900;letter-spacing:3.5px;color:#6b7999;opacity:0.45;text-transform:uppercase}
+.doodle-weekdays{position:relative;display:flex;gap:11px;margin-top:2px;padding-bottom:2px;border-bottom:1.5px solid rgba(120,133,165,.25)}
+.doodle-weekdays span{font-family:monospace,sans-serif;font-size:10px;font-weight:700;color:#6b7999;opacity:0.50;text-transform:uppercase}
+.doodle-pink-circle{position:absolute;left:17px;top:-5px;width:46px;height:23px;opacity:0.80;pointer-events:none}
 .doodle-dots{display:flex;gap:11px;margin-top:3px}
-.doodle-dots i{display:inline-block;width:7px;height:2px;background:rgba(120,133,165,.16);border-radius:1px}
+.doodle-dots i{display:inline-block;width:7px;height:2px;background:rgba(120,133,165,.22);border-radius:1px}
 
 /* 2. 右上角网格上方小四角星：位于 Logo 正下方的网格空白处，不重叠 */
-.decor-star-topright{position:absolute;top:145px;right:55px;width:75px;height:75px;opacity:0.052;transform:rotate(16deg)}
+.decor-star-topright{position:absolute;top:145px;right:55px;width:75px;height:75px;opacity:0.08;transform:rotate(16deg)}
 
 /* 3. 左侧分组栏旁边的小星芒涂鸦 */
-.decor-sparkle-left{position:absolute;top:360px;left:8px;width:24px;height:24px;opacity:0.09;transform:rotate(-12deg)}
+.decor-sparkle-left{position:absolute;top:360px;left:8px;width:24px;height:24px;opacity:0.12;transform:rotate(-12deg)}
 
 /* 4. 第3~4周中间大空白网格暗纹 */
-.decor-star-midright{position:absolute;top:480px;right:170px;width:140px;height:140px;opacity:0.045;transform:rotate(-8deg)}
+.decor-star-midright{position:absolute;top:480px;right:170px;width:140px;height:140px;opacity:0.07;transform:rotate(-8deg)}
 
 /* 5. 右下角复古手账印章 */
-.decor-stamp-bottom{position:absolute;bottom:46px;right:42px;border:1.4px dashed rgba(160,140,95,.32);border-radius:6px;padding:4px 10px;display:flex;flex-direction:column;align-items:center;transform:rotate(3deg);opacity:0.48}
+.decor-stamp-bottom{position:absolute;bottom:110px;right:42px;border:1.4px dashed rgba(160,140,95,.38);border-radius:6px;padding:4px 10px;display:flex;flex-direction:column;align-items:center;transform:rotate(3deg);opacity:0.55}
 .decor-stamp-bottom .st-txt{font-size:8.5px;font-weight:900;letter-spacing:1.5px;color:#927e52}
 .decor-stamp-bottom .st-sub{font-size:7px;font-weight:800;letter-spacing:0.8px;color:#b59f6e;margin-top:1px}
 /* 边角矢量四角星点缀（手绘卡通风：凹边 sparkle + 深蓝描边 + 一点高光），纯 SVG 无图片资源 */

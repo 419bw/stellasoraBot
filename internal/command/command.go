@@ -24,6 +24,7 @@ type Cmd struct {
 	Name    string   // 命令名，如 "events"
 	Aliases []string // 别名，可选
 	Admin   bool     // 只给群主/管理员（单聊里则要求发送者在 Config.AdminOpenIDs 里）
+	C2COnly bool     // 仅在单聊（私聊）中生效；群聊中静默忽略，不出现在公共帮助列表中
 	Usage   string   // 一行用法，进「帮助」列表
 	Run     func(ctx context.Context, m *qq.Message, args []string) (Reply, error)
 }
@@ -111,14 +112,18 @@ func (r *Registry) Lookup(name string) (Cmd, bool) {
 	return *c, true
 }
 
-// HelpText 按注册顺序列出所有命令，供某个功能注册「帮助」命令时取用。
+// HelpText 按注册顺序列出所有公开命令，供某个功能注册「帮助」命令时取用。
 // 机制层提供数据，命令本身仍由功能注册——本包不塞业务命令进来。
+// 私聊专用命令（C2COnly）不在公共帮助中展示，避免在群聊等场景造成信息干扰与暴露。
 func (r *Registry) HelpText() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	var b strings.Builder
 	for _, c := range r.order {
+		if c.C2COnly {
+			continue
+		}
 		b.WriteString(c.Name)
 		if len(c.Aliases) > 0 {
 			b.WriteString("（" + strings.Join(c.Aliases, "/") + "）")
@@ -188,6 +193,10 @@ func dispatch(ctx context.Context, reg *Registry, send SendAPI, cfg Config, m *q
 	c, ok := reg.Lookup(fields[0])
 	if !ok {
 		return // 不是命令：静默。群里 @机器人说闲话不该被回一句"没听懂"
+	}
+
+	if c.C2COnly && m.IsGroup() {
+		return // 仅单聊可用的命令：在群里静默忽略，不暴露命令存在，不消耗被动回复额度
 	}
 
 	if c.Admin && !isAdmin(m, cfg) {

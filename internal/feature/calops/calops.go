@@ -71,15 +71,15 @@ func (f *feature) Name() string { return "calops" }
 
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
-		{Name: "review", Admin: true,
+		{Name: "review", Admin: true, C2COnly: true,
 			Usage: "列出解析存疑的活动，可加页码：review 2", Run: command.Text(f.review)},
-		{Name: "override", Admin: true,
+		{Name: "override", Admin: true, C2COnly: true,
 			Usage: "改时间：override <id> <开始> <结束> [备注]，时间写 2026-09-08 10:59", Run: command.Text(f.override)},
-		{Name: "confirm", Admin: true,
+		{Name: "confirm", Admin: true, C2COnly: true,
 			Usage: "把当前解析值固化下来：confirm <id>", Run: command.Text(f.confirm)},
-		{Name: "hide", Admin: true,
+		{Name: "hide", Admin: true, C2COnly: true,
 			Usage: "把一条记录从日历里撤下：hide <id> [备注]", Run: command.Text(f.hide)},
-		{Name: "show", Admin: true,
+		{Name: "show", Admin: true, C2COnly: true,
 			Usage: "撤销隐藏：show <id>", Run: command.Text(f.show)},
 	}
 	for _, c := range cmds {

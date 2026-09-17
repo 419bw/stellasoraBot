@@ -478,6 +478,9 @@ func TestEveryOpsCommandIsAdminOnly(t *testing.T) {
 		if !c.Admin {
 			t.Errorf("命令 %q 不是管理员命令：任何人都能改活动时间", name)
 		}
+		if !c.C2COnly {
+			t.Errorf("命令 %q 未配置 C2COnly：应仅限单聊使用，避免群聊误触与刷屏", name)
+		}
 		if c.Usage == "" {
 			t.Errorf("命令 %q 没有用法说明，幫助里会是一行空白", name)
 		}

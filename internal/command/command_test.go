@@ -331,6 +331,25 @@ func TestAdminGateInC2CUsesWhitelist(t *testing.T) {
 	}
 }
 
+func TestC2COnlyCommandIgnoredInGroup(t *testing.T) {
+	h := newHarness(t, command.Config{AdminOpenIDs: []string{"OWNER1"}})
+	mustAdd(t, h.reg, command.Cmd{Name: "覆蓋", Admin: true, C2COnly: true, Run: echo("改好了")})
+
+	// 群主和群管在群里发 C2COnly 命令，机制层直接静默丢弃，不报错、不暴露
+	h.sayGroup(t, "M1", "覆蓋 x", "owner")
+	h.sayGroup(t, "M2", "覆蓋 x", "admin")
+	h.sayGroup(t, "M3", "覆蓋 x", "member")
+	if len(h.send.group) != 0 {
+		t.Fatalf("群里回复了 %d 条，want 0（C2COnly 命令在群里必须彻底静默）", len(h.send.group))
+	}
+
+	// 私聊中白名单管理员依然正常执行
+	h.sayC2C(t, "M4", "覆蓋 x", "OWNER1")
+	if len(h.send.c2c) != 1 || h.send.c2c[0].content != "改好了" {
+		t.Fatalf("私聊回复异常: %+v", h.send.c2c)
+	}
+}
+
 func TestLongReplyIsTruncated(t *testing.T) {
 	h := newHarness(t, command.Config{MaxRunes: 100})
 	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: echo(strings.Repeat("活動內容很長", 200))})
@@ -459,6 +478,24 @@ func TestHelpTextListsCommandsInOrder(t *testing.T) {
 func TestEmptyRegistryHelpText(t *testing.T) {
 	if got := command.NewRegistry().HelpText(); got != "" {
 		t.Errorf("空注册表的帮助 = %q, want 空串", got)
+	}
+}
+
+func TestHelpTextExcludesC2COnlyCommands(t *testing.T) {
+	reg := command.NewRegistry()
+	mustAdd(t, reg, command.Cmd{Name: "活動", Usage: "看活动", Run: echo("x")})
+	mustAdd(t, reg, command.Cmd{Name: "push", Admin: true, Usage: "控制群推送", Run: echo("x")})
+	mustAdd(t, reg, command.Cmd{Name: "review", Admin: true, C2COnly: true, Usage: "运维审查", Run: echo("x")})
+
+	got := reg.HelpText()
+	if !strings.Contains(got, "活動") {
+		t.Errorf("公开命令活动应在帮助中: %q", got)
+	}
+	if !strings.Contains(got, "push") {
+		t.Errorf("群管理命令 push 应在帮助中: %q", got)
+	}
+	if strings.Contains(got, "review") {
+		t.Errorf("C2COnly 命令 review 不应出现在公共帮助中: %q", got)
 	}
 }
 

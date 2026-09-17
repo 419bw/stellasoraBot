@@ -80,7 +80,8 @@
 ```json
 {
   "appId": "你的QQ机器人AppID",
-  "clientSecret": "你的QQ机器人AppSecret"
+  "clientSecret": "你的QQ机器人AppSecret",
+  "biliCookie": "可选，你的B站账号 Cookie（如 SESSDATA 等，大幅降低动态轮询风控；留空则使用匿名访客模式）"
 }
 ```
 

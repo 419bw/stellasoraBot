@@ -22,11 +22,19 @@
 
 ---
 
-## 日历海报效果展示
+## 效果展示
 
-发送 `/calendar` 后，机器人调用无头渲染引擎生成的版本活动日历长图海报效果如下（包含四周版本跨度视图、今日时刻红线标记、全彩官方封面封绘及活动类型标牌）：
+### 1. 版本活动日历海报 (`/calendar`)
 
-![星塔机器人版本活动日历效果图](docs/assets/calendar_poster.png)
+发送 `/calendar` 后，机器人调用无头渲染引擎生成的版本活动日历长图海报（包含四周版本全局跨度视图、游戏同款指南针罗盘暗纹、稀疏星座航线图、今日时刻红线标记、全彩官方封绘及活动类型标牌）：
+
+![星塔机器人版本活动日历效果图](docs/assets/calendar_poster_v2.png)
+
+### 2. B站官方动态推送卡片 (`biliwatch`)
+
+官方 B站账号发布新动态时，机器人自动渲染并推送到群内的高保真动态长图卡片（包含富文本排版、话题标签、表情包混排与自适应多图布局）：
+
+![星塔机器人B站动态推送效果图](docs/assets/biliwatch.png)
 
 ---
 
@@ -96,7 +104,8 @@ go run ./cmd/xingtabot -creds creds.json -db data/xingta.db -chrome "C:/Program 
 常用命令行参数：
 * `-chrome`：无头浏览器可执行文件路径；留空则不启用出图相关功能（日历海报与 B站动态推图）。
 * `-bili-uid`：监听的 B站官方账号 UID（默认内置星塔旅人官方 UID）。
-* `-bili-interval`：B站动态轮询间隔（默认 `3m`）。
+* `-bili-interval`：B站动态轮询间隔（默认 `5m`）。
+* `-bili-cookie`：B站登录态 Cookie（降低风控概率；留空优先从 `creds.json` 中的 `biliCookie` 读取）。
 * `-refresh`：官网公告同步间隔（默认 `30m`）。
 * `-lead`：活动结束前提早提醒时长（默认 `48h`）。
 

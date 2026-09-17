@@ -105,6 +105,10 @@ body{
 }
 
 /* 5. 右下角复古手账印章 */
+.decor-constellation{
+  position:absolute;top:235px;left:110px;width:900px;height:410px;opacity:0.12;color:#786840;pointer-events:none;
+}
+
 .decor-stamp-bottom{position:absolute;bottom:110px;right:42px;border:1.4px dashed rgba(160,140,95,.38);border-radius:6px;padding:4px 10px;display:flex;flex-direction:column;align-items:center;transform:rotate(3deg);opacity:0.55}
 .decor-stamp-bottom .st-txt{font-size:8.5px;font-weight:900;letter-spacing:1.5px;color:#927e52}
 .decor-stamp-bottom .st-sub{font-size:7px;font-weight:800;letter-spacing:0.8px;color:#b59f6e;margin-top:1px}
@@ -314,6 +318,7 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .ends.claim{background:#fdf4e2;color:#9a6a1e}
 .ends.claim .ico-state{color:#df9a34}
 .ends.hot{color:var(--red) !important;background:#fde7ea !important}
+.ends.hot .ico-clock,.ends.hot .ico-state{color:var(--red) !important}
 .cnt{display:inline-flex;align-items:center;gap:3.5px;flex:0 0 auto;
   padding:2.5px 7px;border-radius:4px;background:#ffffff;
   border:1.2px dashed #7894b6;color:#4a688e;font-size:10px;font-weight:800;
@@ -446,6 +451,36 @@ body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
   <!-- Center Hub Rings -->
   <circle cx="200" cy="200" r="52" stroke="currentColor" stroke-width="7" fill="none" />
   <circle cx="200" cy="200" r="24" fill="currentColor" />
+</svg>
+
+      <!-- 6. 纸面广域手绘星图航线暗纹 -->
+      <svg class="decor-constellation" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" fill="none">
+  <path d="M 30 360 C 260 410, 600 50, 890 140" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="4 6" opacity="0.6" /><path d="M 120 70 C 380 20, 720 330, 870 380" fill="none" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 5" opacity="0.45" />
+  <line x1="273" y1="230" x2="287" y2="230" stroke="currentColor" stroke-width="0.9" opacity="0.4" /><line x1="280" y1="223" x2="280" y2="237" stroke="currentColor" stroke-width="0.9" opacity="0.4" /><circle cx="280" cy="230" r="1.5" fill="currentColor" opacity="0.5" /><line x1="463" y1="220" x2="477" y2="220" stroke="currentColor" stroke-width="0.9" opacity="0.4" /><line x1="470" y1="213" x2="470" y2="227" stroke="currentColor" stroke-width="0.9" opacity="0.4" /><circle cx="470" cy="220" r="1.5" fill="currentColor" opacity="0.5" /><line x1="643" y1="200" x2="657" y2="200" stroke="currentColor" stroke-width="0.9" opacity="0.4" /><line x1="650" y1="193" x2="650" y2="207" stroke="currentColor" stroke-width="0.9" opacity="0.4" /><circle cx="650" cy="200" r="1.5" fill="currentColor" opacity="0.5" />
+  <line x1="90" y1="240" x2="210" y2="120" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="210" y1="120" x2="370" y2="170" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="370" y1="170" x2="490" y2="75" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="490" y1="75" x2="640" y2="130" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="640" y1="130" x2="790" y2="90" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="790" y1="90" x2="730" y2="270" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="730" y1="270" x2="540" y2="320" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="540" y1="320" x2="350" y2="300" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="350" y1="300" x2="190" y2="340" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="190" y1="340" x2="90" y2="240" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="370" y1="170" x2="350" y2="300" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" /><line x1="640" y1="130" x2="540" y2="320" stroke="currentColor" stroke-width="1.6" stroke-dasharray="6 5" stroke-linecap="round" />
+  <line x1="80" y1="240" x2="100" y2="240" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><line x1="90" y1="230" x2="90" y2="250" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><path d="M 90 232.0
+                            Q 91.76 238.24 98.0 240
+                            Q 91.76 241.76 90 248.0
+                            Q 88.24 241.76 82.0 240
+                            Q 88.24 238.24 90 232.0 Z" fill="currentColor" /><circle cx="90" cy="240" r="2.8" fill="#f7f0dc" /><circle cx="210" cy="120" r="8.2" stroke="currentColor" stroke-width="1.2" fill="none" opacity="0.75" /><circle cx="210" cy="120" r="3.6399999999999997" fill="currentColor" /><line x1="360" y1="170" x2="380" y2="170" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><line x1="370" y1="160" x2="370" y2="180" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><path d="M 370 161.0
+                            Q 371.98 168.02 379.0 170
+                            Q 371.98 171.98 370 179.0
+                            Q 368.02 171.98 361.0 170
+                            Q 368.02 168.02 370 161.0 Z" fill="currentColor" /><circle cx="370" cy="170" r="3.15" fill="#f7f0dc" /><circle cx="490" cy="75" r="4.5" fill="currentColor" /><line x1="630" y1="130" x2="650" y2="130" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><line x1="640" y1="120" x2="640" y2="140" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><path d="M 640 121.5
+                            Q 641.87 128.13 648.5 130
+                            Q 641.87 131.87 640 138.5
+                            Q 638.13 131.87 631.5 130
+                            Q 638.13 128.13 640 121.5 Z" fill="currentColor" /><circle cx="640" cy="130" r="2.9749999999999996" fill="#f7f0dc" /><line x1="780" y1="90" x2="800" y2="90" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><line x1="790" y1="80" x2="790" y2="100" stroke="currentColor" stroke-width="1.2" opacity="0.5" /><path d="M 790 80.5
+                            Q 792.09 87.91 799.5 90
+                            Q 792.09 92.09 790 99.5
+                            Q 787.91 92.09 780.5 90
+                            Q 787.91 87.91 790 80.5 Z" fill="currentColor" /><circle cx="790" cy="90" r="3.3249999999999997" fill="#f7f0dc" /><circle cx="730" cy="270" r="8.5" stroke="currentColor" stroke-width="1.2" fill="none" opacity="0.75" /><circle cx="730" cy="270" r="3.8499999999999996" fill="currentColor" /><circle cx="540" cy="320" r="4.5" fill="currentColor" /><circle cx="350" cy="300" r="8.2" stroke="currentColor" stroke-width="1.2" fill="none" opacity="0.75" /><circle cx="350" cy="300" r="3.6399999999999997" fill="currentColor" /><circle cx="190" cy="340" r="4.5" fill="currentColor" />
+  <text x="99" y="234" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">α STELLA</text><text x="99" y="249" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">04h 28m</text><text x="219" y="114" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">β ASTRA</text><text x="219" y="129" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">+31°</text><text x="379" y="164" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">γ VOYAGER</text><text x="379" y="179" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">+42° 18'</text><text x="499" y="69" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">δ NAVIS</text><text x="649" y="124" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">ε CYGNUS</text><text x="649" y="139" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">MAG 1.2</text><text x="799" y="84" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">ζ POLARIS</text><text x="799" y="99" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">NORTH</text><text x="739" y="264" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">η VECTOR</text><text x="549" y="314" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">θ CHORD</text><text x="549" y="329" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">+18°</text><text x="359" y="294" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">ι LYRA</text><text x="199" y="334" font-size="8.5" font-family="monospace, sans-serif" font-weight="800" fill="currentColor" opacity="0.80" letter-spacing="0.5">κ BEACON</text><text x="199" y="349" font-size="7" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" opacity="0.60" letter-spacing="0.4">-12°</text>
+  <g opacity="0.75">
+      <text x="890" y="395" font-size="8" font-family="monospace, sans-serif" font-weight="900" fill="currentColor" text-anchor="end" letter-spacing="1.5">★ CELESTIAL CHART // SECTOR 02 · EXPEDITION</text>
+      <text x="890" y="408" font-size="6.5" font-family="monospace, sans-serif" font-weight="700" fill="currentColor" text-anchor="end" opacity="0.7" letter-spacing="1.0">STELLA SORA · ASTRONOMICAL SURVEY · EPOCH 2026</text>
+      <line x1="450" y1="414" x2="890" y2="414" stroke="currentColor" stroke-width="0.9" stroke-dasharray="12 4 2 4" />
+    </g>
 </svg>
 
       <!-- 5. 右下角复古手账印章 -->

@@ -431,7 +431,8 @@ func (p *Poster) armPushes(recs []annsync.Rec) {
 // 回拨或版本记录消失又回来时，已删的宽限窗内账最多让海报重推一张，后果有界。
 //
 // 账的删除跟 calexpiry 同纪律：内存与磁盘一起删、盘删失败只记日志——内存镜像是
-// 权威，下轮 prune 幂等重试盘删。写盘在锁内，与 settle 的"锁内整条写回"同序。
+// 权威，内存删掉后后续 prune 就看不到这个键了，孤儿盘记录进程内不重试，靠重启后
+// loadSent 捞回、再被当轮 prune 收掉。写盘在锁内，与 settle 的"锁内整条写回"同序。
 func (p *Poster) prune(recs []annsync.Rec) {
 	ws := Windows(recs, p.cfg.Label, p.cfg.Zone)
 	live := make(map[string]bool, 2)

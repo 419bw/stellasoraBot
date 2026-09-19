@@ -115,7 +115,8 @@ type Poster struct {
 }
 
 // shot 每个版本只留一份：数据变了指纹就变、时钟跨过 5 分钟桶也变，旧的直接作废。
-// 版本总共个位数，不需要 LRU。
+// 版本键会随公告历史一直新增，但每轮 round 的 prune 只留最新两个版本（当期给
+// 「日历」命令、上期给调度器余单），不需要 LRU。
 type shot struct {
 	token string // 指纹 + 桶起点，两个都一样才算同一张图
 	data  []byte
@@ -348,7 +349,8 @@ func (p *Poster) loop(ctx context.Context) {
 	}
 }
 
-// round 每轮做两件事：把当前版本窗缺的海报补进缓存；把每个版本的推图排上期。
+// round 每轮做三件事：把当前版本窗缺的海报补进缓存；把每个版本的推图排上期；
+// 把出窗版本的渲染与账本回收掉。
 //
 // 预热是这条链路的性价比所在——海报是唯一"贵而与时间无关"的部分（实测 16 张
 // 海报串行拉完要 40 秒，缓存命中后组数据只剩 50 毫秒）。把它放在后台轮里，
@@ -364,6 +366,7 @@ func (p *Poster) round(ctx context.Context) {
 	}
 	p.warmArt(ctx, recs)
 	p.armPushes(recs)
+	p.prune(recs)
 }
 
 // warmArt 把当前版本窗里每条记录的海报补进缓存；画出来的数据集丢掉。
@@ -406,6 +409,52 @@ func (p *Poster) armPushes(recs []annsync.Rec) {
 		}
 		key := w.Key
 		p.api.Schedule("poster:"+key, at, func(ctx context.Context) error { return p.push(ctx, key) })
+	}
+}
+
+// prune 只留最新两个版本的缓存：shots（整张 PNG 字节）与 ledger（内存+磁盘账），
+// 其余版本键全删。
+//
+// "二"来自读者的种类，不来自时间判定：
+//   - 当期——「日历」命令永远在取 Current()（"开闸已过的最新一个"），一版存活两三周，
+//     它是热缓存唯一的主顾；出宽限窗不等于没人读，上一版实现就是栽在把
+//     "调度器还惦记"当成"还有人读"，每期开闸一小时后把当期图反复删掉。
+//   - 上期——调度器的重试/补投只发生在开闸后 pushGrace 一小时内，此刻能欠回执的
+//     最多是刚被顶上位置的那一版。版本间隔以周计，余单永远够不到第三个键。
+//
+// 键本身按开启时刻排序（UTC yyyyMMddHHmm，Windows 返回升序），掐尾两个即得，
+// prune 不需要知道"一小时"这种调度侧参数，两处各用各的尺子反而不漂移。
+// 官方版本公告写"维护结束后开启"、不回改玩法起点，所以同一条公告不会一天内
+// 生出并活的两个键——留二即全覆盖。
+//
+// 代价：上期的图与账陪跑一整期（一张 PNG + 几十字节）。接受的取舍：时钟大幅
+// 回拨或版本记录消失又回来时，已删的宽限窗内账最多让海报重推一张，后果有界。
+//
+// 账的删除跟 calexpiry 同纪律：内存与磁盘一起删、盘删失败只记日志——内存镜像是
+// 权威，下轮 prune 幂等重试盘删。写盘在锁内，与 settle 的"锁内整条写回"同序。
+func (p *Poster) prune(recs []annsync.Rec) {
+	ws := Windows(recs, p.cfg.Label, p.cfg.Zone)
+	live := make(map[string]bool, 2)
+	if n := len(ws); n > 0 {
+		for _, w := range ws[max(0, n-2):] {
+			live[w.Key] = true
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key := range p.shots {
+		if !live[key] {
+			delete(p.shots, key)
+		}
+	}
+	for key := range p.ledger {
+		if live[key] {
+			continue
+		}
+		delete(p.ledger, key)
+		if err := p.cfg.Doc.Delete(NS, key); err != nil {
+			p.cfg.Logf("calposter: 删过期版本账 %s 失败: %v", key, err)
+		}
 	}
 }
 

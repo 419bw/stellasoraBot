@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"xingta/internal/command"
 	"xingta/internal/qq"
@@ -131,11 +132,15 @@ func (f *fakeSend) all() []sent {
 // ---- 驱动 ----------------------------------------------------------------
 
 // harness 把命令表接到真 Hub 上，用真报文形状驱动：走的是线上来消息的同一条路径。
+// Attach 起的是异步 worker——say 之后要等 worker 消化完才能断言发送记录，
+// Drain 就是干这个的（屏障作业走同一条 inbox，排队顺序即处理顺序，不轮询）。
 type harness struct {
-	reg  *command.Registry
-	send *fakeSend
-	hub  *qq.Hub
-	logs []string
+	reg    *command.Registry
+	send   *fakeSend
+	hub    *qq.Hub
+	w      *command.Worker
+	cancel context.CancelFunc
+	logs   []string
 
 	mu sync.Mutex
 }
@@ -145,7 +150,10 @@ func newHarness(t *testing.T, cfg command.Config) *harness {
 	h := &harness{reg: command.NewRegistry(), send: &fakeSend{}}
 	cfg.Logf = h.log
 	h.hub = qq.NewHub(nil, h.log)
-	command.Attach(h.reg, h.hub, h.send, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // worker 随测试退出；-race 下不泄漏
+	h.w = command.Attach(ctx, h.reg, h.hub, h.send, cfg)
+	h.cancel = cancel
 	return h
 }
 
@@ -161,10 +169,17 @@ func (h *harness) logged() string {
 	return strings.Join(h.logs, "\n")
 }
 
-// sayGroup 发一条群 @机器人 的消息。role 取 member / admin / owner。
+// sayGroup 发一条群 @机器人 的消息并等处理完。role 取 member / admin / owner。
 func (h *harness) sayGroup(t *testing.T, id, content, role string) {
 	t.Helper()
-	h.say(t, qq.EventGroupAtMessage, map[string]any{
+	h.offerGroup(t, id, content, role)
+	h.flush(t)
+}
+
+// offerGroup 投一条群消息但不等 worker——要卡"在飞 + 积压 + 溢出"时序的用例用。
+func (h *harness) offerGroup(t *testing.T, id, content, role string) {
+	t.Helper()
+	h.offer(t, qq.EventGroupAtMessage, map[string]any{
 		"id": id, "group_openid": "GROUP1", "content": content,
 		"author": map[string]any{
 			"id": "A1", "member_openid": "USER1", "username": "某人", "member_role": role,
@@ -172,16 +187,23 @@ func (h *harness) sayGroup(t *testing.T, id, content, role string) {
 	})
 }
 
-// sayC2C 发一条单聊消息。单聊报文里没有 member_role，这是平台给的形状。
+// sayC2C 发一条单聊消息并等处理完。单聊报文里没有 member_role，这是平台给的形状。
 func (h *harness) sayC2C(t *testing.T, id, content, openID string) {
 	t.Helper()
-	h.say(t, qq.EventC2CMessage, map[string]any{
+	h.offerC2C(t, id, content, openID)
+	h.flush(t)
+}
+
+func (h *harness) offerC2C(t *testing.T, id, content, openID string) {
+	t.Helper()
+	h.offer(t, qq.EventC2CMessage, map[string]any{
 		"id": id, "content": content,
 		"author": map[string]any{"id": "A2", "user_openid": openID},
 	})
 }
 
-func (h *harness) say(t *testing.T, kind string, payload map[string]any) {
+// offer 投一条报文但不等 worker：给"积压/溢出"这类要卡时序的用例用。
+func (h *harness) offer(t *testing.T, kind string, payload map[string]any) {
 	t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -189,6 +211,14 @@ func (h *harness) say(t *testing.T, kind string, payload map[string]any) {
 	}
 	if err := h.hub.Handle(context.Background(), qq.Event{Type: kind, Data: raw}); err != nil {
 		t.Errorf("Hub.Handle 返回错误 %v：处理器报错会让 webhook 侧撤销去重等平台重投，命令就会被执行两遍", err)
+	}
+}
+
+// flush 等此刻之前投递的消息全部处理完，之后才允许断言 fakeSend 的记录。
+func (h *harness) flush(t *testing.T) {
+	t.Helper()
+	if !h.w.Drain() {
+		t.Fatal("被动 worker 已退出：这条断言之后不可能再有回复")
 	}
 }
 
@@ -655,5 +685,92 @@ func TestFreshImageRejectedDoesNotReupload(t *testing.T) {
 	}
 	if len(h.send.forgets) != 0 {
 		t.Fatalf("没走缓存不该 Forget，记录了 %d 条", len(h.send.forgets))
+	}
+}
+
+// ---- 被动 worker（解耦心跳的执行模型） ------------------------------------
+
+// inbox 满时新消息就地丢弃 + 记日志，绝不阻塞投递方（网关循环），也不给
+// "太忙"回复——回话会白耗被丢消息的回复槽。
+func TestInboxOverflowDropsNewestAndLogs(t *testing.T) {
+	h := newHarness(t, command.Config{QueueSize: 1})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+		once.Do(func() { close(entered) })
+		<-release // 模拟图命令占住 worker 的几十秒
+		return command.Reply{Text: "好"}, nil
+	}})
+
+	h.offerGroup(t, "M1", "活動", "member") // worker 取走 M1 后卡在 Run 里
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker 没取走 M1：hub → inbox 的交接没接上")
+	}
+
+	h.offerGroup(t, "M2", "活動", "member") // inbox 唯一的槽位属于 M2
+	h.offerGroup(t, "M3", "活動", "member") // 满了：当场丢弃，投递方不等待
+
+	if got := strings.Count(h.logged(), "丢弃消息 M3"); got != 1 {
+		t.Errorf("溢出日志出现 %d 次, want 1（丢弃必须可观测，但不能刷屏）", got)
+	}
+	if n := len(h.send.group); n != 0 {
+		t.Errorf("被丢弃前就回了 %d 条：worker 还没处理完，不该有任何发送", n)
+	}
+
+	close(release)
+	h.flush(t)
+
+	got := h.send.group
+	if len(got) != 2 || got[0].msgID != "M1" || got[1].msgID != "M2" {
+		t.Fatalf("回复了 %+v，want 恰好 M1、M2 各一条、按到达序", got)
+	}
+}
+
+// 一条消息把 worker 炸掉 = 之后所有命令静默失联，比进程死更难发现。
+// 保险丝形态同 hub 的 invokeHandler：吸收、带栈日志、继续下一条。
+func TestWorkerSurvivesHandlerPanic(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "炸", Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+		panic("画布塌了")
+	}})
+	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: echo("好")})
+
+	h.sayGroup(t, "M1", "炸", "member")
+	h.sayGroup(t, "M2", "活動", "member")
+
+	got := h.send.group
+	if len(got) != 1 || got[0].msgID != "M2" {
+		t.Fatalf("panic 后 worker 没继续干活：回复了 %+v, want 只剩 M2 一条", got)
+	}
+	lg := h.logged()
+	if !strings.Contains(lg, "画布塌了") || !strings.Contains(lg, "goroutine") {
+		t.Errorf("panic 没有带栈进日志：%q", lg)
+	}
+}
+
+// ctx 取消后 worker 退出：不再有新的处理，也没有永远挂在 Drain 上的僵尸。
+func TestWorkerStopsWhenCtxCanceled(t *testing.T) {
+	h := newHarness(t, command.Config{})
+	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: echo("好")})
+	h.sayGroup(t, "M1", "活動", "member")
+	before := len(h.send.group)
+
+	h.cancel()
+	// 退出时刻不保证（select 在 ctx.Done 与到期作业之间随机），做有界等待；
+	// 轮询只存在于测试侧，产品面没有任何轮询。
+	deadline := time.Now().Add(5 * time.Second)
+	for h.w.Drain() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if h.w.Drain() {
+		t.Fatal("ctx 取消 5 秒后 worker 仍在消费")
+	}
+
+	h.offerGroup(t, "M2", "活動", "member")
+	if len(h.send.group) != before {
+		t.Errorf("停机后仍处理了消息：%d → %d 条回复", before, len(h.send.group))
 	}
 }

@@ -24,7 +24,7 @@ internal/
     target/               ← 推送目标管理（持久化 + 内存镜像，主题 Topic 自声明与订阅）
     queue/                ← 发送队列（多维限流、合并、退避重试、主动消息投递）
     schedule/             ← 最小堆调度器（动态改期/取消）
-  command/                ← 命令机制层（注册表 + dispatch + 被动回复铁律）
+  command/                ← 命令机制层（注册表 + dispatch + 被动 worker inbox + 被动回复铁律）
   annsync/                ← 通用公告同步引擎（列目录→抓详情→投影→日历）
   stellasora/             ← 中文网 Source（HTTP 客户端 + 规则 v3 解析器 + 跨条合并）
   feature/                ← 业务功能（功能自治，功能间零互相 import）
@@ -218,7 +218,13 @@ main.activeSink（只管出图与发送，不参与记账）
 
 ## 并发模型与实测基准数据
 
-- **hub.Handle**：跑在网关 attempt 主循环 goroutine 上，与心跳发送、ack 判死、重连**共享同一个循环**且同步调用（WS 读帧是独立 goroutine，经 64 缓冲 channel 喂入）。所以处理器不许做耗时活（会拖慢心跳直至判死断连），错误与 panic 也绝不能从 Handle 漏出去——返回错误 = 网关判定链路故障而断连重连（见硬坑 13）。
+- **hub.Handle**：跑在网关 attempt 主循环 goroutine 上，与心跳发送、ack 判死、重连**共享同一个循环**且同步调用（WS 读帧是独立 goroutine，经 64 缓冲 channel 喂入）。命令消息在这条循环上只做 decode→去重→**非阻塞投递进 command 的被动 inbox**（µs 级），所以入口天然无耗时活；错误与 panic 也绝不能从 Handle 漏出去——返回错误 = 网关判定链路故障而断连重连（见硬坑 13）。
+- **command 被动 worker（2026-09-19 分道）**：`command.Attach` 起**一个** goroutine + 容量 128 的 inbox（`Config.QueueSize` 可调），命令执行与被动回复全部离开网关循环——改前一条冷「日历」出图就能把心跳拖过 82.5s 判死阈值（`AckMisses(2)×41.25s`）造成假活断连。要点：
+  - **串行是刻意的**：回复限流本就全局串行；群/单聊到达序、出图浏览器的并发内存记账（Termux 3 趟 ≈ 2GB 天花板）都不被打破。
+  - **满则丢新 + 日志**：不背压网关，也**绝不回退 inline 执行**（inline = 恢复旧 bug）；不回"太忙"提示（白耗回复槽）。
+  - worker 挂 **runtime ctx** 而非网关连接 ctx：断线重连不掐在途命令（seq 补发 + msg_id 去重兜底）。停机即退不排空。
+  - 逐 job panic 保险丝（带栈日志，同 P2-3 哲学）。`Attach` 返回 `*Worker`，`Drain()` 是测试/压测用的排空屏障。
+  - 主动消息不走这里——主动在 `kernel/queue`（限流/合并/重试/日额度），两条通道互不相干。
 - **calendar.Store**：`sync.RWMutex` 保护。写侧只有 annsync.loop 一个 goroutine；读侧命令 dispatch 共享。
 - **queue.Dispatcher**：独立 goroutine 消费 + 定时 flush + 2 个并发 worker 出队发送。
 - **biliwatch 单槽位与单飞合并**：
@@ -230,8 +236,10 @@ main.activeSink（只管出图与发送，不参与记账）
 | 路径 | 吞吐 | p50 | p99 | HeapInUse |
 |------|------|-----|-----|-----------|
 | WS→decode→dedup→noop handler | 101,243 msg/s | 65µs | 636µs | 85MB |
-| 业务 dispatch 单线程 | 6,963 cmd/s | <1µs | 1.5ms | 5MB |
-| 业务 dispatch 20 并发 | 17,537 cmd/s | 1ms | 3.3ms | 8MB |
+| 业务 dispatch 单线程（旧同步实现，2026-09-13 口径） | 6,963 cmd/s | <1µs | 1.5ms | 5MB |
+| 业务 dispatch 20 并发（旧同步实现，2026-09-13 口径） | 17,537 cmd/s | 1ms | 3.3ms | 8MB |
+| 分道后 Handle 投递（decode→dedup→inbox select，20 生产者灌满即丢） | 172,200 msg/s | ~0 | 1.1ms | 7MB |
+| 分道后 worker 串行消费文字命令（.probe/bizload，2026-09-19） | ~21,000 cmd/s | — | — | — |
 
 结论：计算与调度瓶颈在平台 HTTP 往返（~100-200ms/reply），不在本地处理。
 
@@ -240,7 +248,7 @@ main.activeSink（只管出图与发送，不参与记账）
 | 类型 | 工具 | 运行方式 / 说明 |
 |------|------|-----------------|
 | CI 持续集成 | GitHub Actions (`.github/workflows/ci.yml`) | push / PR 自动化触发，Linux 容器全量跑测与跨平台构建 |
-| 并发正确性与竞态 | `go test -race ./...` | CI 环境 (Ubuntu gcc) / 容器 (xingta-race 镜像) |
+| 并发正确性与竞态 | `go test -race ./...` | CI 环境 (Ubuntu gcc) / 本机容器 `xingta-race:go1.26-1.27`（`--entrypoint bash` + `PATH=/opt/g126/bin:...`，挂载仓库跑全量约 75s） |
 | 依赖与静态检查 | `go mod verify` + `go vet ./...` | CI 自动运行 |
 | 多平台跨架构编译 | Linux (amd64, arm64) + Windows (amd64) | CI 矩阵编译并上传发布产物 |
 | 单飞并发与防轰炸 | `internal/feature/biliwatch/biliwatch_test.go` | 20 goroutine 瞬发并发合并测试 + 倒序时序与冷启动基线测试 |
@@ -286,7 +294,7 @@ go run ./cmd/calshot -db data/xingta.db -repeat 1
 10. **HTTP 响应体排空与连接池复用**：`net/http` 客户端在读取非 2xx 或忽略正文时，若仅调用 `resp.Body.Close()` 而未排空，底层 TCP 连接无法放回空闲池，会导致长跑时产生大量 TIME_WAIT 并耗尽端口。必须统一采用 `io.Copy(io.Discard, resp.Body)` 排空后再关闭。
 11. **单槽位内存防爆（Single-Slot Memory Model）**：在低功耗 ARM64 (Termux 4GB 内存) 长期运行环境下，任何无上限的渲染缓存都会导致内存爬升并最终被 OOM 杀死。日历图基于 5 分钟时间桶量化单份缓存；B站动态基于 `latestID` 保持单槽位（约 400KB）内存缓存，旧图随 ID 变更由 GC 自然回收，确保常驻内存水平绝不随运行时间增加。
 12. **多主题订阅解耦与轻量持久化**：群管理与推送解耦，不硬编码业务主题。`kernel/target` 在 bbolt 中以 JSON 保存 `map[string]map[string]bool`，内存镜像单机支撑万级群目标仅消耗 ~1MB 内存，彻底将出站吞吐的控制权交给 `kernel/queue`。
-13. **机制层调用业务回调的边界必须装 panic 保险丝**：全库业务回调（queue worker 的 `Sink.Send`、调度器 `Task.Fn`、hub.dispatch 的处理器）都由机制层 goroutine 直接执行，而 Go 里任何 goroutine 的未恢复 panic 都终止整个进程——生产又是 screen 一次性拉起、无守护，业务偶发崩溃 = 停服到人工介入。三处边界各自带 `defer recover()` 把 panic 降级：Sink panic 走既有退避重试与终态上报；调度任务 panic 走 OnError；hub 处理器 panic 记日志 + `HandlerPanic` 计数后返回 nil（**绝不能外抛**——WS 上返回错误会让网关断连重连，webhook 上会 `dedup.Forget` 后遭平台无限重投，确定性 panic 两条路都成风暴）。guard 只包外部调用那一次，机制层自身的 bug 该炸还得炸。历史上曾误记"hub.Handle 在 WS reader goroutine 上"，读帧与处理的 goroutine 关系以并发模型一节为准。
+13. **机制层调用业务回调的边界必须装 panic 保险丝**：全库业务回调（queue worker 的 `Sink.Send`、调度器 `Task.Fn`、hub.dispatch 的处理器、command 被动 worker 逐条消费的命令）都由机制层 goroutine 直接执行，而 Go 里任何 goroutine 的未恢复 panic 都终止整个进程——生产又是 screen 一次性拉起、无守护，业务偶发崩溃 = 停服到人工介入。各边界各自带 `defer recover()` 把 panic 降级：Sink panic 走既有退避重试与终态上报；调度任务 panic 走 OnError；hub 处理器 panic 记日志 + `HandlerPanic` 计数后返回 nil（**绝不能外抛**——WS 上返回错误会让网关断连重连，webhook 上会 `dedup.Forget` 后遭平台无限重投，确定性 panic 两条路都成风暴）；command worker 的 job panic 带栈记日志后继续下一条（见并发模型一节）。guard 只包外部调用那一次，机制层自身的 bug 该炸还得炸。历史上曾误记"hub.Handle 在 WS reader goroutine 上"，读帧与处理的 goroutine 关系以并发模型一节为准。
 
 ## 仓库
 

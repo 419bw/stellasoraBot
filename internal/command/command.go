@@ -7,7 +7,7 @@
 // 铁律：**一条命令 = 一条被动回复**。平台的被动回复上限是群 5 次 / 单聊 4 次
 // （qq.MaxGroupReplies / qq.MaxC2CReplies），超了直接拒发。所以 Cmd.Run 返回一段文本
 // 而不是自己发消息——机制层拿去合成单条回复。要列更多内容由命令自己分页
-// （用户发新消息 = 新 msg_id = 新一批预算），不要试图一次发好几条。
+// （用户发新消息 = 新 msg_id = 新一批预算），不要试图一次发好几条。执行流（worker、inbox、接线）见 worker.go。
 package command
 
 import (
@@ -160,29 +160,27 @@ type Config struct {
 	// 光靠 MemberRoleIs 判断会让管理员命令在私聊里永远不可用。
 	AdminOpenIDs []string
 	Logf         func(format string, args ...any)
+	// QueueSize 是被动消息 inbox 的容量：worker 被慢命令占住时，还能收下多少条
+	// 待处理消息。满了直接丢弃 + 记日志——消息来自 WS 补发或用户重发都不亏，
+	// 被动回复的窗口（群 5 分钟）本来就撑不过深积压。零值兜默认值。
+	QueueSize int
 }
+
+// DefaultQueueSize 是被动 inbox 的默认容量。量级依据：处理均值 <1s（文字命令
+// 一次平台往返 ~0.2s，图命令冷出图 ~7s），要触顶得在几十秒里持续灌进上百条消息。
+const DefaultQueueSize = 128
 
 func (c Config) withDefaults() Config {
 	if c.MaxRunes <= 0 {
 		c.MaxRunes = 1500
 	}
+	if c.QueueSize <= 0 {
+		c.QueueSize = DefaultQueueSize
+	}
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
 	}
 	return c
-}
-
-// Attach 把命令表接到 Hub 上：群 @机器人 与单聊两条事件各挂一个处理器。
-func Attach(reg *Registry, h *qq.Hub, send SendAPI, cfg Config) {
-	cfg = cfg.withDefaults()
-	handle := func(ctx context.Context, m *qq.Message) error {
-		dispatch(ctx, reg, send, cfg, m)
-		// 刻意不往上抛错误：webhook 前端见到处理器报错会撤销去重登记等平台重投，
-		// 而命令已经回过一条了，重投就是"同一条命令回两遍"。失败就地记日志。
-		return nil
-	}
-	h.OnMessage(qq.EventGroupAtMessage, handle)
-	h.OnMessage(qq.EventC2CMessage, handle)
 }
 
 func dispatch(ctx context.Context, reg *Registry, send SendAPI, cfg Config, m *qq.Message) {

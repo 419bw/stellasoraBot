@@ -184,7 +184,9 @@ func run() error {
 	// ---- QQ 接入：命令机制挂在事件入口上 ----------------------------------
 
 	hub := qq.NewHub(nil, logf)
-	command.Attach(reg, hub, sender, command.Config{
+	// 命令走 Attach 内部的被动 worker：网关循环（心跳/判死）不等命令跑完。
+	// 返回值这里用不上（Drain 供测试与诊断），生命周期随 ctx——与 rt、网关同级。
+	command.Attach(ctx, reg, hub, sender, command.Config{
 		AdminOpenIDs: splitList(*admins),
 		Logf:         logf,
 	})

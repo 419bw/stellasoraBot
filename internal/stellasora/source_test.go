@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -372,12 +373,25 @@ func TestSourceImplementsEngineInterfaces(t *testing.T) {
 
 // 默认配置必须指向现在真正在运营的那个站：换错过一次源，
 // 同步会安静地抓到一堆繁体公告，日历看起来"正常"却没有一条对得上游戏里。
+//
+// 不真连官网。本用例原本拿默认客户端发真请求，CI 的海外出口够不到境内官网时
+// 30 秒超时，2026-09-21 起连红两轮（境内出口可达，本地怎么跑都绿）。默认值改钉
+// 三段：常量断言钉"值是什么"；已取消的 context 钉"默认客户端确实把请求瞄向它"
+// ——请求出不了网，只验 url.Error 里的目标前缀；列表路径与栏目回归（type≠
+// activity）由本地假件钉。旧用例的假件从没接到客户端上，那两条断言是死代码。
 func TestDefaultsPointAtCNOfficialSite(t *testing.T) {
-	cfg := stellasora.Config{}
 	if stellasora.DefaultBaseURL != "https://stellasora.yostar.cn" {
 		t.Errorf("DefaultBaseURL = %q", stellasora.DefaultBaseURL)
 	}
-	c := stellasora.NewClient(cfg)
+
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := stellasora.NewClient(stellasora.Config{}).ListNews(cctx, 1)
+	var ue *url.Error
+	if !errors.As(err, &ue) || !strings.HasPrefix(ue.URL, stellasora.DefaultBaseURL) {
+		t.Errorf("默认客户端的目标不是默认站: %v", err)
+	}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/resource/news" {
 			t.Errorf("列表路径 = %q, want /api/resource/news", r.URL.Path)
@@ -389,8 +403,8 @@ func TestDefaultsPointAtCNOfficialSite(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, _, err := c.ListNews(context.Background(), 1)
-	if err != nil {
+	c := stellasora.NewClient(stellasora.Config{BaseURL: srv.URL})
+	if _, _, err := c.ListNews(context.Background(), 1); err != nil {
 		t.Fatalf("ListNews: %v", err)
 	}
 }

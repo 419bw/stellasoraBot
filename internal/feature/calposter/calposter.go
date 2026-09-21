@@ -115,8 +115,8 @@ type Poster struct {
 }
 
 // shot 每个版本只留一份：数据变了指纹就变、时钟跨过 5 分钟桶也变，旧的直接作废。
-// 版本键会随公告历史一直新增，但每轮 round 的 prune 只留最新两个版本（当期给
-// 「日历」命令、上期给调度器余单），不需要 LRU。
+// 版本键会随公告历史一直新增，但每轮 round 的 prune 只留 Timeline 的 live 集
+// （当值 ∪ 未过气），稳态下只剩当期一张图，不需要 LRU。
 type shot struct {
 	token string // 指纹 + 桶起点，两个都一样才算同一张图
 	data  []byte
@@ -349,8 +349,12 @@ func (p *Poster) loop(ctx context.Context) {
 	}
 }
 
-// round 每轮做三件事：把当前版本窗缺的海报补进缓存；把每个版本的推图排上期；
-// 把出窗版本的渲染与账本回收掉。
+// round 每轮做三件事：把当前版本窗缺的海报补进缓存；把未过气版本的推图排上期；
+// 把死键的渲染与账本回收掉。
+//
+// 时间线每轮只建一份（NewTimeline）：排期与回收用同一个 now、同一条开闸公式、
+// 同一条生死判据，两把尺子各算各的漂移空间被结构性消除。出图路径（Image/draw）
+// 不经过这里——请求就该拿最新数据现算，与本轮的尺子无关。
 //
 // 预热是这条链路的性价比所在——海报是唯一"贵而与时间无关"的部分（实测 16 张
 // 海报串行拉完要 40 秒，缓存命中后组数据只剩 50 毫秒）。把它放在后台轮里，
@@ -364,9 +368,10 @@ func (p *Poster) round(ctx context.Context) {
 		p.cfg.Logf("calposter: 本轮读不到活动记录: %v", err)
 		return
 	}
+	tl := NewTimeline(recs, p.cfg.Label, p.cfg.Zone, p.cfg.Now(), p.cfg.OpenAt)
 	p.warmArt(ctx, recs)
-	p.armPushes(recs)
-	p.prune(recs)
+	p.armPushes(tl)
+	p.prune(tl)
 }
 
 // warmArt 把当前版本窗里每条记录的海报补进缓存；画出来的数据集丢掉。
@@ -391,56 +396,48 @@ func (p *Poster) options(key string, now time.Time, fetch bool) Options {
 	}
 }
 
-// armPushes 给每个"开启时刻还没到（或刚过不久）且没推过"的版本排一次期。
+// armPushes 给每个"未过气"（now − 开闸 ≤ pushGrace，未来窗恒合格，见 Timeline.armed）
+// 且没推过的版本排一次期。
 //
-// 触发点用 act0 + 开闸估计，与"当前版本"同一条判据：00:00 只是维护中的下界，
-// 那时候新版本既没开、海报也常常还没上传，推出去是一张全是占位图的图。
+// 触发点用 act0 + 开闸估计，与 prune 的保活判据是 Timeline 里的同一条——
+// 开闸公式全包只写一份，这里拿现成的 at。00:00 只是维护中的下界，那时候
+// 新版本既没开、海报也常常还没上传，推出去是一张全是占位图的图。
 // Schedule 按 ID 幂等，所以每轮重排不会重复；已推过的直接跳过。
-func (p *Poster) armPushes(recs []annsync.Rec) {
-	now := p.cfg.Now()
-	for _, w := range Windows(recs, p.cfg.Label, p.cfg.Zone) {
-		t, err := time.ParseInLocation(TimeLayout, w.Start, p.cfg.Zone)
-		if err != nil {
+func (p *Poster) armPushes(tl *Timeline) {
+	for i := range tl.wins {
+		if !tl.armed(i) || p.settled(tl.wins[i].Key) {
 			continue
 		}
-		at := t.Add(p.cfg.OpenAt)
-		if now.Sub(at) > pushGrace || p.settled(w.Key) {
-			continue
-		}
-		key := w.Key
+		key, at := tl.wins[i].Key, tl.wins[i].at
 		p.api.Schedule("poster:"+key, at, func(ctx context.Context) error { return p.push(ctx, key) })
 	}
 }
 
-// prune 只留最新两个版本的缓存：shots（整张 PNG 字节）与 ledger（内存+磁盘账），
-// 其余版本键全删。
+// prune 收敛 shots（整张 PNG 字节）与 ledger（内存+磁盘账），只留 Timeline 的
+// live 集：当值 ∪ 未过气（now − 开闸 ≤ pushGrace）。
 //
-// "二"来自读者的种类，不来自时间判定：
-//   - 当期——「日历」命令永远在取 Current()（"开闸已过的最新一个"），一版存活两三周，
-//     它是热缓存唯一的主顾；出宽限窗不等于没人读，上一版实现就是栽在把
-//     "调度器还惦记"当成"还有人读"，每期开闸一小时后把当期图反复删掉。
-//   - 上期——调度器的重试/补投只发生在开闸后 pushGrace 一小时内，此刻能欠回执的
-//     最多是刚被顶上位置的那一版。版本间隔以周计，余单永远够不到第三个键。
+// 每条账至多一类读者，live 的两个条款正好把他们收全（推导见 Timeline 注释）：
+//   - 当值——「日历」命令与预热按当期键反复取图，一版存活两三周，出宽限窗
+//     不等于没人读。首版按"出 pushGrace 即删"，把最热的当期图每轮删掉；
+//   - 未过气——调度器里还没触发的任务（未来窗等到点、刚开闸的宽限窗内欠推
+//     补推）与时钟回拨回某窗宽限期的情形，账要活着让 settled 挡住重推。
 //
-// 键本身按开启时刻排序（UTC yyyyMMddHHmm，Windows 返回升序），掐尾两个即得，
-// prune 不需要知道"一小时"这种调度侧参数，两处各用各的尺子反而不漂移。
-// 官方版本公告写"维护结束后开启"、不回改玩法起点，所以同一条公告不会一天内
-// 生出并活的两个键——留二即全覆盖。
+// 二版曾改用"留末二键"的位置尺：不数时间、只数位置，当期误删是止住了，但
+// 位置假设在三窗并存（上一版兑换尾未收、未来窗已预公告两版）时失效，当值键
+// 排到末三就被清空账本、宽限窗内隔轮重推。现版按读者判：一个键死了 ⟺ 非当值
+// ∧ now > 开闸 + pushGrace，它的任务要么必然已触发、要么必然不再触发，图也没
+// 有读者。判据与 armPushes 的排期范围共用 Timeline.armed 一条谓词，两把尺子
+// 不可能各漂各的。
 //
-// 代价：上期的图与账陪跑一整期（一张 PNG + 几十字节）。接受的取舍：时钟大幅
-// 回拨或版本记录消失又回来时，已删的宽限窗内账最多让海报重推一张，后果有界。
+// 红利：上期不再陪跑一整期（位置尺下它恒为末二），稳态 shots 只剩当期一张。
+// 代价：时钟回拨跨过某版"开闸 + pushGrace"再拨回来时，已删的账至多让海报重推
+// 一张，后果有界。
 //
 // 账的删除跟 calexpiry 同纪律：内存与磁盘一起删、盘删失败只记日志——内存镜像是
 // 权威，内存删掉后后续 prune 就看不到这个键了，孤儿盘记录进程内不重试，靠重启后
 // loadSent 捞回、再被当轮 prune 收掉。写盘在锁内，与 settle 的"锁内整条写回"同序。
-func (p *Poster) prune(recs []annsync.Rec) {
-	ws := Windows(recs, p.cfg.Label, p.cfg.Zone)
-	live := make(map[string]bool, 2)
-	if n := len(ws); n > 0 {
-		for _, w := range ws[max(0, n-2):] {
-			live[w.Key] = true
-		}
-	}
+func (p *Poster) prune(tl *Timeline) {
+	live := tl.LiveKeys()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for key := range p.shots {

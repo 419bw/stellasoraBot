@@ -93,53 +93,126 @@ func (o Options) withDefaults() Options {
 // VersionKey 把一条版本记录的时刻翻成稳定键。
 func VersionKey(t time.Time) string { return t.UTC().Format(keyFmt) }
 
-// Windows 从活动记录里挑出版本窗口。版本边界在解析阶段就被产成一条
-// Provenance=Label 的记录（Start=玩法起, End=玩法止, ClaimEnd=兑换止），
-// 所以这里不需要第二个数据源。返回值按开启时刻升序。
-func Windows(recs []annsync.Rec, label string, zone *time.Location) []Window {
+// Timeline 是一轮里的版本时间线：把记录按 Label 过滤、按键去重、按开启时刻升序，
+// 一次性算好三个答案——窗口全集（Windows）、当值窗（Current）、要保活的键集
+// （LiveKeys）。
+//
+// 存在的理由是让"开闸公式"（Start + OpenAt）与"过气"门槛（pushGrace，定义在
+// calposter.go）只写在一处：armPushes 的排期范围与 prune 的保活范围是同一条
+// 谓词的两次使用，尺子分开写（一份把格式化串 parse 回时刻、一份数键的位置）
+// 口径就会漂——当期账被误删、宽限窗内隔轮重推的事故就是这么来的。
+//
+// 保活集 live = 当值 ∪ 未过气：
+//   - 当值：开闸已过的最新一个。「日历」命令与预热按这个键反复取图，一版存活
+//     两三周，出宽限窗不等于没人读；
+//   - 未过气：now − 开闸 ≤ pushGrace。刻意不设下界——未来窗差值为负恒合格，
+//     恰是 armPushes 要排期的范围（未来窗等到点、刚开闸的宽限窗内欠推补推）；
+//     也盖住时钟回拨回某窗宽限期的情形：回拨前的账要活着，靠 settled 挡重推。
+//
+// 反过来，一个键死了 ⟺ 非当值 ∧ now > 开闸 + pushGrace：它的推送任务要么必然
+// 已触发、要么必然不再触发，图也没有读者。
+type Timeline struct {
+	wins []timelineWin // 按开启时刻升序
+	now  time.Time     // 建线时刻：live 与当值都钉在它上
+	cur  int           // 当值窗下标；-1 = 还没有任何窗开闸
+	live map[string]bool
+}
+
+// timelineWin 是时间线上的一格：格式化窗口、原始记录、开闸时刻。
+type timelineWin struct {
+	Window
+	rec annsync.Rec
+	at  time.Time // 开闸时刻 = rec.Start + openAt
+}
+
+// NewTimeline 一次算好本轮时间线。now 要是同一轮的真时刻：live 与当值都钉在它
+// 上，同轮各步不再各自取钟。只有"要窗口列表、不问保活"的调用方才可传零值
+// （见包级 Windows 包装）。
+func NewTimeline(recs []annsync.Rec, label string, zone *time.Location, now time.Time, openAt time.Duration) *Timeline {
 	if zone == nil {
 		zone = time.Local
 	}
-	by := map[string]Window{}
+	tl := &Timeline{now: now, cur: -1, live: map[string]bool{}}
+	by := map[string]int{} // 版本键 → wins 下标
 	for _, r := range versionRecs(recs, label) {
-		w := Window{
-			Key:    VersionKey(r.Start),
-			Name:   r.Title,
-			Start:  r.Start.In(zone).Format(TimeLayout),
-			End:    r.End.In(zone).Format(TimeLayout),
-			Until:  r.ClaimEnd.In(zone).Format(TimeLayout),
-			Source: r.RefID,
+		w := timelineWin{
+			Window: Window{
+				Key:    VersionKey(r.Start),
+				Name:   r.Title,
+				Start:  r.Start.In(zone).Format(TimeLayout),
+				End:    r.End.In(zone).Format(TimeLayout),
+				Until:  r.ClaimEnd.In(zone).Format(TimeLayout),
+				Source: r.RefID,
+			},
+			rec: r,
+			at:  r.Start.Add(openAt),
 		}
 		// 同一开启时刻被多篇公告声明时留兑换尾更长的那篇：窗口画宽点不伤人。
-		if old, ok := by[w.Key]; !ok || w.Until > old.Until {
-			by[w.Key] = w
+		if j, ok := by[w.Key]; ok {
+			if !r.ClaimEnd.After(tl.wins[j].rec.ClaimEnd) {
+				continue
+			}
+			tl.wins[j] = w
+			continue
+		}
+		by[w.Key] = len(tl.wins)
+		tl.wins = append(tl.wins, w)
+	}
+	sort.Slice(tl.wins, func(i, j int) bool { return tl.wins[i].Start < tl.wins[j].Start })
+	for i := range tl.wins {
+		if tl.armed(i) {
+			tl.live[tl.wins[i].Key] = true
+		}
+		if !now.Before(tl.wins[i].at) {
+			tl.cur = i // 升序扫，最后一个开闸已过的即"最新的已开一个"
 		}
 	}
-	out := make([]Window, 0, len(by))
-	for _, w := range by {
-		out = append(out, w)
+	if tl.cur >= 0 {
+		tl.live[tl.wins[tl.cur].Key] = true
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
+	return tl
+}
+
+// armed 回答"第 i 格未过气"。全包唯一的生死判据：live 用它，排期也用它。
+// 门槛取推送纪律的 pushGrace（同包，见 calposter.go）。
+func (tl *Timeline) armed(i int) bool {
+	return tl.now.Sub(tl.wins[i].at) <= pushGrace
+}
+
+// Windows 返回全部版本窗口（按开启时刻升序）。切片是新造的，调用方随便用。
+func (tl *Timeline) Windows() []Window {
+	out := make([]Window, 0, len(tl.wins))
+	for _, w := range tl.wins {
+		out = append(out, w.Window)
+	}
 	return out
 }
 
-// Current 返回 now 时刻的当前版本：开闸时刻（act0 + OpenAt）已过里的最新一个。
+// Current 返回当值窗的原始记录：开闸时刻（act0 + OpenAt）已过里的最新一个。
 //
 // 不按"窗口包含今天"判：版本交接日新旧两窗重叠，那样会同时算出两个当前版本。
 // 用开闸而不是 00:00：官方写"维护结束后开启"，00:00 只是下界，维护中就宣布
-// "新版本已开"是错的。
-func Current(recs []annsync.Rec, label string, now time.Time, openAt time.Duration) (annsync.Rec, bool) {
-	var best annsync.Rec
-	found := false
-	for _, r := range versionRecs(recs, label) {
-		if now.Before(r.Start.Add(openAt)) {
-			continue
-		}
-		if !found || r.Start.After(best.Start) {
-			best, found = r, true
-		}
+// "新版本已开"是错的。同键多篇公告时返回兑换尾更长的那篇（与去重口径一致）。
+func (tl *Timeline) Current() (annsync.Rec, bool) {
+	if tl.cur < 0 {
+		return annsync.Rec{}, false
 	}
-	return best, found
+	return tl.wins[tl.cur].rec, true
+}
+
+// LiveKeys 返回本轮要保活的版本键集合（当值 ∪ 未过气）。只读，别改。
+func (tl *Timeline) LiveKeys() map[string]bool { return tl.live }
+
+// Windows 从活动记录里挑出版本窗口（Timeline 的窗口列表投影）。版本边界在解析
+// 阶段就被产成一条 Provenance=Label 的记录（Start=玩法起, End=玩法止,
+// ClaimEnd=兑换止），所以这里不需要第二个数据源。返回值按开启时刻升序。
+func Windows(recs []annsync.Rec, label string, zone *time.Location) []Window {
+	return NewTimeline(recs, label, zone, time.Time{}, 0).Windows()
+}
+
+// Current 返回 now 时刻的当前版本（Timeline 的当值窗投影），语义见 Timeline.Current。
+func Current(recs []annsync.Rec, label string, now time.Time, openAt time.Duration) (annsync.Rec, bool) {
+	return NewTimeline(recs, label, nil, now, openAt).Current()
 }
 
 func versionRecs(recs []annsync.Rec, label string) []annsync.Rec {

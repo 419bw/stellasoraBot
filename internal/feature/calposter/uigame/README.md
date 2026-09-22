@@ -1,8 +1,8 @@
 # 活动日历 · 游戏待办手账风皮肤（uigame）
 
-把原单文件 `internal/feature/calposter/template.html` 的**甘特图业务逻辑原样保留**，
-视觉皮肤对齐《星塔旅人》游戏内「待办事项」界面（二次元轻拟物手账 / Casual Anime
-Stationery UI），并拆成多文件前端工程，便于维护。
+**本目录是活动日历页的唯一源。** 甘特图业务逻辑与《星塔旅人》游戏内「待办事项」皮肤
+（二次元轻拟物手账 / Casual Anime Stationery UI）都在这里维护；Go `//go:embed` 用的
+`../template.html` 是**本目录的构建产物**，不要直接改它（见下面「改版式的流程」）。
 
 ## 目录结构
 
@@ -13,9 +13,9 @@ uigame/
 │   └── style.css       # 游戏待办手账皮肤（全部视觉都在这里，不碰逻辑）
 ├── js/
 │   ├── sample-data.js  # 仅本地预览的样本数据；Go 注入真实 DATA 时自动跳过，不覆盖
-│   └── app.js          # 甘特业务逻辑（从 template.html 迁出，口径一致，只改了 band 的视觉 HTML）
-├── build-inline.js     # 零依赖构建：内联回 Go //go:embed 需要的单文件
-└── dist/               # 构建产物（运行 build-inline.js 后生成）
+│   └── app.js          # 甘特业务逻辑：解析 DATA、分组合并、装箱、版式全在这里
+├── build-inline.js     # 零依赖构建：内联成 Go //go:embed 用的单文件（写两个产物）
+└── dist/               # 构建产物（内容与 ../template.html 相同）
 ```
 
 ## 本地预览（无需起服务）
@@ -31,20 +31,23 @@ uigame/
 - `index.html` 里的 `/*__DATA__*/` 是注入点，生产时由 Go `calposter.Page(Dataset, tpl)`
   替换为 `const DATA = {...};`，字段定义见 `page.go`（now/openOffsetMs/records/versions/monthly）。
 - 时间解析、版本窗口、分组合并、泳道装箱、真实时刻定位、16:9 迭代、出图 title 自报尺寸
-  全部沿用原模板同一套算法，**没有改任何业务口径**；`app.js` 相对原脚本只把活动条右端的
-  结束日期换成了带时钟图标的胶囊，并新增"剩余 ≤2 天转红"的展示判定（纯视觉）。
+  全在 `app.js`；**取数口径全在 Go 侧**（`dataset.go` 选记录、`detectPermanent` 判常驻玩法、
+  `page.go` 定字段）。页面不认识"版本""常驻"这些词的含义，只照 DATA 画 —— 这些口径原先也印在
+  页脚给群友看，2026-09-22 按"开发者看文档就行"撤掉了，所以这段是它唯一的落点。
 
-## 接回 Go（需要你拍板后再做，当前未改任何 Go 代码、未动远端）
+## 改版式的流程（`../template.html` 是产物，别手改）
 
 机器人出图是把 HTML 写到临时目录再用无头浏览器打开，外部 `css/js` 相对路径在临时目录
-加载不到，因此上线前需要内联成单文件：
+加载不到，所以 Go 内嵌的必须是内联好的单文件。`build-inline.js` 一次写**两个**产物：
 
 ```bash
-node build-inline.js        # 生成 dist/template_uigame.html（已剔除样本、保留注入点）
+cd internal/feature/calposter/uigame
+node build-inline.js   # → dist/template_uigame.html 和 ../template.html（同一个内容）
 ```
 
-之后在 `calposter.go` 增加一行 `//go:embed dist/template_uigame.html`（或替换现有
-template.html 的 embed）即可，`Page()` 与两趟截图流程都不用改。
+改完源文件就跑一次，把「源 + 两个产物」一起提交。直接编辑 `../template.html` 会被下一次
+构建整份覆盖 —— 那次改动凭空消失，而且没有任何东西会提醒你。`Page()` 与两趟截图流程都
+不用改。
 
 ## 视觉对应关系（游戏 UI → 甘特）
 

@@ -269,7 +269,7 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (Dataset, error
 	// 只带与本窗相交的记录。判据故意比模板松：下界用 act0 而不是开闸时刻，上界
 	// 多给一周覆盖模板的"补齐整周"。多带的模板自己会丢掉，少带就是画面上真缺一条。
 	hi := sel.ClaimEnd.Add(7 * 24 * time.Hour)
-	monthly := detectMonthly(recs, opt.Zone)
+	permanent := detectPermanent(recs, opt.OpenAt)
 
 	list := make([]Record, 0, 32)
 	for _, r := range recs {
@@ -319,7 +319,7 @@ func Build(ctx context.Context, recs []annsync.Rec, opt Options) (Dataset, error
 		OpenMs:    int64(opt.OpenAt / time.Millisecond),
 		Records:   list,
 		Windows:   []Window{win},
-		Repeating: monthly,
+		Repeating: permanent,
 	}, nil
 }
 
@@ -747,7 +747,7 @@ func hsl2rgb(h, s, l float64) (int, int, int) {
 	return int(f(h+1.0/3)*255 + 0.5), int(f(h)*255 + 0.5), int(f(h-1.0/3)*255 + 0.5)
 }
 
-// ---------- 周期玩法判据 ----------
+// ---------- 常驻玩法判据 ----------
 
 var punctRe = regexp.MustCompile(`[！!。，,、~\s]`)
 
@@ -755,62 +755,75 @@ func norm(s string) string {
 	return strings.Trim(punctRe.ReplaceAllString(s, ""), "「」『』")
 }
 
-// detectMonthly 周期玩法判据：同名 ≥2 期，且满足任一——
+// dutyThreshold 是"常驻"的门槛：各期并集占满首末跨度的比例。
+// 取自实测断崖，不是调出来的：真库 95 天窗口内常驻组 94–100%，下一档就掉到 36%
+// （紧急悬赏、攻略纪录大征集），全量归档里连卡池都只到 70%。
+const dutyThreshold = 3.0 / 4.0
+
+// detectPermanent 常驻玩法判据：同名 ≥2 期（同一档期只算一期，重复行不数），
+// 且这些期把首末跨度填满到 dutyThreshold 以上 —— 关掉不久就再开，而不是隔季复刻一次。
 //
-//	a) 存在一期「长度 ≥20 天 + 起点落在 1 日 04:00」（联合讨伐/猎影合围/创业激励基金）；
-//	b) 存在首尾相接的相邻两期（前一期的终点日 == 后一期的起点日）且两期都 ≥20 天。
+// 这条量的是"常设系统"，不是"反复开"：终焉绝响、命运星牌局隔两个月复玩一次，
+// 占空比 24%，被挡在外面；这正是旧的两条判据（1 日 04:00 起点 / 首尾相接）想
+// 表达却表达不利索的东西 —— 它们靠相邻两期的形状反推占比，绕了一层，
+// 还得为 +24h（联合讨伐）与 −11h（灾变防线）两种缝各开一条分支。
 //
-// b 是给灾变防线补的：它每期压着版本日开，永远落不进 a 的"1 日"判据，但期与期
-// 无缝衔接是周期玩法的本质特征。长度门槛挡掉 7 天期的紧急悬赏/缭乱碎晶球——
-// 它们也反复开，但不是周期玩法。
+// openAt 是 fuzzy 起点的开闸估计，与出图、Current 用同一把尺子（见 Options.OpenAt）：
+// 官方写"维护结束后"，库里存的是当天 00:00 下界，不修正就会给每个 fuzzy 边界
+// 白送十几个小时（灾变防线 15 期累计虚增约 1.9 个百分点的占空比）。
 //
-// 判据要历史才成立（"反复开"看的是多期），所以输入是全量记录而不是本窗的。
-func detectMonthly(recs []annsync.Rec, zone *time.Location) []string {
-	if zone == nil {
-		zone = time.Local
-	}
-	type seg struct {
-		st    time.Time
-		sDate string
-		eDate string
-		days  int64
-	}
-	m := map[string][]seg{}
+// 输入是全量记录而不是本窗的（"几期"要看多期），但它的深度受公告保留期封顶：
+// 窗口短到只剩一期就判不上，见 annsync.Config.Retention 的推导注释。
+// 卡池不在这里特判：实测占空比 70% 落在门槛下；真被排满顶上来了，
+// 模板侧「招募时间」优先是第二道。
+func detectPermanent(recs []annsync.Rec, openAt time.Duration) []string {
+	per := map[string]map[int64]time.Time{} // norm(名字) → 起点 → 该起点上最晚的终点
 	for _, r := range recs {
-		if !r.InCalendar() || r.End.Before(r.Start) {
+		if !r.InCalendar() {
 			continue
 		}
-		st := r.Start.In(zone)
-		et := r.End.In(zone)
-		days := int64(r.End.Sub(r.Start) / (24 * time.Hour))
-		m[norm(r.Title)] = append(m[norm(r.Title)], seg{
-			st:    st,
-			sDate: st.Format("2006-01-02"),
-			eDate: et.Format("2006-01-02"),
-			days:  days,
-		})
+		st := r.Start
+		if r.Status == annsync.StatusFuzzyStart {
+			st = st.Add(openAt)
+		}
+		if !r.End.After(st) {
+			continue
+		}
+		k := norm(r.Title)
+		if per[k] == nil {
+			per[k] = map[int64]time.Time{}
+		}
+		if en, ok := per[k][st.Unix()]; !ok || r.End.After(en) {
+			per[k][st.Unix()] = r.End
+		}
 	}
 	var out []string
-	for k, ss := range m {
-		if len(ss) < 2 {
+	for k, m := range per {
+		if len(m) < 2 {
 			continue
 		}
-		big := false
-		for _, g := range ss {
-			if g.days >= 20 && g.st.Day() == 1 && g.st.Hour() == 4 {
-				big = true
+		starts := make([]int64, 0, len(m))
+		for st := range m {
+			starts = append(starts, st)
+		}
+		sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+		// 按并集累加而不是逐期求和：同名各期一旦重叠，求和会让比值超过 100%，
+		// 而"占满整段日子的比例"这个语义就没了。
+		var covered time.Duration
+		s0, curE := starts[0], m[starts[0]]
+		for _, st := range starts[1:] {
+			en := m[st]
+			if time.Unix(st, 0).After(curE) {
+				covered += curE.Sub(time.Unix(s0, 0))
+				s0, curE = st, en
+				continue
+			}
+			if en.After(curE) {
+				curE = en
 			}
 		}
-		if !big {
-			for i, a := range ss {
-				for j, b := range ss {
-					if i != j && a.eDate == b.sDate && a.days >= 20 && b.days >= 20 {
-						big = true
-					}
-				}
-			}
-		}
-		if big {
+		covered += curE.Sub(time.Unix(s0, 0))
+		if float64(covered) >= dutyThreshold*float64(curE.Sub(time.Unix(starts[0], 0))) {
 			out = append(out, k)
 		}
 	}

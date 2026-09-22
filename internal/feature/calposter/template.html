@@ -544,9 +544,9 @@ body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
   const RECS = D.records;
   const VERSIONS = D.versions;
 
-  // 周期玩法判据（自动）：多期 + ≥20 天 + 起点 1 日 04:00，名单由 Go 下发
+  // 常驻玩法判据：≥2 期且期间排满（占满首末跨度 3/4 以上），名单由 Go 的 detectPermanent 下发
   const MONTHLY = {};
-  (D.monthly || []).forEach(k => MONTHLY[k] = '自动判据：多期 + ≥20 天 + 起点 1 日 04:00');
+  (D.monthly || []).forEach(k => MONTHLY[k] = '常驻玩法：≥2 期，且各期排满整段日子（占首末跨度 3/4 以上）');
 
   const LBCLS = { '招募时间': 't-pool', '活动时间': 't-event', '开放时间': 't-mode', '测试信息': 't-test' };
   const TRACK_ICONS = {

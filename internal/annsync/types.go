@@ -151,7 +151,7 @@ type Config struct {
 	FullEvery   time.Duration // 全量校准间隔，默认 24h
 	MinGap      time.Duration // 两次 Fetch 之间的最小间隔，默认 1s（限流实测换来的）
 	BackoffBase time.Duration // 失败退避基数，默认 1m；第 n 次失败等 base×2^(n-1)，上限 max(2h, Interval)
-	Retention   time.Duration // 公告保留期，默认 63 天（9周）；超过此时间的旧公告不进投影
+	Retention   time.Duration // 公告保留期，默认 95 天；超过此时间的旧公告不进投影
 	Now         func() time.Time
 	Logf        func(format string, args ...any)
 }
@@ -170,7 +170,11 @@ func (c Config) withDefaults() Config {
 		c.BackoffBase = time.Minute
 	}
 	if c.Retention <= 0 {
-		c.Retention = 63 * 24 * time.Hour
+		// 这个数是被"周期玩法判据要同名 ≥2 期、而两期得同时留在窗口里"顶出来的：
+		// 窗口必须 ≥ 2× 相邻公告的最大发布间隔。真库 352 篇实测各玩法间隔上限
+		// 41 天（猎影合围Beta），2×41=82，余一整期的迟到量 → 95。取 63 时它刚好
+		// 漏过 41 那一档：09-21 起猎影合围Beta 被判成非周期玩法，而它当期还在开。
+		c.Retention = 95 * 24 * time.Hour
 	}
 	if c.Now == nil {
 		c.Now = time.Now

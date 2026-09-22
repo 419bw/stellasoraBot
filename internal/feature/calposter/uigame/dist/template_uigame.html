@@ -154,12 +154,6 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
   padding:3px 7px 2px;display:flex;align-items:center;gap:3px}
 .vname .tag-txt{font-size:12px;font-weight:800;color:#5c4516;padding:2px 10px 2px 8px;letter-spacing:0.5px}
 
-.tabs{display:flex;gap:8px;margin:10px 0 0}
-.tab{padding:6px 16px;border-radius:10px 10px 0 0;font-size:12.5px;font-weight:700;color:#98a2b8;
-  background:#eef1f7;border:1.5px solid #e0e4ee;border-bottom:0}
-.tab.on{color:var(--ink);background:#fef3d0;border-color:#ecd596;box-shadow:0 2px 0 #ecd596}
-.tab.new::after{content:"NEW";margin-left:6px;font-size:9px;color:#e86a8a;font-weight:800}
-
 .ctrl{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:11px}
 .seg{display:flex;gap:4px;padding:3px;border-radius:999px;background:#fff;
   border:1.5px solid #e2e6f0;box-shadow:0 1px 3px rgba(43,58,107,.06)}
@@ -342,7 +336,7 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .foot b{color:var(--ink)}
 
 /* ---------- 出图模式 body.x：去导航/开关，只留卡片 ---------- */
-body.x .topbar,body.x .tabs,body.x .ctrl,body.x .logo{display:none}
+body.x .topbar,body.x .ctrl,body.x .logo{display:none}
 body.x .screen{padding:12px;overflow:visible;background:transparent}
 body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
 
@@ -490,9 +484,6 @@ body.x .win::before{top:29px;left:26px;right:10px;bottom:29px}
     <div class="bar">
       <div class="corner-logo" title="星塔旅人" aria-label="星塔旅人"></div>
       <h1>活动<em>日历</em></h1><span class="vname" id="vname"></span>
-      <div class="tabs">
-        <span class="tab new">游戏公告</span><span class="tab on">活动日历</span>
-      </div>
       <div class="ctrl">
         <div class="seg" id="vers"></div>
         <div class="seg" id="dayseg"></div>

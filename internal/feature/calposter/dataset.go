@@ -807,23 +807,19 @@ func detectPermanent(recs []annsync.Rec, openAt time.Duration) []string {
 			starts = append(starts, st)
 		}
 		sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
-		// 按并集累加而不是逐期求和：同名各期一旦重叠，求和会让比值超过 100%，
-		// 而"占满整段日子的比例"这个语义就没了。
+		// 逐期求和，不做重叠合并：真库 182 条里同名两期重叠为 0 对。唯一能造出重叠
+		// 的通道是官方改档期后两篇 solo 公告并存（Merge 只在 summary 侧去重），
+		// 那时比值偏松（可破 100%）而不是漏判 —— 真出现了再按并集算。
 		var covered time.Duration
-		s0, curE := starts[0], m[starts[0]]
-		for _, st := range starts[1:] {
+		maxEnd := time.Unix(starts[0], 0)
+		for _, st := range starts {
 			en := m[st]
-			if time.Unix(st, 0).After(curE) {
-				covered += curE.Sub(time.Unix(s0, 0))
-				s0, curE = st, en
-				continue
-			}
-			if en.After(curE) {
-				curE = en
+			covered += en.Sub(time.Unix(st, 0))
+			if en.After(maxEnd) {
+				maxEnd = en
 			}
 		}
-		covered += curE.Sub(time.Unix(s0, 0))
-		if float64(covered) >= dutyThreshold*float64(curE.Sub(time.Unix(starts[0], 0))) {
+		if float64(covered) >= dutyThreshold*float64(maxEnd.Sub(time.Unix(starts[0], 0))) {
 			out = append(out, k)
 		}
 	}

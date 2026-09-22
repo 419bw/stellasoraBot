@@ -326,16 +326,13 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .foot{padding:12px 26px;background:#f1ecdd;color:#6f6448;font-size:11.5px;
   border-top:2px dashed rgba(120,104,64,.14);border-radius:0}
 .frow{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px}
-.frow+.frow{margin-top:8px;padding-top:8px;border-top:1px dashed rgba(120,104,64,.12)}
 .foot .h{display:inline-flex;align-items:center;gap:5px;font-weight:800;color:#2b7a72;background:#d8f3ef;
   border-radius:999px;padding:3px 11px;box-shadow:0 1px 0 rgba(43,58,107,.08)}
 .foot .h::before{content:"\2726";color:#b8862a}
 .key{display:flex;align-items:center;gap:6px;font-weight:600;white-space:nowrap}
 .sw{width:15px;height:9px;border-radius:3px;border:1.5px solid #c5ccd8}
-.sw.hatch{background:repeating-linear-gradient(45deg,#edf1f7,#edf1f7 4px,#c9d3e6 4px,#c9d3e6 8px)}
 .sw.open{background:#fff;border-left-color:transparent;border-right-color:transparent;border-radius:0}
 .foot b{color:var(--ink)}
-.foot .cr{margin-left:auto;opacity:.62;font-size:10px}
 
 /* ---------- 出图模式 body.x：去导航/开关，只留卡片 ---------- */
 body.x .topbar,body.x .tabs,body.x .ctrl,body.x .logo{display:none}

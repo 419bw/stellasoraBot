@@ -265,27 +265,16 @@ ${r.s} → ${r.e}${r.ce ? `\n领奖/兑换期 ${r.cs} → ${r.ce}` : ''}
       </div>${tail}`;
     }
 
-    const nRec = all.reduce((s, g) => s + g.items.length, 0);
-    const live = all.filter(g => g.e0 > now && g.s0 <= now).length;
-    const mt = all.filter(g => g.items.some(r => r.src === 'summary')).length;
     document.getElementById('foot').innerHTML = `
       <div class="frow">
         <span class="h">图例</span>
         <span class="key">${ICO_PAST}已结束</span>
         <span class="key">${ICO_UPCOMING}未开始</span>
-        <span class="key">${ICO_CLAIM}领奖/兑换期</span>
+        <span class="key">${ICO_CLAIM}领奖/兑换尾段</span>
         <span class="key">${CLOCK}结束时间（≤2天转红）</span>
-        <span class="key"><span class="sw hatch"></span>领奖尾段</span>
         <span class="key"><span class="sw open"></span>两端不封口＝跨窗口延续</span>
-        <span class="key"><span class="sw" style="background:repeating-linear-gradient(45deg,#e2e8f3 0 4px,#f4f7fc 4px 8px)"></span>无海报</span>
-        <span class="key"><span class="sw" style="background:#fff;border:1.2px dashed #7894b6"></span>N项并排＝一条带并排多项玩法</span>
-        <span class="key"><b>≈</b>起点是估的（按 ${OPEN / 3600e3}:00 开闸摆放）</span>
+        <span class="key"><b>≈</b>起点是估的</span>
         ${inWin ? `<span class="key"><span class="sw" style="background:#e85a6a;border-radius:1px;width:3px"></span>红虚线＝出图时刻</span>` : ''}
-      </div>
-      <div class="frow">
-        <span>条带=<b>真实时刻</b>（10:59 收就停在 10:59，不吸附日格）· 日格=<b>${state.day === 'game' ? '游戏日 04:00' : '自然日 00:00'}</b>（只改格子边界与日期标签取整）· 尾段取活动公告的领取/兑换行 · 同名同窗才并带，复玩两期各占一条带</span>
-        <span><b>${f.n}</b> 天 / <b>${all.length}</b> 带 · 合并掉 ${nRec - all.length} · 进行中 <b>${live}</b>${mt ? ' · 维护公告补的 <b>' + mt + '</b> 带' : ''}</span>
-        <span class="cr">版本窗口取自活动一览 ${f.v.src} · 数据 data/xingta-live.db</span>
       </div>`;
 
     ['tMerge', 'tDrop', 'tSlot'].forEach(id =>

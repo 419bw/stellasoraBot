@@ -37,10 +37,19 @@ func oldRec() annsync.Rec {
 
 // startedPoster 是"api 与 Doc 都齐、但不起后台循环"的 Poster：p.api 直接赋值
 // （同包），loadSent 手动执行，round 由测试单步驱动。
+//
+// 不走 Start 是刻意的。Start 会 go loop，那一次立即 round 与测试主体自己调的
+// round 并发，而 armPushes 的"查已推 → 排期"不是原子的（push 入口那句注释说的
+// 就是它）：后台轮可能判定 settled 为假后被挂起，等测试主体 fire→settle 跑完才
+// 把 Schedule 落下去，于是"了结之后不再排期"这类断言偶发翻车。产品侧无害——
+// 多排的那次任务触发后 push 会再查一次账本直接返回——错在断言了这个被刻意容忍
+// 为陈旧的裸调度器状态。要覆盖 Start 的接线（立即预热读 Client、Reg 注册命令）
+// 就直接调 Start，见 TestRoundFetchesArtOncePerFingerprint 与
+// TestCalendarCommandRepliesWithImage。
 func startedPoster(t *testing.T, recs *recBox, cap Capturer, doc store.Doc, now time.Time, targets ...string) (*Poster, *fakeAPI) {
 	t.Helper()
 	api := newAPI()
-	api.targets = targets
+	api.targets = targets // 与生产一致：目标来自 api.TargetsFor 的订阅表
 	p := New(Config{
 		Doc: doc, Records: recs.recs, Cap: cap, Label: "version", Zone: zone,
 		Now: func() time.Time { return now },

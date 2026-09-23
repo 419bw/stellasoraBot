@@ -19,7 +19,6 @@ import (
 	"xingta/internal/kernel/schedule"
 	"xingta/internal/kernel/target"
 	"xingta/internal/qq"
-	"xingta/internal/store"
 	"xingta/internal/store/storetest"
 )
 
@@ -178,27 +177,12 @@ func (c *flakyCap) count() int {
 	return c.n
 }
 
-func featureFor(t *testing.T, recs *recBox, cap Capturer, doc store.Doc, now time.Time, targets ...string) (*Poster, *fakeAPI) {
-	t.Helper()
-	api := newAPI()
-	api.targets = targets // 与生产一致：目标来自 api.TargetsFor 的订阅表
-	p := New(Config{
-		Doc: doc, Records: recs.recs,
-		Cap: cap, Label: "version", Zone: zone,
-		Now: func() time.Time { return now },
-	})
-	if err := p.Start(context.Background(), api); err != nil {
-		t.Fatal(err)
-	}
-	return p, api
-}
-
 func TestPushArmedAtOpenMoment(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
 	// 早上 8 点：新版本还没过开闸，排期应当排在 17:00。
 	// 到点：只投一条只带媒体引用的队列项。
 	cap := &fakeCap{}
-	p, api := featureFor(t, recs, cap, storetest.NewMem(), at("2026-09-08 08:00"), "g:grp")
+	p, api := startedPoster(t, recs, cap, storetest.NewMem(), at("2026-09-08 08:00"), "g:grp")
 	p.round(context.Background())
 
 	want := "poster:202609071600"
@@ -253,7 +237,7 @@ func TestHistoryIsNotPushedOnFirstRun(t *testing.T) {
 		verRec("4356", "欢歌劲浪", "2026-08-18 00:00", "2026-09-01 03:59", "2026-09-08 10:59"),
 		verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"),
 	)
-	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:30"), "g:grp")
+	p, api := startedPoster(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:30"), "g:grp")
 	p.round(context.Background())
 
 	if !api.armed("poster:202609071600") {
@@ -270,7 +254,7 @@ func TestRestartDoesNotResend(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
 	doc := storetest.NewMem()
 	now := at("2026-09-08 17:05")
-	p, api := featureFor(t, recs, &fakeCap{}, doc, now, "g:grp")
+	p, api := startedPoster(t, recs, &fakeCap{}, doc, now, "g:grp")
 	p.round(context.Background())
 	if err := api.fire("poster:202609071600"); err != nil {
 		t.Fatal(err)
@@ -281,7 +265,7 @@ func TestRestartDoesNotResend(t *testing.T) {
 	p.MarkPushed("g:grp", "202609071600") // 模拟队列回执：worker 真把它发出去了
 
 	// 换一个 Poster 实例（= 重启），账本还在库里。
-	p2, api2 := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:06"), "g:grp")
+	p2, api2 := startedPoster(t, recs, &fakeCap{}, doc, at("2026-09-08 17:06"), "g:grp")
 	p2.round(context.Background())
 	if api2.armed("poster:202609071600") {
 		t.Error("重启后又排上期了，会重发")
@@ -297,7 +281,7 @@ func TestBrokenImageIsNotMarkedSent(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
 	doc := storetest.NewMem()
 	bad := &flakyCap{bad: true}
-	p, api := featureFor(t, recs, bad, doc, at("2026-09-08 17:05"), "g:grp")
+	p, api := startedPoster(t, recs, bad, doc, at("2026-09-08 17:05"), "g:grp")
 	p.round(context.Background())
 
 	if err := api.fire("poster:202609071600"); err != nil {
@@ -338,7 +322,7 @@ func TestBrokenImageIsNotMarkedSent(t *testing.T) {
 
 func TestNoTargetsLogsOnly(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
-	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"))
+	p, api := startedPoster(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"))
 	p.round(context.Background())
 	if err := api.fire("poster:202609071600"); err != nil {
 		t.Fatal(err)
@@ -356,7 +340,7 @@ func TestNoTargetsLogsOnly(t *testing.T) {
 // 没送到的那部分由下一轮 armPushes 重新排上，只补缺回执的目标。
 func TestPartialDeliveryResumesOnlyMissingTarget(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
-	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"), "g:AAA", "g:BBB")
+	p, api := startedPoster(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"), "g:AAA", "g:BBB")
 
 	p.round(context.Background())
 	if err := api.fire("poster:202609071600"); err != nil {
@@ -404,7 +388,7 @@ func TestPartialDeliveryResumesOnlyMissingTarget(t *testing.T) {
 // 宽限窗内不再反复空排空扫，与"全员收齐才收敛"的既有语义保持一致。
 func TestShrunkTargetSetSettlesLedger(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
-	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"))
+	p, api := startedPoster(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"))
 	api.targets = []string{"g:AAA", "g:BBB"} // 走 api.TargetsFor，才能模拟中途退订
 
 	p.round(context.Background())
@@ -501,7 +485,7 @@ func TestUnreadableLedgerCountsAsSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
-	p, api := featureFor(t, recs, &fakeCap{}, doc, at("2026-09-08 17:05"), "g:grp")
+	p, api := startedPoster(t, recs, &fakeCap{}, doc, at("2026-09-08 17:05"), "g:grp")
 	p.round(context.Background())
 	if api.armed("poster:202609071600") {
 		t.Error("解不开的账本该按已推处理，却还是排上了期")
@@ -544,7 +528,7 @@ func TestCalendarCommandRepliesWithImage(t *testing.T) {
 // 没给 Reg 就只推图不接命令：关掉命令面不该连带关掉推图。
 func TestNoRegistrarMeansNoCommand(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
-	p, api := featureFor(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"), "g:grp")
+	p, api := startedPoster(t, recs, &fakeCap{}, storetest.NewMem(), at("2026-09-08 17:05"), "g:grp")
 	p.round(context.Background())
 	if err := api.fire("poster:202609071600"); err != nil {
 		t.Fatalf("没注册命令时推图照常要能跑: %v", err)
@@ -727,7 +711,7 @@ func TestPosterUsesAPITargets(t *testing.T) {
 	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
 	cap := &fakeCap{}
 	// Config.Targets 为空
-	p, api := featureFor(t, recs, cap, storetest.NewMem(), at("2026-09-08 08:00"))
+	p, api := startedPoster(t, recs, cap, storetest.NewMem(), at("2026-09-08 08:00"))
 	// 但 api.targets 设置了动态目标
 	api.targets = []string{"g:DYNAMIC_POSTER_GROUP"}
 

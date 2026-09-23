@@ -17,10 +17,10 @@ func nopHandler(context.Context, string, string, json.RawMessage) error { return
 func TestValidationRejectsIncompleteHandshake(t *testing.T) {
 	h := NewCallbackHandler(webhookSecret, nopHandler)
 	cases := map[string]string{
-		"缺 event_ts":     `{"op":13,"d":{"plain_token":"PT"}}`,
-		"缺 plain_token":   `{"op":13,"d":{"event_ts":"1721000000"}}`,
-		"d 不是对象":       `{"op":13,"d":"junk"}`,
-		"d 整个缺席":       `{"op":13}`,
+		"缺 event_ts":    `{"op":13,"d":{"plain_token":"PT"}}`,
+		"缺 plain_token": `{"op":13,"d":{"event_ts":"1721000000"}}`,
+		"d 不是对象":        `{"op":13,"d":"junk"}`,
+		"d 整个缺席":        `{"op":13}`,
 	}
 	for name, body := range cases {
 		rec := postCallback(t, h, body, true)

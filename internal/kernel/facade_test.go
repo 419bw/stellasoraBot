@@ -51,11 +51,11 @@ func (m *mgrTargets) Topic(key string) (target.Topic, bool) {
 	return target.Topic{}, false
 }
 
-func (m *mgrTargets) Enable(string) error            { return nil }
-func (m *mgrTargets) EnableTopic(string, string) error { return nil }
-func (m *mgrTargets) Disable(string) (bool, error)   { return false, nil }
+func (m *mgrTargets) Enable(string) error                       { return nil }
+func (m *mgrTargets) EnableTopic(string, string) error          { return nil }
+func (m *mgrTargets) Disable(string) (bool, error)              { return false, nil }
 func (m *mgrTargets) DisableTopic(string, string) (bool, error) { return false, nil }
-func (m *mgrTargets) List() []string                 { return m.Targets() }
+func (m *mgrTargets) List() []string                            { return m.Targets() }
 
 var _ target.Manager = (*mgrTargets)(nil)
 
@@ -67,11 +67,11 @@ func TestAPIFacadeDelegates(t *testing.T) {
 	r := NewRuntime(flakySink{sink: newLoadSink()}, queue.DefaultPolicy(), calendar.NewStore(), mt, nil)
 
 	type facade struct {
-		cancelViaSched  bool
-		cancelMissing   bool
-		sameCalendar    bool
-		sameScheduler   bool
-		scheduleWins    bool
+		cancelViaSched bool
+		cancelMissing  bool
+		sameCalendar   bool
+		sameScheduler  bool
+		scheduleWins   bool
 		registerTopic  error
 		topicsAfterReg int
 	}

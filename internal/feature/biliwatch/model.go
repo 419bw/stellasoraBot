@@ -24,7 +24,7 @@ type DynamicItem struct {
 			PubTime   string `json:"pub_time"`
 			PubTs     any    `json:"pub_ts"`
 			PubAction string `json:"pub_action"`
-			Vip     *struct {
+			Vip       *struct {
 				NicknameColor string `json:"nickname_color"`
 				Label         struct {
 					Text string `json:"text"`
@@ -55,7 +55,7 @@ type DynamicItem struct {
 					Desc     string `json:"desc"`
 					Duration string `json:"duration_text"`
 					Stat     struct {
-						Play string `json:"play"`
+						Play    string `json:"play"`
 						Danmaku string `json:"danmaku"`
 					} `json:"stat"`
 				} `json:"archive"`

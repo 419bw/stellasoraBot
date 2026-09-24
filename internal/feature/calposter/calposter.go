@@ -72,6 +72,11 @@ type Config struct {
 	PushDelay time.Duration
 	Client    *http.Client  // nil = 不下载海报（海报位画斜纹占位）
 	Warm      time.Duration // 多久看一次数据有没有变，变了就去预热海报，默认 5m
+	// 下面三项是"一轮里怎么抓海报"的口径，语义见 dataset.go 的 Options 同名字段：
+	// options() 是全仓唯一的注入口，留空就由 Options 自己的兜底接住。
+	Workers    int           // 并发下载海报的个数
+	PerImage   time.Duration // 单张海报一次抓取的时间预算
+	RetryAfter time.Duration // 没拿到的那个地址多久后再试一次
 	// ArtDir 非空时海报字节落盘：海报 CDN 会掐反复整窗拉取的客户端，
 	// 只放内存等于每次重启都重新捶一遍。
 	ArtDir   string
@@ -399,6 +404,7 @@ func (p *Poster) options(key string, now time.Time, fetch bool) Options {
 		Zone: p.cfg.Zone, OpenAt: p.cfg.OpenAt, Label: p.cfg.Label,
 		Key: key, Now: now, HTTPClient: p.cfg.Client,
 		Fetch: fetch, Art: p.art, Logf: p.cfg.Logf,
+		Workers: p.cfg.Workers, PerImage: p.cfg.PerImage, RetryAfter: p.cfg.RetryAfter,
 	}
 }
 

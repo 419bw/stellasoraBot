@@ -357,3 +357,27 @@ func TestFingerprintOnlyCaresAboutPictureFields(t *testing.T) {
 		}
 	}
 }
+
+// ---------- Config → Options 的注入口 ----------
+
+// TestPosterConfigKnobsReachOptions 钉的是管道本身：Workers/PerImage/RetryAfter
+// 全仓只有 options() 这一个注入口，接线漏一项，配下去的值就不生效，
+// 而 dataset.Options 自己的兜底会把漏接伪装成"跑得正常"。
+// 所以这里故意用与兜底不同的数（7 / 3s / 9m）：漏接必然露出来。
+func TestPosterConfigKnobsReachOptions(t *testing.T) {
+	p := New(Config{
+		Records: func() ([]annsync.Rec, error) { return nil, nil },
+		Cap:     &fakeCap{}, Label: "version", Zone: zone,
+		Workers: 7, PerImage: 3 * time.Second, RetryAfter: 9 * time.Minute,
+	})
+	opt := p.options("", at("2026-09-08 12:00"), true)
+	if opt.Workers != 7 {
+		t.Errorf("Workers = %d, want 7：没接上就会退成 Options 的兜底 4", opt.Workers)
+	}
+	if opt.PerImage != 3*time.Second {
+		t.Errorf("PerImage = %v, want 3s", opt.PerImage)
+	}
+	if opt.RetryAfter != 9*time.Minute {
+		t.Errorf("RetryAfter = %v, want 9m", opt.RetryAfter)
+	}
+}

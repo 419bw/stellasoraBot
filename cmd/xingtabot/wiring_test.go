@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"xingta/internal/annsync"
+	"xingta/internal/feature/biliwatch"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
 	"xingta/internal/feature/calposter"
@@ -126,6 +127,23 @@ every: 11m
 		}
 	})
 
+	t.Run("biliwatch", func(t *testing.T) {
+		dc, _, err := biliwatch.LoadDeployConfig(writeFeatureYML(t, "biliwatch", `
+interval: 6m
+uid: "uid-under-test"
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := dc.ToConfig(biliwatch.Config{})
+		if c.Interval != 6*time.Minute {
+			t.Errorf("Interval = %v，想要 6m", c.Interval)
+		}
+		if c.UID != "uid-under-test" {
+			t.Errorf("UID = %q，想要 uid-under-test", c.UID)
+		}
+	})
+
 	// 两个 pageSize 一起断言，且值不同：这条就是"接反了要红"的那把尺子。
 	t.Run("calquery 与 calops 的 pageSize 不串", func(t *testing.T) {
 		qdc, _, err := calquery.LoadDeployConfig(writeFeatureYML(t, "calquery", `
@@ -231,5 +249,16 @@ retention: 2280h
 	}
 	if s := sdc.ToConfig(annsync.Config{Logf: logf}); s.Logf == nil {
 		t.Error("annsync 的 Logf 被 ToConfig 清成 nil 了")
+	}
+
+	bdc, _, err := biliwatch.LoadDeployConfig(writeFeatureYML(t, "biliwatch", `
+interval: 5m
+uid: "uid-under-test"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := bdc.ToConfig(biliwatch.Config{Cookie: "sessdata=abc"}); b.Cookie != "sessdata=abc" {
+		t.Error("biliwatch 的 Cookie 被 ToConfig 覆盖了")
 	}
 }

@@ -103,6 +103,7 @@ func run() error {
 	file.Dump(logf)
 
 	var posterDC calposter.DeployConfig
+	var biliDC biliwatch.DeployConfig
 	if cfg.Chrome != "" {
 		dc, file, err := calposter.LoadDeployConfig(featureConfigPath("calposter"))
 		if err != nil {
@@ -110,6 +111,14 @@ func run() error {
 		}
 		file.Dump(logf)
 		posterDC = dc
+		// 动态推图与海报共用同一个浏览器开关，所以它的配置也在这条分支里读：
+		// chrome 留空时不该要求 config/biliwatch.yml 存在。
+		bdc, file, err := biliwatch.LoadDeployConfig(featureConfigPath("biliwatch"))
+		if err != nil {
+			return err
+		}
+		file.Dump(logf)
+		biliDC = bdc
 	}
 
 	zone, err := parseZone(cfg.TZ)
@@ -183,12 +192,12 @@ func run() error {
 		} else {
 			logf("biliwatch: 未配置 B站登录态 Cookie，使用匿名访客模式")
 		}
-		bili = biliwatch.New(biliwatch.Config{
+		bili = biliwatch.New(biliDC.ToConfig(biliwatch.Config{
 			Doc:    doc,
 			Cap:    browser,
 			Cookie: biliCookie,
 			Logf:   logf,
-		})
+		}))
 	} else {
 		logf("config 里 chrome 留空，出图功能不启用（日历海报与 B站动态推图都不会有；到期提醒照常）")
 	}

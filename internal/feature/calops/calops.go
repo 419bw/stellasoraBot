@@ -38,6 +38,7 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
+	// PageSize 不在这里兜：唯一源是 config/calops.yml。
 	if c.Zone == nil {
 		c.Zone = time.FixedZone("CST", 8*60*60)
 	}

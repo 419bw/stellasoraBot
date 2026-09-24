@@ -103,10 +103,11 @@ go run ./cmd/panelreg -creds creds.json
 
 ### 3. 启动运行
 
-可调参数都从配置文件读，命令行只剩一个参数——这份配置文件放哪（默认 `config.yml`）：
+可调参数全部从配置文件读，命令行只剩一个参数——总配置文件放哪（默认 `config.yml`）：
 
 ```bash
-# 直接跑：机器级参数（凭据路径、数据库、浏览器、时区、两个域名）读 config.yml
+# 直接跑：机器级参数（凭据路径、数据库、浏览器、时区、两个域名）读 config.yml，
+# 各功能的参数读它自己那份 config/<功能>.yml
 go run ./cmd/xingtabot
 
 # 本机想用另一套路径（凭据放 .probe/、浏览器是 Windows 上装的 Chrome）：
@@ -117,16 +118,27 @@ go run ./cmd/xingtabot -config .probe/config.local.yml
 
 **仓库里那份 `config.yml` 保持的是手机部署的值**（`creds.json`、`data/xingta.db`、
 `./chrome-headless`），所以传上手机后二进制不带任何参数就能起；本机要跑就把 `chrome`
-那一行改成自己的浏览器路径，`chrome: ""` 则是纯文本模式（不出图，查询与到期提醒照常）。
+那一行改成自己的浏览器路径，`chrome: ""` 则是纯文本模式（不出图，查询与到期提醒照常——
+这种情况下 `config/calposter.yml` 与 `config/biliwatch.yml` 连存在都不要求）。
+
+一共七份文件：`config.yml` 管机器（凭据在哪、库在哪、用哪个浏览器、哪个时区），
+`config/` 下每个功能一份（`annsync` 同步节奏、`calposter` 出图与推送、`calexpiry` 提醒
+窗口、`calquery` 查询口径、`calops` 运维分页、`biliwatch` 监听谁、隔多久）。
+**这些参数在代码里没有默认值可退了**：文件是唯一源，少一个键、值写成空、键名拼错
+一律启动失败并点名，不会静默拿某个默认值跑起来。
 
 每个值旁边都写了一句它管什么、改坏了会怎样；改完不用重编，重启进程即生效。启动时进程会把
 真正吃进去的每个值连注释逐行打一遍（`config.tz = +08:00｜公告日期…`），"配置文件跟代码
-是不是分家了"看这几行就能判断。少一个键、值写成空、键名拼错一律启动失败并点名，不会静默
-拿某个默认值跑起来。
+是不是分家了"看这几行就能判断。
 
 #### Android 手机 (Termux) 后台常驻
 
 项目针对 Android Termux 环境进行了专项适配（内置 DNS 优化、字体挂载及无沙箱环境兼容），GitHub Actions 每次提交均会自动打包发布适用于 Termux 的 ARM64 二进制文件，并提供了开箱即用的后台管理脚本：
+
+**升级时 `xingtabot`、`config.yml`、整个 `config/` 目录必须同批传**：代码里已经没有
+默认值可退，二进制与配置文件不同批就意味着新加的键在手机上读不到，进程会拒绝启动
+（好消息是它启动即失败并点名缺哪个键，不会带着半套参数跑起来）。传完 `./stop.sh`
+再 `./start.sh`——`stop.sh` 走 SIGTERM，bbolt 才会优雅落盘。
 
 ```bash
 cd ~/xingtabot

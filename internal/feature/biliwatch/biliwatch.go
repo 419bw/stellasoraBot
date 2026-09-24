@@ -176,10 +176,12 @@ func (f *Feature) loadLedger() error {
 }
 
 func (f *Feature) isPushed(id string) bool {
+	// 判定全程持锁：*pushRec 是共享可写对象，交出去到锁外读就等于无锁读 map
+	// （审计 #2）。读侧只需要一个 bool，不必在锁外碰它。
 	f.mu.Lock()
-	rec := f.ledger[id]
-	f.mu.Unlock()
-	if rec != nil {
+	defer f.mu.Unlock()
+
+	if rec := f.ledger[id]; rec != nil {
 		return !rec.SettledAt.IsZero()
 	}
 
@@ -187,24 +189,22 @@ func (f *Feature) isPushed(id string) bool {
 	// 所有写都是锁内先改内存再写盘，内存有记录时磁盘不可能比它更新，不必穿透。
 	var disk pushRec
 	found, err := f.doc.Get(NS, id, &disk)
-	if err == nil && found && !disk.SettledAt.IsZero() {
-		f.mu.Lock()
-		if f.ledger[id] == nil {
-			f.ledger[id] = &disk
-		}
-		f.mu.Unlock()
-		return true
+	if err != nil || !found || disk.SettledAt.IsZero() {
+		return false
 	}
-	return false
+	if f.ledger[id] == nil {
+		f.ledger[id] = &disk
+	}
+	return true
 }
 
 // isSentTo 判断该目标是否已收到这条动态（有回执，或整条已全局了结）。
 // 内存完全没听过这条动态才查磁盘兜底；查到就回填，别的目标再问就走内存。
 func (f *Feature) isSentTo(tgt, id string) bool {
 	f.mu.Lock()
-	rec := f.ledger[id]
-	f.mu.Unlock()
-	if rec != nil {
+	defer f.mu.Unlock()
+
+	if rec := f.ledger[id]; rec != nil {
 		if !rec.SettledAt.IsZero() {
 			return true
 		}
@@ -214,19 +214,14 @@ func (f *Feature) isSentTo(tgt, id string) bool {
 
 	var disk pushRec
 	found, err := f.doc.Get(NS, id, &disk)
-	if err == nil && found {
-		f.mu.Lock()
-		if f.ledger[id] == nil {
-			f.ledger[id] = &disk
-		}
-		f.mu.Unlock()
-		if !disk.SettledAt.IsZero() {
-			return true
-		}
-		_, ok := disk.Targets[tgt]
-		return ok
+	if err != nil || !found {
+		return false
 	}
-	return false
+	if f.ledger[id] == nil {
+		f.ledger[id] = &disk
+	}
+	_, ok := disk.Targets[tgt]
+	return !disk.SettledAt.IsZero() || ok
 }
 
 // settle 把整条动态记为全局了结：此后每一轮对所有目标跳过，新订阅的群也不补发旧

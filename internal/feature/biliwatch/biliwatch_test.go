@@ -632,3 +632,37 @@ func TestShrunkTargetSetSettlesLedger(t *testing.T) {
 		t.Error("订阅集收缩后没写全局了结账")
 	}
 }
+
+// 账本读侧必须在锁内完成判定（审查 #2）。写侧 MarkPushed 是队列 worker 的回执
+// 回调，读侧 isSentTo/isPushed 是轮询 goroutine——两条本来就在不同协程上。
+// 未修时 -race 报 isSentTo 读 rec.Targets vs MarkPushed 写同一张 map；没有 -race
+// 也可能被运行时的并发 map 检查直接判死。这条用例的判别力在 race 通道
+// （scripts/container-verify.sh / .probe/race-run.sh），本机 git-bash 跑不了 race。
+func TestLedgerReadsAreSynchronized(t *testing.T) {
+	f := New(Config{Doc: storetest.NewMem(), Cap: &mockCapturer{}, Fetcher: &mockFetcher{}})
+	f.api = &mockKernelAPI{targetList: []string{"g:a", "g:b"}}
+	f.ledger["dyn_1"] = &pushRec{Targets: map[string]time.Time{}}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			f.MarkPushed("g:t"+time.Now().Format("150405.000000000"), "dyn_1")
+		}
+	}()
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		f.isSentTo("g:nobody", "dyn_1")
+		f.isPushed("dyn_1")
+	}
+	close(stop)
+	wg.Wait()
+}

@@ -105,11 +105,16 @@ func VersionKey(t time.Time) string { return t.UTC().Format(keyFmt) }
 // 保活集 live = 当值 ∪ 未过气：
 //   - 当值：开闸已过的最新一个。「日历」命令与预热按这个键反复取图，一版存活
 //     两三周，出宽限窗不等于没人读；
-//   - 未过气：now − 开闸 ≤ pushGrace。刻意不设下界——未来窗差值为负恒合格，
-//     恰是 armPushes 要排期的范围（未来窗等到点、刚开闸的宽限窗内欠推补推）；
-//     也盖住时钟回拨回某窗宽限期的情形：回拨前的账要活着，靠 settled 挡重推。
+//   - 未过气：now − 该推送的时刻 ≤ pushGrace。刻意不设下界——未来窗差值为负恒
+//     合格，恰是 armPushes 要排期的范围（未来窗等到点、刚开闸的宽限窗内欠推补
+//     推）；也盖住时钟回拨回某窗宽限期的情形：回拨前的账要活着，靠 settled 挡重推。
 //
-// 反过来，一个键死了 ⟺ 非当值 ∧ now > 开闸 + pushGrace：它的推送任务要么必然
+// "该推送的时刻"（pushAt）= 开闸时刻 + PushDelay：开闸估计只管"新版本算不算已
+// 开"，推送晚它一会儿是另一件事（等版本公告与海报传到 CDN）。过气门槛从 pushAt
+// 起量而不是从开闸起量，否则偏移吃掉的正好是补推预算——晚醒过 pushAt 的那一刻，
+// 这一版就既不排期、账又被 prune 收掉，静默漏推。
+//
+// 反过来，一个键死了 ⟺ 非当值 ∧ now > pushAt + pushGrace：它的推送任务要么必然
 // 已触发、要么必然不再触发，图也没有读者。
 type Timeline struct {
 	wins []timelineWin // 按开启时刻升序
@@ -118,17 +123,22 @@ type Timeline struct {
 	live map[string]bool
 }
 
-// timelineWin 是时间线上的一格：格式化窗口、原始记录、开闸时刻。
+// timelineWin 是时间线上的一格：格式化窗口、原始记录、开闸时刻、该推送的时刻。
 type timelineWin struct {
 	Window
-	rec annsync.Rec
-	at  time.Time // 开闸时刻 = rec.Start + openAt
+	rec    annsync.Rec
+	at     time.Time // 开闸时刻 = rec.Start + openAt
+	pushAt time.Time // 该推送的时刻 = at + pushDelay
 }
 
 // NewTimeline 一次算好本轮时间线。now 要是同一轮的真时刻：live 与当值都钉在它
 // 上，同轮各步不再各自取钟。只有"要窗口列表、不问保活"的调用方才可传零值
 // （见包级 Windows 包装）。
-func NewTimeline(recs []annsync.Rec, label string, zone *time.Location, now time.Time, openAt time.Duration) *Timeline {
+//
+// openAt 与 pushDelay 是两个量，别顺手传同一个：前者是"维护多久结束"的估计
+// （管当值判定、常驻判据、下发给模板的开闸口径），后者是"公告与海报传完要
+// 多久"的富余（只管推送时刻与过气门槛）。
+func NewTimeline(recs []annsync.Rec, label string, zone *time.Location, now time.Time, openAt, pushDelay time.Duration) *Timeline {
 	if zone == nil {
 		zone = time.Local
 	}
@@ -147,6 +157,7 @@ func NewTimeline(recs []annsync.Rec, label string, zone *time.Location, now time
 			rec: r,
 			at:  r.Start.Add(openAt),
 		}
+		w.pushAt = w.at.Add(pushDelay)
 		// 同一开启时刻被多篇公告声明时留兑换尾更长的那篇：窗口画宽点不伤人。
 		if j, ok := by[w.Key]; ok {
 			if !r.ClaimEnd.After(tl.wins[j].rec.ClaimEnd) {
@@ -163,6 +174,8 @@ func NewTimeline(recs []annsync.Rec, label string, zone *time.Location, now time
 		if tl.armed(i) {
 			tl.live[tl.wins[i].Key] = true
 		}
+		// 当值只看开闸，不看推送偏移：晚推 30 分钟不等于这半小时里新版本还没开，
+		// 否则「日历」命令会跟着退回旧版那张。
 		if !now.Before(tl.wins[i].at) {
 			tl.cur = i // 升序扫，最后一个开闸已过的即"最新的已开一个"
 		}
@@ -174,9 +187,10 @@ func NewTimeline(recs []annsync.Rec, label string, zone *time.Location, now time
 }
 
 // armed 回答"第 i 格未过气"。全包唯一的生死判据：live 用它，排期也用它。
-// 门槛取推送纪律的 pushGrace（同包，见 calposter.go）。
+// 门槛取推送纪律的 pushGrace（同包，见 calposter.go），从**该推送的时刻**起算——
+// 从开闸起算的话，推送偏移会正好吃掉补推预算（见 Timeline 的注释）。
 func (tl *Timeline) armed(i int) bool {
-	return tl.now.Sub(tl.wins[i].at) <= pushGrace
+	return tl.now.Sub(tl.wins[i].pushAt) <= pushGrace
 }
 
 // Windows 返回全部版本窗口（按开启时刻升序）。切片是新造的，调用方随便用。
@@ -207,12 +221,13 @@ func (tl *Timeline) LiveKeys() map[string]bool { return tl.live }
 // 阶段就被产成一条 Provenance=Label 的记录（Start=玩法起, End=玩法止,
 // ClaimEnd=兑换止），所以这里不需要第二个数据源。返回值按开启时刻升序。
 func Windows(recs []annsync.Rec, label string, zone *time.Location) []Window {
-	return NewTimeline(recs, label, zone, time.Time{}, 0).Windows()
+	return NewTimeline(recs, label, zone, time.Time{}, 0, 0).Windows()
 }
 
 // Current 返回 now 时刻的当前版本（Timeline 的当值窗投影），语义见 Timeline.Current。
+// 当值判定与推送偏移无关，所以这里固定传 0 偏移。
 func Current(recs []annsync.Rec, label string, now time.Time, openAt time.Duration) (annsync.Rec, bool) {
-	return NewTimeline(recs, label, nil, now, openAt).Current()
+	return NewTimeline(recs, label, nil, now, openAt, 0).Current()
 }
 
 func versionRecs(recs []annsync.Rec, label string) []annsync.Rec {

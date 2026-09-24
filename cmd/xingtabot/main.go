@@ -62,6 +62,7 @@ func run() error {
 		scan           = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
 		chrome         = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
 		warm           = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
+		pushDelay      = flag.Duration("poster-push-delay", 30*time.Minute, "版本日历图在开闸估计之后再等这么久才推（等官方公告与海报传上 CDN）；0 = 开闸即推")
 		biliUID        = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
 		biliInterval   = flag.Duration("bili-interval", 5*time.Minute, "B站动态轮询间隔")
 		biliCookieFlag = flag.String("bili-cookie", "", "B站账号 Cookie（留空优先从 creds.json 读取）")
@@ -128,16 +129,17 @@ func run() error {
 	if *chrome != "" {
 		browser := &render.Browser{Bin: *chrome}
 		poster = calposter.New(calposter.Config{
-			Doc:     doc,
-			Records: func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
-			Cap:     browser,
-			ArtDir:  artDir(*dbPath),
-			Label:   stellasora.ProvVersion,
-			Zone:    zone,
-			Warm:    *warm,
-			Client:  &http.Client{Timeout: 30 * time.Second},
-			Reg:     reg,
-			Logf:    logf,
+			Doc:       doc,
+			Records:   func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
+			Cap:       browser,
+			ArtDir:    artDir(*dbPath),
+			Label:     stellasora.ProvVersion,
+			Zone:      zone,
+			Warm:      *warm,
+			PushDelay: *pushDelay,
+			Client:    &http.Client{Timeout: 30 * time.Second},
+			Reg:       reg,
+			Logf:      logf,
 		})
 		biliCookie := strings.TrimSpace(*biliCookieFlag)
 		if biliCookie == "" {

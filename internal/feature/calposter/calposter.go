@@ -66,8 +66,12 @@ type Config struct {
 	Label  string
 	Zone   *time.Location
 	OpenAt time.Duration // 开闸估计，默认 17h：见 dataset.go 的 Current
-	Client *http.Client  // nil = 不下载海报（海报位画斜纹占位）
-	Warm   time.Duration // 多久看一次数据有没有变，变了就去预热海报，默认 5m
+	// PushDelay 是"该推送的时刻"相对开闸的富余：官方版本公告与海报要传上 CDN，
+	// 开闸那一刻推往往推出一张海报位全是占位的图。0 = 开闸即推（库级默认，
+	// 部署值在 main.go 的 -poster-push-delay）。
+	PushDelay time.Duration
+	Client    *http.Client  // nil = 不下载海报（海报位画斜纹占位）
+	Warm      time.Duration // 多久看一次数据有没有变，变了就去预热海报，默认 5m
 	// ArtDir 非空时海报字节落盘：海报 CDN 会掐反复整窗拉取的客户端，
 	// 只放内存等于每次重启都重新捶一遍。
 	ArtDir   string
@@ -289,8 +293,10 @@ type pushRec struct {
 	Targets   map[string]time.Time `json:"targets,omitempty"`    // 目标 → 回执时刻
 }
 
-// pushGrace 是"开启时刻已经过了还补不补"的窗口。重启晚了 1 小时内照发一次；
+// pushGrace 是"该推送的时刻已经过了还补不补"的窗口。重启晚了 1 小时内照发一次；
 // 更早的不补——这个功能第一次上线时，把历史上每个版本都推一遍是刷屏。
+// 起算点是 pushAt（= 开闸 + PushDelay），不是开闸：从开闸起算的话，偏移本身就把
+// 预算吃掉了（偏移 1h 等于再没有补推余量）。
 const pushGrace = time.Hour
 
 func (p *Poster) Name() string { return "calposter" }
@@ -368,7 +374,7 @@ func (p *Poster) round(ctx context.Context) {
 		p.cfg.Logf("calposter: 本轮读不到活动记录: %v", err)
 		return
 	}
-	tl := NewTimeline(recs, p.cfg.Label, p.cfg.Zone, p.cfg.Now(), p.cfg.OpenAt)
+	tl := NewTimeline(recs, p.cfg.Label, p.cfg.Zone, p.cfg.Now(), p.cfg.OpenAt, p.cfg.PushDelay)
 	p.warmArt(ctx, recs)
 	p.armPushes(tl)
 	p.prune(tl)
@@ -396,25 +402,26 @@ func (p *Poster) options(key string, now time.Time, fetch bool) Options {
 	}
 }
 
-// armPushes 给每个"未过气"（now − 开闸 ≤ pushGrace，未来窗恒合格，见 Timeline.armed）
-// 且没推过的版本排一次期。
+// armPushes 给每个"未过气"（now − 该推送的时刻 ≤ pushGrace，未来窗恒合格，见
+// Timeline.armed）且没推过的版本排一次期。
 //
-// 触发点用 act0 + 开闸估计，与 prune 的保活判据是 Timeline 里的同一条——
-// 开闸公式全包只写一份，这里拿现成的 at。00:00 只是维护中的下界，那时候
-// 新版本既没开、海报也常常还没上传，推出去是一张全是占位图的图。
+// 触发点用 pushAt（= act0 + 开闸估计 + PushDelay），与 prune 的保活判据是
+// Timeline 里的同一条——开闸公式与偏移全包只写一份，这里拿现成的 pushAt。
+// 00:00 只是维护中的下界，那时候新版本既没开、海报也常常还没上传，推出去是一张
+// 全是占位图的图；PushDelay 就是在等后半句。
 // Schedule 按 ID 幂等，所以每轮重排不会重复；已推过的直接跳过。
 func (p *Poster) armPushes(tl *Timeline) {
 	for i := range tl.wins {
 		if !tl.armed(i) || p.settled(tl.wins[i].Key) {
 			continue
 		}
-		key, at := tl.wins[i].Key, tl.wins[i].at
+		key, at := tl.wins[i].Key, tl.wins[i].pushAt
 		p.api.Schedule("poster:"+key, at, func(ctx context.Context) error { return p.push(ctx, key) })
 	}
 }
 
 // prune 收敛 shots（整张 PNG 字节）与 ledger（内存+磁盘账），只留 Timeline 的
-// live 集：当值 ∪ 未过气（now − 开闸 ≤ pushGrace）。
+// live 集：当值 ∪ 未过气（now − 该推送的时刻 ≤ pushGrace）。
 //
 // 每条账至多一类读者，live 的两个条款正好把他们收全（推导见 Timeline 注释）：
 //   - 当值——「日历」命令与预热按当期键反复取图，一版存活两三周，出宽限窗

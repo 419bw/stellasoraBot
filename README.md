@@ -115,6 +115,7 @@ go run ./cmd/xingtabot -creds creds.json -db data/xingta.db -chrome "C:/Program 
 
 常用命令行参数：
 * `-chrome`：无头浏览器可执行文件路径；留空则不启用出图相关功能（日历海报与 B站动态推图）。
+* `-poster-push-delay`：版本日历图在开闸估计（默认 17:00）之后再等这么久才主动推，默认 `30m`——等官方版本公告与海报传上 CDN，否则推出去的是一张海报位全占位的图。`0` = 开闸即推。只影响推送时刻与补推预算，不影响「日历」命令答哪一版。
 * `-bili-uid`：监听的 B站官方账号 UID（默认内置星塔旅人官方 UID）。
 * `-bili-interval`：B站动态轮询间隔（默认 `5m`）。
 * `-bili-cookie`：B站登录态 Cookie（降低风控概率；留空优先从 `creds.json` 中的 `biliCookie` 读取）。

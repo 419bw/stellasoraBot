@@ -102,7 +102,7 @@ calposter.Image(key)   ← 「日历」命令走这条：只读本地字节，�
                        同桶第二次问就是 0 渲染、直接命中
 calposter.Fetch(key)   ← 发送队列的 Sink 在 worker 上走这条：允许现抓，宁可慢也不推一张全是占位的图
        ↓ Build 数据集 → calposter.Page → render.Capturer.Capture → PNG
-「日历」命令回 command.Reply{Image}；版本开闸只投 queue.Item{Media{poster,key}}——
+「日历」命令回 command.Reply{Image}；版本到推送点（开闸 + `PushDelay`）只投 queue.Item{Media{poster,key}}——
 调度回调绝不出图（它同步跑 Fn，画一趟就把同期到期的提醒一起拖住），图在真要发的那一刻
 由 Sink 现取；账本由队列条目自带的 OnDelivered 回执写（发送成功才逐条回调，失败与丢弃
 一律不记），账键为 pushRec{SettledAt, Targets}：记到"目标×版本"粒度，全部订阅目标收齐
@@ -211,7 +211,10 @@ main.activeSink（只管出图与发送，不参与记账）
 - **当前版本 = 已开闸的最新一个**（`act0 + openOffsetMs <= now`），不是"窗口含今天"：版本交接那天新旧两窗
   重叠（旧版本只剩兑换尾段），按窗口判会同时冒出两个"当前版本"，而且默认挑到旧的那个。
 - **开闸偏移 17:00 由数据下发**：`openOffsetMs` 写在 `data.json`（Go 侧 `openAt` 常量），模板读 `DATA.openOffsetMs`。
-  这个数以前只活在模板里，机器人出图那份要再存一份，两边必然漂移。
+  这个数以前只活在模板里，机器人出图那份要再存一份，两边必然漂移。**它只管"新版本算不算已开"**
+  （当值判定、常驻玩法判据、页面 fuzzy 起点），不管推送时刻——推送另有 `PushDelay`
+  （`-poster-push-delay`，默认 30m）：`pushAt = 开闸 + PushDelay`，`armPushes` 排它、过气预算
+  （`pushGrace`）也从它起算。把这两个数当同一个来调，会连带动到渲染口径。
 - 模板 `internal/feature/calposter/template.html` 是**内嵌的运行时资产**（机器人自己出图要用它），产物页
   `.probe/timetable/web/{data.json,calendar.html}` 与全部校验脚本仍在 `.probe/`（不入库）；
   `.probe/calgen` 的 Go 渲染器冻结在旧天格模型，`.probe/timetable/web` 读的是上面这份模板。

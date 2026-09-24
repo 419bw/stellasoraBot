@@ -229,6 +229,55 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 	}
 }
 
+// PushDelay 挪的是"该推送的时刻"，不是开闸。三件事必须同时成立：排期右移、
+// 补推预算跟着 pushAt 起算（否则偏移本身就吃光了预算）、当值判定一点不动。
+func TestPushDelayShiftsPushNotOpen(t *testing.T) {
+	recs := box(verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59"))
+	const key = "poster:202609071600"
+
+	newPoster := func(delay time.Duration, now time.Time) (*Poster, *fakeAPI) {
+		t.Helper()
+		api := newAPI()
+		api.targets = []string{"g:grp"}
+		p := New(Config{
+			Doc: storetest.NewMem(), Records: recs.recs, Cap: &fakeCap{}, Label: "version",
+			Zone: zone, Now: func() time.Time { return now }, PushDelay: delay,
+		})
+		p.api = api
+		if err := p.loadSent(); err != nil {
+			t.Fatal(err)
+		}
+		return p, api
+	}
+
+	// 开闸 17:00、偏移 30m：18:15 时那一趟（17:30）还在 1 小时预算内 → 该排上，
+	// 且排在 17:30（已过点，触发即补推）。
+	p30, api30 := newPoster(30*time.Minute, at("2026-09-08 18:15"))
+	p30.round(context.Background())
+	gotAt, ok := api30.atOf(key)
+	if !ok {
+		t.Fatal("偏移 30m 时 18:15 仍应在补推预算内，却没排上期")
+	}
+	if !gotAt.Equal(at("2026-09-08 17:30")) {
+		t.Errorf("排期时刻应是 开闸 17:00 + 偏移 30m，得到 %s", gotAt)
+	}
+
+	// 同一时刻不设偏移：17:00 + 1h = 18:00 已过 → 不排期。这一条与上一条成对照，
+	// 钉的就是"预算从 pushAt 起算"，而不是从开闸起算。
+	p0, api0 := newPoster(0, at("2026-09-08 18:15"))
+	p0.round(context.Background())
+	if api0.armed(key) {
+		t.Error("偏移 0 时 18:15 已过开闸+宽限，不该再排期")
+	}
+
+	// 当值判定与偏移无关：开闸后半小时里（还没到推送点）问「日历」，拿到的就该
+	// 已经是新版那张。
+	pc, _ := newPoster(30*time.Minute, at("2026-09-08 17:15"))
+	if got, err := pc.CurrentKey(); err != nil || got != "202609071600" {
+		t.Errorf("偏移不该影响当值判定，得到 %q err=%v", got, err)
+	}
+}
+
 func TestHistoryIsNotPushedOnFirstRun(t *testing.T) {
 	// 库里三个版本都已开闸。功能第一次上线时只有"刚过开闸不到宽限期"的那个能排上，
 	// 否则一上线就把历史上每个版本都推一遍，是刷屏。

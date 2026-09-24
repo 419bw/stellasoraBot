@@ -27,11 +27,11 @@ import (
 // 不用等下一轮。nil 表示"等下一轮"，命令照样可用。
 type Refresher interface{ Refresh() }
 
-// Config 的零值必须可用。
+// Config 的零值不可用：PageSize 是部署参数，得调用方给（生产那份在 config/calops.yml）。
 type Config struct {
 	Source   string // 只看某个源，空 = 所有源
 	Zone     *time.Location
-	PageSize int
+	PageSize int // 运维列表每页几条，必须 >= 1
 	Now      func() time.Time
 	Refresh  Refresher
 	Logf     func(format string, args ...any)
@@ -40,9 +40,6 @@ type Config struct {
 func (c Config) withDefaults() Config {
 	if c.Zone == nil {
 		c.Zone = time.FixedZone("CST", 8*60*60)
-	}
-	if c.PageSize <= 0 {
-		c.PageSize = 6
 	}
 	if c.Now == nil {
 		c.Now = time.Now

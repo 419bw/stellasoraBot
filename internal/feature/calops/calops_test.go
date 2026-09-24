@@ -539,7 +539,7 @@ func TestWorksWithoutRefreshHook(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	ops := calops.New(doc, reg, calops.Config{
-		Source: "test", Zone: zone,
+		Source: "test", Zone: zone, PageSize: 6,
 		Now: func() time.Time { return now }, // Refresh 为 nil
 	})
 	if err := ops.Start(ctx, nil); err != nil {

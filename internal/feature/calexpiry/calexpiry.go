@@ -45,10 +45,10 @@ func (r *remindRec) newest() time.Time {
 	return t
 }
 
-// Config 的零值必须可用。
+// Config 的零值不可用：Lead 与 Every 都得调用方给（生产那份来自 config/calexpiry.yml）。
 type Config struct {
-	Lead  time.Duration // 提前多久提醒，默认 48h
-	Every time.Duration // 扫描间隔，默认 10m
+	Lead  time.Duration // 提前多久提醒
+	Every time.Duration // 扫描间隔
 
 	Zone *time.Location
 	Now  func() time.Time
@@ -56,12 +56,7 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
-	if c.Lead <= 0 {
-		c.Lead = 48 * time.Hour
-	}
-	if c.Every <= 0 {
-		c.Every = 10 * time.Minute
-	}
+	// Lead/Every 不在这里兜：部署参数的唯一源是 config/calexpiry.yml。
 	if c.Zone == nil {
 		c.Zone = time.FixedZone("CST", 8*60*60)
 	}

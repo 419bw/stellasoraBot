@@ -85,6 +85,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	file.Dump(logf) // 值 + 那句注释，逐行落到启动日志上
+	expiryDC, file, err := calexpiry.LoadDeployConfig(featureConfigPath("calexpiry"))
+	if err != nil {
+		return err
+	}
+	file.Dump(logf)
+	queryDC, file, err := calquery.LoadDeployConfig(featureConfigPath("calquery"))
+	if err != nil {
+		return err
+	}
+	file.Dump(logf)
+	opsDC, file, err := calops.LoadDeployConfig(featureConfigPath("calops"))
+	if err != nil {
+		return err
+	}
 	file.Dump(logf)
 
 	var posterDC calposter.DeployConfig
@@ -184,15 +199,15 @@ func run() error {
 	policy.DayZone = zone
 	rt := kernel.NewRuntime(activeSink{client: client, poster: poster, bili: bili}, policy, cal, targetStore, logf)
 	rt.Register(sync)
-	rt.Register(calquery.New(reg, cal, calquery.Config{
+	rt.Register(calquery.New(reg, cal, queryDC.ToConfig(calquery.Config{
 		Zone:   zone,
 		Status: annsync.NewStatusReader(doc, src.Name()), // 拿得到同步状况，回复尾巴才敢说"数据截至"
 		Logf:   logf,
-	}))
-	rt.Register(calexpiry.New(doc, calexpiry.Config{Zone: zone, Logf: logf}))
-	rt.Register(calops.New(doc, reg, calops.Config{
+	})))
+	rt.Register(calexpiry.New(doc, expiryDC.ToConfig(calexpiry.Config{Zone: zone, Logf: logf})))
+	rt.Register(calops.New(doc, reg, opsDC.ToConfig(calops.Config{
 		Source: src.Name(), Zone: zone, Refresh: sync, Logf: logf,
-	}))
+	})))
 	rt.Register(pushops.New(reg, targetStore, pushops.Config{Logf: logf}))
 	if poster != nil {
 		rt.Register(poster)

@@ -45,9 +45,23 @@ func fixture() *calendar.Store {
 	return cal
 }
 
-// start 起功能并返回命令表。
+// start 起功能并返回命令表。四个部署参数在这里补齐 —— 代码里已经没有默认值可退，
+// 而它们是用例的前提而不是 config/calquery.yml 的引用：改配置文件不会让这些用例变。
+// 要测某个值的效果就在调用点自己给（比如 :118 那条给 PageSize: 3）。
 func start(t *testing.T, cal calendar.View, cfg calquery.Config) *command.Registry {
 	t.Helper()
+	if cfg.PageSize == 0 {
+		cfg.PageSize = 8
+	}
+	if cfg.DefaultEndLead == 0 {
+		cfg.DefaultEndLead = 48 * time.Hour
+	}
+	if cfg.DefaultSoonDays == 0 {
+		cfg.DefaultSoonDays = 7
+	}
+	if cfg.MaxDays == 0 {
+		cfg.MaxDays = 60
+	}
 	reg := command.NewRegistry()
 	f := calquery.New(reg, cal, cfg)
 	if err := f.Start(context.Background(), nil); err != nil {

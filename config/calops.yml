@@ -1,0 +1,8 @@
+# 星塔机器人 · 运维操作（calops）
+#
+# 形状由 internal/feature/calops/deploy.go 定义。
+# 与 calquery 的 pageSize 是两个独立的数：一个管群友查活动的分页，一个管运维列
+# 存疑/被覆盖条目的分页，历史上就没统一过，也各自有不同的读数舒适度。
+
+# review / hide 那组运维命令每页列几条。
+pageSize: 6

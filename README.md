@@ -103,33 +103,35 @@ go run ./cmd/panelreg -creds creds.json
 
 ### 3. 启动运行
 
-#### 方式 A：标准本地运行
+可调参数都从配置文件读，命令行只剩一个参数——这份配置文件放哪（默认 `config.yml`）：
 
 ```bash
-# 纯文本模式（无需浏览器内核，内存占用极低；仅启用查询与到期提醒）
-go run ./cmd/xingtabot -creds creds.json -db data/xingta.db
+# 直接跑：机器级参数（凭据路径、数据库、浏览器、时区、两个域名）读 config.yml
+go run ./cmd/xingtabot
 
-# 完整出图模式（启用日历海报与 B站长图动态推送；指定无头 Chrome/Chromium 路径）
-go run ./cmd/xingtabot -creds creds.json -db data/xingta.db -chrome "C:/Program Files/Google/Chrome/Application/chrome.exe"
+# 本机想用另一套路径（凭据放 .probe/、浏览器是 Windows 上装的 Chrome）：
+# 拷一份改了再指过去。.probe/ 已被 .gitignore 排除，不会误提交
+cp config.yml .probe/config.local.yml
+go run ./cmd/xingtabot -config .probe/config.local.yml
 ```
 
-常用命令行参数：
-* `-chrome`：无头浏览器可执行文件路径；留空则不启用出图相关功能（日历海报与 B站动态推图）。
-* `-poster-push-delay`：版本日历图在开闸估计（默认 17:00）之后再等这么久才主动推，默认 `30m`——等官方版本公告与海报传上 CDN，否则推出去的是一张海报位全占位的图。`0` = 开闸即推。只影响推送时刻与补推预算，不影响「日历」命令答哪一版。
-* `-bili-uid`：监听的 B站官方账号 UID（默认内置星塔旅人官方 UID）。
-* `-bili-interval`：B站动态轮询间隔（默认 `5m`）。
-* `-bili-cookie`：B站登录态 Cookie（降低风控概率；留空优先从 `creds.json` 中的 `biliCookie` 读取）。
-* `-refresh`：官网公告同步间隔（默认 `30m`）。
-* `-lead`：活动结束前提早提醒时长（默认 `48h`）。
+**仓库里那份 `config.yml` 保持的是手机部署的值**（`creds.json`、`data/xingta.db`、
+`./chrome-headless`），所以传上手机后二进制不带任何参数就能起；本机要跑就把 `chrome`
+那一行改成自己的浏览器路径，`chrome: ""` 则是纯文本模式（不出图，查询与到期提醒照常）。
 
-#### 方式 B：Android 手机 (Termux) 后台常驻
+每个值旁边都写了一句它管什么、改坏了会怎样；改完不用重编，重启进程即生效。启动时进程会把
+真正吃进去的每个值连注释逐行打一遍（`config.tz = +08:00｜公告日期…`），"配置文件跟代码
+是不是分家了"看这几行就能判断。少一个键、值写成空、键名拼错一律启动失败并点名，不会静默
+拿某个默认值跑起来。
+
+#### Android 手机 (Termux) 后台常驻
 
 项目针对 Android Termux 环境进行了专项适配（内置 DNS 优化、字体挂载及无沙箱环境兼容），GitHub Actions 每次提交均会自动打包发布适用于 Termux 的 ARM64 二进制文件，并提供了开箱即用的后台管理脚本：
 
 ```bash
 cd ~/xingtabot
 
-# 启动（screen 后台守护运行，默认带 -chrome ./chrome-headless）
+# 启动（screen 后台守护运行；参数在 config.yml 里，命令行不再传）
 ./start.sh
 
 # 查看当前运行状态与日志

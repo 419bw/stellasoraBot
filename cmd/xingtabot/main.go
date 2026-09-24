@@ -5,7 +5,10 @@
 // Register —— 它的命令、定时任务与命名空间写入会一起停（命名空间里的旧数据留着，
 // 重新开启时续用）。
 //
-// 凭据只从 -creds 指定的文件读（默认 .probe/creds.json，已被 .gitignore 排除），
+// 可调参数只从配置文件读：命令行唯一的参数是这份文件的位置（默认 config.yml）。
+// 机器级的值在 config.yml，各功能的值在 config/<功能>.yml 由那个功能包自己解析。
+//
+// 凭据仍只从 config.yml 的 creds 指向的文件读（默认 creds.json，已被 .gitignore 排除），
 // AppSecret 与 access_token 不出现在任何输出里。
 package main
 
@@ -27,6 +30,7 @@ import (
 
 	"xingta/internal/annsync"
 	"xingta/internal/command"
+	"xingta/internal/config"
 	"xingta/internal/feature/biliwatch"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
@@ -52,35 +56,26 @@ func main() {
 }
 
 func run() error {
-	var (
-		credsPath      = flag.String("creds", ".probe/creds.json", "凭据文件路径（JSON: appId / clientSecret）")
-		dbPath         = flag.String("db", "data/xingta.db", "bbolt 数据库文件路径")
-		tz             = flag.String("tz", "+08:00", "公告日期与回复时间用的时区：+08:00 或 Asia/Shanghai")
-		sourceURL      = flag.String("source", stellasora.DefaultBaseURL, "公告源站点基地址")
-		refresh        = flag.Duration("refresh", 30*time.Minute, "公告刷新间隔")
-		lead           = flag.Duration("lead", 48*time.Hour, "活动结束前多久开始提醒")
-		scan           = flag.Duration("scan", 10*time.Minute, "到期提醒的扫描间隔")
-		chrome         = flag.String("chrome", "", "出日历图与动态图用的无头浏览器可执行文件；留空 = 不启用出图功能")
-		warm           = flag.Duration("warm", 5*time.Minute, "日历图功能隔多久看一眼「公告数据变了没」")
-		pushDelay      = flag.Duration("poster-push-delay", 30*time.Minute, "版本日历图在开闸估计之后再等这么久才推（等官方公告与海报传上 CDN）；0 = 开闸即推")
-		biliUID        = flag.String("bili-uid", biliwatch.DefaultUID, "B站官方账号 UID")
-		biliInterval   = flag.Duration("bili-interval", 5*time.Minute, "B站动态轮询间隔")
-		biliCookieFlag = flag.String("bili-cookie", "", "B站账号 Cookie（留空优先从 creds.json 读取）")
-		admins         = flag.String("admin", "", "单聊管理员 openid 白名单，逗号分隔（群聊按群角色判定）")
-		apiBase        = flag.String("api", qq.DefaultBaseURL, "QQ API 基地址")
-		intents        = flag.Int64("intents", qq.IntentPublicMessages, "订阅的 intent 位掩码")
-	)
+	configPath := flag.String("config", "config.yml", "部署配置文件：机器级参数在这份文件里，各功能参数在它旁边的 config/<功能>.yml 里")
 	flag.Parse()
 
 	logf := func(format string, args ...any) {
 		fmt.Printf("%s %s\n", time.Now().Format("2006-01-02 15:04:05.000"), fmt.Sprintf(format, args...))
 	}
 
-	zone, err := parseZone(*tz)
+	cfg, cfgFile, err := config.LoadRun(*configPath)
 	if err != nil {
 		return err
 	}
-	creds, err := loadCreds(*credsPath)
+	// 先把进程真正吃进去的每个值连注释打一遍，再谈凭据与网络：这样"值从文件搬到
+	// 进程里"这件事，不握一份能连上平台的凭据也核得了。
+	cfgFile.Dump(logf)
+
+	zone, err := parseZone(cfg.TZ)
+	if err != nil {
+		return err
+	}
+	creds, err := loadCreds(cfg.Creds)
 	if err != nil {
 		return err
 	}
@@ -90,7 +85,7 @@ func run() error {
 
 	// ---- 基础设施：具体实现只在这个函数里出现 -----------------------------
 
-	doc, err := openDB(*dbPath)
+	doc, err := openDB(cfg.DB)
 	if err != nil {
 		return err
 	}
@@ -103,75 +98,71 @@ func run() error {
 		return fmt.Errorf("初始化推送目标存储失败: %w", err)
 	}
 
-	client := qq.NewClientAt(creds.AppID, creds.AppSecret, *apiBase)
+	client := qq.NewClientAt(creds.AppID, creds.AppSecret, cfg.API)
 	// 命令回图走带 file_info 缓存的发送器：同字节命中就跳过四步上传；缓存那份被平台
 	// 判死时 command.reply 会 Forget + 就地重传。主动推送那条路仍用裸 client——
 	// 队列自己带退避重试，缓存摘除那套兜底不该重复两份。
 	sender := qq.NewMediaCache(client, 0)
 	profile, err := client.Me(ctx)
 	if err != nil {
-		return fmt.Errorf("获取机器人身份失败（先查凭据与 -api）: %w", err)
+		return fmt.Errorf("获取机器人身份失败（先查凭据与配置文件的 api）: %w", err)
 	}
 	logf("身份确认: %s (%s)", profile.Username, profile.ID)
 
-	src := stellasora.New(stellasora.Config{BaseURL: *sourceURL, Zone: zone})
-	sync := annsync.NewFeature(doc, cal, src, nil, annsync.Config{Interval: *refresh, Logf: logf})
+	src := stellasora.New(stellasora.Config{BaseURL: cfg.Source, Zone: zone})
+	sync := annsync.NewFeature(doc, cal, src, nil, annsync.Config{Logf: logf})
 	reg := command.NewRegistry()
 
 	// ---- 功能：一行一个，删掉即关掉 ---------------------------------------
 
-	// 出图能力依赖无头浏览器：没给 -chrome 就是不启用出图相关功能——
+	// 出图能力依赖无头浏览器：配置文件里 chrome 留空就是不启用出图相关功能——
 	// 本机没有浏览器时，到期提醒与运维命令照常跑，而不是启动后每次发图都失败。
 	var (
 		poster *calposter.Poster
 		bili   *biliwatch.Feature
 	)
-	if *chrome != "" {
-		browser := &render.Browser{Bin: *chrome}
+	if cfg.Chrome != "" {
+		browser := &render.Browser{Bin: cfg.Chrome}
 		poster = calposter.New(calposter.Config{
 			Doc:       doc,
 			Records:   func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
 			Cap:       browser,
-			ArtDir:    artDir(*dbPath),
+			ArtDir:    artDir(cfg.DB),
 			Label:     stellasora.ProvVersion,
 			Zone:      zone,
-			Warm:      *warm,
-			PushDelay: *pushDelay,
+			PushDelay: 30 * time.Minute, // 等官方公告与海报传上 CDN；下一步进 config/calposter.yml
 			Client:    &http.Client{Timeout: 30 * time.Second},
 			Reg:       reg,
 			Logf:      logf,
 		})
-		biliCookie := strings.TrimSpace(*biliCookieFlag)
-		if biliCookie == "" {
-			biliCookie = strings.TrimSpace(creds.BiliCookie)
-		}
+		biliCookie := strings.TrimSpace(creds.BiliCookie)
 		if biliCookie != "" {
 			logf("biliwatch: 已配置 B站登录态 Cookie (长度 %d 字节)，防风控模式已就绪", len(biliCookie))
 		} else {
 			logf("biliwatch: 未配置 B站登录态 Cookie，使用匿名访客模式")
 		}
 		bili = biliwatch.New(biliwatch.Config{
-			Doc:      doc,
-			Cap:      browser,
-			UID:      *biliUID,
-			Interval: *biliInterval,
-			Cookie:   biliCookie,
-			Logf:     logf,
+			Doc:    doc,
+			Cap:    browser,
+			Cookie: biliCookie,
+			Logf:   logf,
 		})
 	} else {
-		logf("没给 -chrome，出图功能不启用（日历海报与 B站动态推图都不会有；到期提醒照常）")
+		logf("config 里 chrome 留空，出图功能不启用（日历海报与 B站动态推图都不会有；到期提醒照常）")
 	}
 
-	rt := kernel.NewRuntime(activeSink{client: client, poster: poster, bili: bili}, queue.DefaultPolicy(), cal, targetStore, logf)
+	// 队列的"当日额度"日界线跟着同一个时区走：它此前硬编码 +08:00，与 api.tz
+	// 各持一处，改 tz 会让日历与额度切线分家。
+	policy := queue.DefaultPolicy()
+	policy.DayZone = zone
+	rt := kernel.NewRuntime(activeSink{client: client, poster: poster, bili: bili}, policy, cal, targetStore, logf)
 	rt.Register(sync)
 	rt.Register(calquery.New(reg, cal, calquery.Config{
 		Zone:   zone,
 		Status: annsync.NewStatusReader(doc, src.Name()), // 拿得到同步状况，回复尾巴才敢说"数据截至"
 		Logf:   logf,
 	}))
-	rt.Register(calexpiry.New(doc, calexpiry.Config{
-		Lead: *lead, Every: *scan, Zone: zone, Logf: logf,
-	}))
+	rt.Register(calexpiry.New(doc, calexpiry.Config{Zone: zone, Logf: logf}))
 	rt.Register(calops.New(doc, reg, calops.Config{
 		Source: src.Name(), Zone: zone, Refresh: sync, Logf: logf,
 	}))
@@ -189,7 +180,7 @@ func run() error {
 	// 命令走 Attach 内部的被动 worker：网关循环（心跳/判死）不等命令跑完。
 	// 返回值这里用不上（Drain 供测试与诊断），生命周期随 ctx——与 rt、网关同级。
 	command.Attach(ctx, reg, hub, sender, command.Config{
-		AdminOpenIDs: splitList(*admins),
+		AdminOpenIDs: cfg.Admin,
 		Logf:         logf,
 	})
 
@@ -198,16 +189,20 @@ func run() error {
 		return fmt.Errorf("获取网关地址失败: %w", err)
 	}
 	g := qq.NewGateway(qq.GatewayConfig{
-		Tokens:  client.Tokens(), // 必须复用同一个 TokenSource，否则 HTTP 侧与 WS 侧互相挤掉对方的 token
-		URL:     gw.URL,
-		Intents: *intents,
+		Tokens: client.Tokens(), // 必须复用同一个 TokenSource，否则 HTTP 侧与 WS 侧互相挤掉对方的 token
+		URL:    gw.URL,
+		// intent 位不外提：全仓只订阅群与单聊消息这一位，改位数还得平台先开通、
+		// 这边又要有对应的事件处理器，光在配置文件里换个数不会有任何效果。
+		Intents: qq.IntentPublicMessages,
 		Shard:   [2]uint32{0, uint32(max(gw.Shards, 1))},
 		Logf:    func(format string, args ...any) { logf("[网关] "+format, args...) },
 	})
 
 	activeTargets := targetStore.Targets()
-	logf("数据库: %s｜时区: %s｜刷新: %s｜提醒: 提前 %s，每 %s 扫一次｜主动消息 %d 个目标｜日历图: %s",
-		*dbPath, zone.String(), *refresh, *lead, *scan, len(activeTargets), map[bool]string{true: *chrome, false: "未启用"}[poster != nil])
+	// 各项参数与它的注释已在上面逐行打过（Dump），这里只报运行时才知道的两件事。
+	logf("配置文件: %s｜主动消息 %d 个目标｜日历图: %s",
+		*configPath, len(activeTargets),
+		map[bool]string{true: cfg.Chrome, false: "未启用"}[poster != nil])
 	if len(activeTargets) == 0 {
 		logf("当前无主动推送目标（群管可在群内发 push on 开启），主动消息暂不发送")
 	}
@@ -267,12 +262,12 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 		switch b.Media.Kind {
 		case "poster", "":
 			if s.poster == nil {
-				return fmt.Errorf("队列里有海报项但没接出图能力：检查 -chrome")
+				return fmt.Errorf("队列里有海报项但没接出图能力：检查配置文件里的 chrome")
 			}
 			provider = s.poster
 		case "bili":
 			if s.bili == nil {
-				return fmt.Errorf("队列里有 B站动态项但没接出图能力：检查 -chrome")
+				return fmt.Errorf("队列里有 B站动态项但没接出图能力：检查配置文件里的 chrome")
 			}
 			provider = s.bili
 		default:
@@ -304,7 +299,7 @@ func (s activeSink) Send(ctx context.Context, b *queue.Batch) error {
 	return err
 }
 
-// artDir 是海报落盘的位置：紧挨着数据库放，换 -db 就换一套缓存，
+// artDir 是海报落盘的位置：紧挨着数据库放，换 db 就换一套缓存，
 // 不需要再多一个旋钮。
 func artDir(dbPath string) string {
 	if d := parentDir(dbPath); d != "" {
@@ -333,16 +328,6 @@ func splitTarget(target string) (openID string, group bool, err error) {
 		return "", false, fmt.Errorf("提醒目标 %q 的 openid 带了空白，去掉空格再写", target)
 	}
 	return id, group, nil
-}
-
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // parseZone 支持 "+08:00" / "-0730" / "8" 这样的偏移写法，也支持 "Asia/Tokyo" 这种名字。

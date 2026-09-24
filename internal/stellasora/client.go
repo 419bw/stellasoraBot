@@ -18,6 +18,9 @@ import (
 
 // DefaultBaseURL 是简体中文官网的接口根。路径从官网 JS 包里抠出来逐个打过：
 // resource/news（列表）、resource/news/{id}（详情，路径参数）、resource/news/banner。
+// DefaultBaseURL 只是离线工具的默认值；机器人进程读的 source 只来自 config.yml。
+// 加这一行是因为值现在合法地存在两处 —— 但不加"两边必须相等"的测试：
+// 有人把 api/source 指到镜像或沙箱地址是正常操作，那种测试会误红。
 const DefaultBaseURL = "https://stellasora.yostar.cn"
 
 // DefaultZone 是公告日期的默认时区：固定 +08:00，不用 time.Local

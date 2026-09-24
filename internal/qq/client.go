@@ -15,6 +15,8 @@ import (
 )
 
 // 2026-08-10 起平台把所有接口域名统一为 api.bot.qq.com（changelog 20260810）。
+// DefaultBaseURL 只是调试工具（qqprobe/qqwatch）与测试的默认值。
+// 生产那份不读它：机器人进程的 api 地址只来自 config.yml 的 api 一行。
 const DefaultBaseURL = "https://api.bot.qq.com"
 
 const maxResponseBytes = 1 << 20

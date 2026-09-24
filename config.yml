@@ -1,0 +1,35 @@
+# 星塔机器人 · 机器级部署参数
+#
+# 这份文件说的是"这台机器"：路径、时区、两个官方域名。各功能自己的可调参数
+# 在 config/<功能>.yml 里（那些值归那个功能包自己解析与校验）。
+#
+# 凭据绝不写在这里 —— 这个文件要入库。creds 只给出凭据文件的路径，
+# AppID/AppSecret/B站 Cookie 仍住在那份被 .gitignore 排除的 creds.json 里。
+#
+# 本机（Windows）跑法：把这份拷成 .probe/config.local.yml 改路径，启动带
+# -config .probe/config.local.yml；仓库里这份保持手机部署的值。
+
+# 凭据文件路径（JSON: appId / clientSecret / biliCookie）。填错就启动失败并打印原因。
+creds: creds.json
+
+# bbolt 数据库文件路径。bbolt 单进程独占锁，同一路径不能起两个实例。
+# 海报缓存目录取它的父目录下的 art/，所以换 db 就换一套缓存，没有单独的开关。
+db: data/xingta.db
+
+# 出日历图与 B站动态图用的无头浏览器可执行文件。
+# 留空（chrome: ""）= 不启用出图：查询与到期提醒照常跑，不会每次发图都失败。
+chrome: ./chrome-headless
+
+# 公告日期与回复时间用的时区，写 +08:00 或 Asia/Shanghai。
+# 队列的"当日额度"日界线也用这个值：手机端的本地时区与时区数据库都不可信，别留空。
+tz: +08:00
+
+# QQ 开放平台 API 基地址。生产只有这一条路，旧域名 bots.qq.com 已实测出局。
+api: https://api.bot.qq.com
+
+# 公告源站点基地址。改它等于换站：解析规则是按本站页面结构写的，换过去大概率一条都解析不出来。
+source: https://stellasora.yostar.cn
+
+# 单聊管理员 openid 列表。空列表 = 单聊里的运维命令全不可用
+# （override/confirm/hide/show/review 都要求管理员；群聊里的 push 按群角色判，不受影响）。
+admin: []

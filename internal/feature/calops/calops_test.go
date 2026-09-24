@@ -101,8 +101,9 @@ func newRig(t *testing.T) *rig {
 	cfg := annsync.Config{
 		Interval: 5 * time.Millisecond, FullEvery: time.Hour,
 		MinGap: time.Millisecond, BackoffBase: 5 * time.Millisecond,
-		Now:  func() time.Time { return now },
-		Logf: r.log,
+		Retention: 95 * 24 * time.Hour, // 生产值；本包用例的时间跨度远小于它
+		Now:       func() time.Time { return now },
+		Logf:      r.log,
 	}
 	r.eng = annsync.NewFeature(r.doc, r.cal, r.src, nil, cfg)
 
@@ -530,6 +531,7 @@ func TestWorksWithoutRefreshHook(t *testing.T) {
 	cal := calendar.NewStore()
 	eng := annsync.NewFeature(doc, cal, src, nil, annsync.Config{
 		Interval: 5 * time.Millisecond, FullEvery: time.Hour, MinGap: time.Millisecond, BackoffBase: 5 * time.Millisecond,
+		Retention: 95 * 24 * time.Hour,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

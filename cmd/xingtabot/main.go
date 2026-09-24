@@ -81,6 +81,12 @@ func run() error {
 
 	// 所有配置读完才开始动手：缺一个文件、配错一个值，不该等身份确认走通网络之后
 	// 才暴露。出图功能由 chrome 那一项决定，关着就不要求它那几个配置文件存在。
+	syncDC, file, err := annsync.LoadDeployConfig(featureConfigPath("annsync"))
+	if err != nil {
+		return err
+	}
+	file.Dump(logf)
+
 	var posterDC calposter.DeployConfig
 	if cfg.Chrome != "" {
 		dc, file, err := calposter.LoadDeployConfig(featureConfigPath("calposter"))
@@ -130,7 +136,7 @@ func run() error {
 	logf("身份确认: %s (%s)", profile.Username, profile.ID)
 
 	src := stellasora.New(stellasora.Config{BaseURL: cfg.Source, Zone: zone})
-	sync := annsync.NewFeature(doc, cal, src, nil, annsync.Config{Logf: logf})
+	sync := annsync.NewFeature(doc, cal, src, nil, syncDC.ToConfig(annsync.Config{Logf: logf}))
 	reg := command.NewRegistry()
 
 	// ---- 功能：一行一个，删掉即关掉 ---------------------------------------

@@ -186,7 +186,10 @@ func testCfg(now func() time.Time) annsync.Config {
 		FullEvery:   time.Hour,
 		MinGap:      time.Millisecond,
 		BackoffBase: 5 * time.Millisecond,
-		Now:         now,
+		// 95 天是生产值（config/annsync.yml 的 retention）。本包用例的时间跨度
+		// 远小于它，所以这个值对它们是中性的；专门测它的用例自己改写。
+		Retention: 95 * 24 * time.Hour,
+		Now:       now,
 	}
 }
 
@@ -768,7 +771,7 @@ func TestDuplicateAlarmSkipsEndedWindows(t *testing.T) {
 	}
 }
 
-// 验证公告保留期（默认 95 天，推导见 types.go withDefaults 处注释）：
+// 验证公告保留期（生产值是 95 天，推导写在 config/annsync.yml 的 retention 注释）：
 // 1. 超过保留期的旧公告在 loadItems 处被过滤，不参与投影、不进 activity 桶与日历；
 // 2. 保留期以内的公告正常进入日历；
 // 3. 磁盘 news 桶依然完整保留所有历史快照（只读侧过滤，不删落盘数据）；
@@ -795,7 +798,9 @@ func TestRetentionWindowFiltersAncientAnnouncements(t *testing.T) {
 		ev("未标注时间活动", base.Add(-5*time.Hour), base.Add(5*time.Hour), annsync.StatusOK))
 
 	cfg := testCfg(func() time.Time { return base })
-	// 使用默认的 95 天 Retention（cfg.Retention 为 0，启动时 withDefaults 填充）
+	// 这条测的就是"95 天"这个窗口，所以本用例把它写死而不从 testCfg 继承：
+	// 别的用例改 testCfg 的保留期不该悄悄改掉这条的语义。
+	cfg.Retention = 95 * 24 * time.Hour
 	start(t, annsync.NewFeature(doc, w, src, nil, cfg))
 
 	waitFor(t, "全量投影完成", func() bool { return w.bulksDone() >= 1 })

@@ -145,37 +145,26 @@ func (s overrideStore) Put(recID string, o Override) error {
 	return s.doc.Put(overrideNS, recID, o)
 }
 
-// Config 的零值必须可用。
+// Config 的零值不可用：五个时长都得调用方给（生产那份来自 config/annsync.yml，
+// 见 deploy.go），Now/Logf 可以留空。
 type Config struct {
-	Interval    time.Duration // 轮询间隔，默认 30m
-	FullEvery   time.Duration // 全量校准间隔，默认 24h
-	MinGap      time.Duration // 两次 Fetch 之间的最小间隔，默认 1s（限流实测换来的）
-	BackoffBase time.Duration // 失败退避基数，默认 1m；第 n 次失败等 base×2^(n-1)，上限 max(2h, Interval)
-	Retention   time.Duration // 公告保留期，默认 95 天；超过此时间的旧公告不进投影
-	Now         func() time.Time
-	Logf        func(format string, args ...any)
+	Interval    time.Duration // 轮询间隔；0 会让循环失去延时（sync.go 的 loop 判的是 if wait > 0）
+	FullEvery   time.Duration // 全量校准间隔；0 = 每轮全量
+	MinGap      time.Duration // 两次 Fetch 之间的最小间隔（限流实测换来的）；0 = 不限流
+	BackoffBase time.Duration // 失败退避基数；第 n 次失败等 base×2^(n-1)，上限 max(2h, Interval)
+	// Retention 是公告保留期，超过这个年龄的记录不进投影。
+	// 为什么是 95 天：推导写在 config/annsync.yml 的 retention 注释上，
+	// 行为由 sync_test.go 的 TestRetentionWindowFiltersAncientAnnouncements 钉住。
+	// 0 在这里的含义是"关闭过滤"（sync.go 判 if > 0）——那是给库调用者留的出口，
+	// 不是"没填"：部署侧的值必须为正，由 LoadDeployConfig 卡。
+	Retention time.Duration
+	Now       func() time.Time
+	Logf      func(format string, args ...any)
 }
 
 func (c Config) withDefaults() Config {
-	if c.Interval <= 0 {
-		c.Interval = 30 * time.Minute
-	}
-	if c.FullEvery <= 0 {
-		c.FullEvery = 24 * time.Hour
-	}
-	if c.MinGap <= 0 {
-		c.MinGap = time.Second
-	}
-	if c.BackoffBase <= 0 {
-		c.BackoffBase = time.Minute
-	}
-	if c.Retention <= 0 {
-		// 这个数是被"周期玩法判据要同名 ≥2 期、而两期得同时留在窗口里"顶出来的：
-		// 窗口必须 ≥ 2× 相邻公告的最大发布间隔。真库 352 篇实测各玩法间隔上限
-		// 41 天（猎影合围Beta），2×41=82，余一整期的迟到量 → 95。取 63 时它刚好
-		// 漏过 41 那一档：09-21 起猎影合围Beta 被判成非周期玩法，而它当期还在开。
-		c.Retention = 95 * 24 * time.Hour
-	}
+	// 只兜 Now/Logf 两个接线依赖。五个时长不再在代码里留默认值：
+	// 唯一源是 config/annsync.yml，少给一个键就启动失败。
 	if c.Now == nil {
 		c.Now = time.Now
 	}

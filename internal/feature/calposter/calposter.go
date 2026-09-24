@@ -52,7 +52,8 @@ type Capturer interface {
 	Capture(page []byte, route string) ([]byte, error)
 }
 
-// Config 的零值不可用：Records / Cap / Label 都得给。
+// Config 的零值不可用：Records / Cap / Label 与五个部署参数（OpenAt/Warm/Workers/
+// PerImage/RetryAfter）都得给。PushDelay 是唯一允许 0 的（0 = 开闸即推）。
 type Config struct {
 	// Doc 只用来记本功能自己的账（命名空间 calposter：版本键 → 推图时刻）。
 	// 没有这份账，每次重启都会把窗口期内的版本再推一遍。
@@ -65,16 +66,16 @@ type Config struct {
 	// Label 是哪个 Provenance 取值代表版本窗口公告（main 从 stellasora 传进来）。
 	Label  string
 	Zone   *time.Location
-	OpenAt time.Duration // 开闸估计，默认 17h：见 dataset.go 的 Current
+	OpenAt time.Duration // 开闸估计：语义见 dataset.go 的 Current。它同时是渲染口径的一部分
 	// PushDelay 是"该推送的时刻"相对开闸的富余：官方版本公告与海报要传上 CDN，
-	// 开闸那一刻推往往推出一张海报位全是占位的图。0 = 开闸即推（库级默认，
-	// 部署值在 main.go 的 -poster-push-delay）。
+	// 开闸那一刻推往往推出一张海报位全是占位的图。0 = 开闸即推，是合法值不是缺值。
 	PushDelay time.Duration
 	Client    *http.Client  // nil = 不下载海报（海报位画斜纹占位）
-	Warm      time.Duration // 多久看一次数据有没有变，变了就去预热海报，默认 5m
-	// 下面三项是"一轮里怎么抓海报"的口径，语义见 dataset.go 的 Options 同名字段：
-	// options() 是全仓唯一的注入口，留空就由 Options 自己的兜底接住。
-	Workers    int           // 并发下载海报的个数
+	Warm      time.Duration // 多久看一次数据有没有变，变了就去预热海报
+	// 下面三项是"一轮里怎么抓海报"的口径，语义见 dataset.go 的 Options 同名字段。
+	// options() 是全仓唯一的注入口，所以这三项不给就等于 0 —— 而 Workers 为 0 不是
+	// 退化成串行，是把那一轮永久卡住（无缓冲 channel 没人消费）。
+	Workers    int           // 并发下载海报的个数，必须 >= 1
 	PerImage   time.Duration // 单张海报一次抓取的时间预算
 	RetryAfter time.Duration // 没拿到的那个地址多久后再试一次
 	// ArtDir 非空时海报字节落盘：海报 CDN 会掐反复整窗拉取的客户端，
@@ -88,14 +89,10 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
+	// 只兜接线依赖（Zone/Now/Logf/Template）。OpenAt/Warm/Workers/PerImage/RetryAfter
+	// 是部署参数，代码里不再留默认值：值只有一个出处，就是 config/calposter.yml。
 	if c.Zone == nil {
 		c.Zone = time.FixedZone("CST", 8*3600)
-	}
-	if c.OpenAt <= 0 {
-		c.OpenAt = 17 * time.Hour
-	}
-	if c.Warm <= 0 {
-		c.Warm = 5 * time.Minute
 	}
 	if c.Now == nil {
 		c.Now = time.Now

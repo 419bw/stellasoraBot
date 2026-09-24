@@ -36,7 +36,8 @@ import (
 // 标题会被改写，只有开启时刻不动——出图文件名、缓存键、去重记录都用它。
 const keyFmt = "200601021504"
 
-// Options 描述一次出图的口径。零值不可用：Zone / Label / Now 都得调用方给。
+// Options 描述一次出图的口径。零值不可用：Zone / Label / Now 与 Workers / PerImage /
+// RetryAfter 都得调用方给（Poster.options() 是全仓唯一的注入口，值来自部署配置）。
 type Options struct {
 	Zone   *time.Location
 	OpenAt time.Duration // fuzzy 起点与"版本算不算已开"用的开闸估计
@@ -51,8 +52,8 @@ type Options struct {
 	// 本地字节，抓与重试归后台预热轮。海报 CDN 派到国内网络这些边缘上实测要么
 	// 15KB/s、要么一发 TLS 握手就被断，把它放在用户等待的那一次里就是 44 秒起。
 	Fetch bool
-	// RetryAfter 是"这张海报上次没抓到，隔多久再试"。0 = 用默认 10 分钟。
-	// 不设冷却就等于每轮都去捶一个正在拒我们的域名。
+	// RetryAfter 是"这张海报上次没抓到，隔多久再试"。不设冷却就等于每轮都去捶一个
+	// 正在拒我们的域名，所以它必须是正数。
 	RetryAfter time.Duration
 	// Art 是海报字节的缓存，跨次出图复用（同一份数据过一分钟重画时不必再下一遍）。
 	// nil = 每次都现取。
@@ -62,8 +63,11 @@ type Options struct {
 	// ClientHello 后立刻 RST（Go/curl/Chrome 三家一致），而同一批 key 在 OSS
 	// 传输加速端点上能直读到、字节与 CDN 那份逐字节相同。它是兜底不是首选：
 	// 加速端点没有边缘缓存，每一次都回源，走多了是在替对方多掏回源与加速流量。
-	AltArt   func(url string) string
-	Workers  int // 下载海报的并发，默认 4
+	AltArt func(url string) string
+	// Workers 是下载海报的并发数，必须 >= 1：给 0 不是退化成串行，是把那一轮永久卡住
+	// —— jobs 是无缓冲 channel，一个 worker 都不起就没人消费。
+	Workers int
+	// PerImage 是单张海报一次抓取的时间预算，超了就画占位继续走。
 	PerImage time.Duration
 	Logf     func(format string, args ...any)
 }
@@ -71,15 +75,6 @@ type Options struct {
 func (o Options) withDefaults() Options {
 	if o.Zone == nil {
 		o.Zone = time.FixedZone("CST", 8*3600)
-	}
-	if o.Workers <= 0 {
-		o.Workers = 4
-	}
-	if o.PerImage <= 0 {
-		o.PerImage = 20 * time.Second
-	}
-	if o.RetryAfter <= 0 {
-		o.RetryAfter = 10 * time.Minute
 	}
 	if o.AltArt == nil {
 		o.AltArt = acceleratedPoster

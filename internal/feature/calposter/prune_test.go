@@ -50,10 +50,10 @@ func startedPoster(t *testing.T, recs *recBox, cap Capturer, doc store.Doc, now 
 	t.Helper()
 	api := newAPI()
 	api.targets = targets // 与生产一致：目标来自 api.TargetsFor 的订阅表
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: doc, Records: recs.recs, Cap: cap, Label: "version", Zone: zone,
 		Now: func() time.Time { return now },
-	})
+	}))
 	p.api = api
 	if err := p.loadSent(); err != nil {
 		t.Fatal(err)

@@ -55,6 +55,14 @@ func main() {
 	}
 }
 
+// featureConfigDir 是各功能配置文件所在的目录：与总配置同级、按 cwd 相对定位
+// （deploy/phone/start.sh 先 cd 到脚本目录，所以手机上那份 config/ 就在部署目录里）。
+const featureConfigDir = "config"
+
+func featureConfigPath(name string) string {
+	return filepath.Join(featureConfigDir, name+".yml")
+}
+
 func run() error {
 	configPath := flag.String("config", "config.yml", "部署配置文件：机器级参数在这份文件里，各功能参数在它旁边的 config/<功能>.yml 里")
 	flag.Parse()
@@ -70,6 +78,18 @@ func run() error {
 	// 先把进程真正吃进去的每个值连注释打一遍，再谈凭据与网络：这样"值从文件搬到
 	// 进程里"这件事，不握一份能连上平台的凭据也核得了。
 	cfgFile.Dump(logf)
+
+	// 所有配置读完才开始动手：缺一个文件、配错一个值，不该等身份确认走通网络之后
+	// 才暴露。出图功能由 chrome 那一项决定，关着就不要求它那几个配置文件存在。
+	var posterDC calposter.DeployConfig
+	if cfg.Chrome != "" {
+		dc, file, err := calposter.LoadDeployConfig(featureConfigPath("calposter"))
+		if err != nil {
+			return err
+		}
+		file.Dump(logf)
+		posterDC = dc
+	}
 
 	zone, err := parseZone(cfg.TZ)
 	if err != nil {
@@ -123,18 +143,19 @@ func run() error {
 	)
 	if cfg.Chrome != "" {
 		browser := &render.Browser{Bin: cfg.Chrome}
-		poster = calposter.New(calposter.Config{
-			Doc:       doc,
-			Records:   func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
-			Cap:       browser,
-			ArtDir:    artDir(cfg.DB),
-			Label:     stellasora.ProvVersion,
-			Zone:      zone,
-			PushDelay: 30 * time.Minute, // 等官方公告与海报传上 CDN；下一步进 config/calposter.yml
-			Client:    &http.Client{Timeout: 30 * time.Second},
-			Reg:       reg,
-			Logf:      logf,
-		})
+		// ToConfig 只往接线好的 Config 上盖部署数值：那六个数的唯一出处是
+		// config/calposter.yml，代码里已经不留默认值。
+		poster = calposter.New(posterDC.ToConfig(calposter.Config{
+			Doc:     doc,
+			Records: func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
+			Cap:     browser,
+			ArtDir:  artDir(cfg.DB),
+			Label:   stellasora.ProvVersion,
+			Zone:    zone,
+			Client:  &http.Client{Timeout: 30 * time.Second},
+			Reg:     reg,
+			Logf:    logf,
+		}))
 		biliCookie := strings.TrimSpace(creds.BiliCookie)
 		if biliCookie != "" {
 			logf("biliwatch: 已配置 B站登录态 Cookie (长度 %d 字节)，防风控模式已就绪", len(biliCookie))

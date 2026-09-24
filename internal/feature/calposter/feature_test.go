@@ -239,10 +239,10 @@ func TestPushDelayShiftsPushNotOpen(t *testing.T) {
 		t.Helper()
 		api := newAPI()
 		api.targets = []string{"g:grp"}
-		p := New(Config{
+		p := New(knobs(Config{
 			Doc: storetest.NewMem(), Records: recs.recs, Cap: &fakeCap{}, Label: "version",
 			Zone: zone, Now: func() time.Time { return now }, PushDelay: delay,
-		})
+		}))
 		p.api = api
 		if err := p.loadSent(); err != nil {
 			t.Fatal(err)
@@ -497,11 +497,11 @@ func TestRoundFetchesArtOncePerFingerprint(t *testing.T) {
 	)
 	// Client 必须在 Start 之前配好：Start 立刻跑的那一轮会读它，事后改 p.cfg.Client
 	// 既是竞态，又会让那一轮按"不要海报"的口径把指纹变化消费掉。
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: storetest.NewMem(), Records: recs.recs,
 		Cap: &fakeCap{}, Label: "version", Zone: zone, Client: cdn.Client(),
 		Now: func() time.Time { return at("2026-09-08 20:00") },
-	})
+	}))
 	if err := p.Start(context.Background(), newAPI()); err != nil {
 		t.Fatal(err)
 	}
@@ -548,10 +548,10 @@ func TestCalendarCommandRepliesWithImage(t *testing.T) {
 	cap := &fakeCap{}
 	api := newAPI()
 	reg := command.NewRegistry()
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: storetest.NewMem(), Records: recs.recs,
 		Cap: cap, Label: "version", Zone: zone, Reg: reg, Now: func() time.Time { return at("2026-09-08 20:00") },
-	})
+	}))
 	if err := p.Start(context.Background(), api); err != nil {
 		t.Fatal(err)
 	}
@@ -598,11 +598,11 @@ func TestImageCommandPathNeverHitsNetwork(t *testing.T) {
 
 	recs := artRecs(cdn.URL)
 	cap := &fakeCap{}
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: storetest.NewMem(), Records: recs.recs,
 		Cap: cap, Label: "version", Zone: zone, Client: cdn.Client(),
 		Now: func() time.Time { return at("2026-09-08 20:00") },
-	})
+	}))
 	if _, err := p.Image(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
@@ -628,11 +628,11 @@ func TestWarmedPosterShowsUpInCommandImage(t *testing.T) {
 
 	recs := artRecs(cdn.URL)
 	cap := &fakeCap{}
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: storetest.NewMem(), Records: recs.recs,
 		Cap: cap, Label: "version", Zone: zone, Client: cdn.Client(),
 		Now: func() time.Time { return at("2026-09-08 20:00") },
-	})
+	}))
 	p.round(context.Background()) // 后台那一轮允许抓
 	if _, err := p.Image(context.Background(), ""); err != nil {
 		t.Fatal(err)
@@ -656,11 +656,11 @@ func TestFailedPosterRetriesOnlyAfterCooldown(t *testing.T) {
 
 	recs := artRecs(cdn.URL)
 	now := at("2026-09-08 20:00")
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: storetest.NewMem(), Records: recs.recs,
 		Cap: &fakeCap{}, Label: "version", Zone: zone, Client: cdn.Client(),
 		Now: func() time.Time { return now },
-	})
+	}))
 	for i := 0; i < 3; i++ {
 		p.round(context.Background())
 	}
@@ -668,7 +668,7 @@ func TestFailedPosterRetriesOnlyAfterCooldown(t *testing.T) {
 		t.Fatalf("冷却期内重试了 %d 次, want 1 次", n)
 	}
 
-	now = now.Add(11 * time.Minute) // 默认冷却 10 分钟
+	now = now.Add(11 * time.Minute) // 本用例的冷却是 knobs 给的 10 分钟
 	p.round(context.Background())
 	if n := atomic.LoadInt32(&hits); n != 2 {
 		t.Errorf("过了冷却没重拉，共 %d 次", n)
@@ -686,11 +686,11 @@ func TestConcurrentWarmersFetchEachPosterOnce(t *testing.T) {
 	defer cdn.Close()
 
 	recs := artRecs(cdn.URL)
-	p := New(Config{
+	p := New(knobs(Config{
 		Doc: storetest.NewMem(), Records: recs.recs,
 		Cap: &fakeCap{}, Label: "version", Zone: zone, Client: cdn.Client(),
 		Now: func() time.Time { return at("2026-09-08 20:00") },
-	})
+	}))
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
@@ -740,11 +740,11 @@ func TestArtCacheSurvivesRestart(t *testing.T) {
 		// ctx 每轮都停掉：真重启时旧进程死透，这里不能留着一个旧 loop 的
 		// 预热轮在后台和"新实例"抢同一块缓存目录。
 		ctx, stop := context.WithCancel(context.Background())
-		p := New(Config{
+		p := New(knobs(Config{
 			Doc: storetest.NewMem(), Records: recs.recs,
 			Cap: &fakeCap{}, Label: "version", Zone: zone, ArtDir: dir,
 			Client: cdn.Client(), Now: func() time.Time { return at("2026-09-08 20:00") },
-		})
+		}))
 		p.round(ctx)
 		stop()
 		mu.Lock()

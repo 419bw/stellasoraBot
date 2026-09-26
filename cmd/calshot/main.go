@@ -67,14 +67,20 @@ func main() {
 	// 每轮把"现在"推前一分钟：同一分钟再要一次是 PNG 缓存命中（几乎 0 成本），
 	// 推到下一分钟 PNG 过期，才看得出海报缓存有没有把重下载省掉。
 	now := time.Now()
+	// 这四个数是本工具的用例前提，不是部署默认值：calshot 不读 config/calposter.yml
+	// （它有自己的 -db/-key/-chrome/-noart）。机器人那份的出处只有那个文件。
 	ps := calposter.New(calposter.Config{
-		Records: func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, stellasora.SourceName) },
-		Label:   stellasora.ProvVersion,
-		Client:  client,
-		Now:     func() time.Time { return now },
-		ArtDir:  filepath.Join(filepath.Dir(*dbPath), "art"),
-		Cap:     &render.Browser{Bin: bin, WorkDir: work, Budget: *budget, Logf: logf},
-		Logf:    logf,
+		Records:    func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, stellasora.SourceName) },
+		Label:      stellasora.ProvVersion,
+		Client:     client,
+		Now:        func() time.Time { return now },
+		ArtDir:     filepath.Join(filepath.Dir(*dbPath), "art"),
+		Cap:        &render.Browser{Bin: bin, WorkDir: work, Budget: *budget, Logf: logf},
+		OpenAt:     17 * time.Hour,
+		Workers:    4,
+		PerImage:   20 * time.Second,
+		RetryAfter: 10 * time.Minute,
+		Logf:       logf,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

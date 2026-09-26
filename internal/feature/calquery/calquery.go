@@ -34,12 +34,13 @@ type SyncStatus interface {
 	Status() (annsync.Status, error)
 }
 
-// Config 的零值必须可用。
+// Config 的零值不可用：PageSize / DefaultEndLead / DefaultSoonDays / MaxDays
+// 四个部署参数都得调用方给（生产那份来自 config/calquery.yml）。
 type Config struct {
-	PageSize        int           // 每页列几条，默认 8
-	DefaultEndLead  time.Duration // 「快结束」不带参数时的窗口，默认 48h
-	DefaultSoonDays int           // 「即将」不带参数时的天数，默认 7
-	MaxDays         int           // 「即将」天数上限，默认 60
+	PageSize        int           // 每页列几条，必须 >= 1（分页要拿它做除法）
+	DefaultEndLead  time.Duration // 「快结束」不带参数时的窗口
+	DefaultSoonDays int           // 「即将」不带参数时的天数
+	MaxDays         int           // 「即将」天数上限
 	Zone            *time.Location
 	Now             func() time.Time
 	Status          SyncStatus
@@ -47,18 +48,7 @@ type Config struct {
 }
 
 func (c Config) withDefaults() Config {
-	if c.PageSize <= 0 {
-		c.PageSize = 8
-	}
-	if c.DefaultEndLead <= 0 {
-		c.DefaultEndLead = 48 * time.Hour
-	}
-	if c.DefaultSoonDays <= 0 {
-		c.DefaultSoonDays = 7
-	}
-	if c.MaxDays <= 0 {
-		c.MaxDays = 60
-	}
+	// 四个部署参数不在这里兜：唯一源是 config/calquery.yml。
 	if c.Zone == nil {
 		c.Zone = time.FixedZone("CST", 8*60*60)
 	}
@@ -88,7 +78,7 @@ func (f *feature) Name() string { return "calquery" }
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
 		{Name: "events", Usage: "正在进行的活动，可加页码：events 2", Run: command.Text(f.active)},
-		{Name: "ending", Usage: fmt.Sprintf("即将结束的活动，可加小时数：ending 12（默认 %d 小时）", int(f.cfg.DefaultEndLead.Hours())),
+		{Name: "ending", Usage: fmt.Sprintf("即将结束的活动，可加小时数：ending 12（默认 %s）", text.LeadHours(f.cfg.DefaultEndLead, true)),
 			Run: command.Text(f.ending)},
 		{Name: "upcoming", Usage: fmt.Sprintf("即将开始的活动，可加天数：upcoming 3（默认 %d 天）", f.cfg.DefaultSoonDays),
 			Run: command.Text(f.upcoming)},
@@ -127,7 +117,7 @@ func (f *feature) ending(ctx context.Context, m *qq.Message, args []string) (str
 		rows = append(rows, fmt.Sprintf("· %s → %s 结束（剩 %s）",
 			a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
 	}
-	return f.render(fmt.Sprintf("%d 小时内结束的活动", int(lead.Hours())), rows, pageArg(rest, 1), "ending"), nil
+	return f.render(fmt.Sprintf("%s内结束的活动", text.LeadHours(lead, true)), rows, pageArg(rest, 1), "ending"), nil
 }
 
 func (f *feature) upcoming(ctx context.Context, m *qq.Message, args []string) (string, error) {

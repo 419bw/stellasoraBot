@@ -67,10 +67,12 @@ jobs:
           fi
           go build -trimpath -ldflags="-s -w" -o "dist/xingtabot-${{ matrix.os }}-${{ matrix.arch }}${EXT}" ./cmd/xingtabot
           go build -trimpath -ldflags="-s -w" -o "dist/calshot-${{ matrix.os }}-${{ matrix.arch }}${EXT}" ./cmd/calshot
+          cp config.yml dist/
+          cp -r config dist/
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: xingtabot-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/*
+          path: dist/
           retention-days: 14

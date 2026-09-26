@@ -178,7 +178,7 @@ func buildArtLog(t *testing.T, cd, ac *httptest.Server, n int, lines *[]string) 
 		r.Poster = cd.URL + name
 		recs = append(recs, r)
 	}
-	d, err := Build(context.Background(), recs, Options{
+	d, err := Build(context.Background(), recs, optKnobs(Options{
 		Zone: zone, OpenAt: 17 * time.Hour, Label: "version",
 		Key: "202609071600", Now: at("2026-09-08 20:00"),
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
@@ -188,7 +188,7 @@ func buildArtLog(t *testing.T, cd, ac *httptest.Server, n int, lines *[]string) 
 		Logf: func(format string, args ...any) {
 			*lines = append(*lines, fmt.Sprintf(format, args...))
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -114,6 +114,7 @@ func engineConfig() annsync.Config {
 		FullEvery:   time.Hour,
 		MinGap:      time.Millisecond,
 		BackoffBase: 5 * time.Millisecond,
+		Retention:   95 * 24 * time.Hour, // 生产值：真库 fixture 最老的一篇也在窗口内
 	}
 }
 
@@ -285,6 +286,7 @@ func TestEngineRepicksUpEditedPost(t *testing.T) {
 	eng := annsync.NewFeature(doc, cal, stellasora.New(stellasora.Config{BaseURL: srv.URL}), nil, annsync.Config{
 		Interval: 10 * time.Millisecond, FullEvery: 50 * time.Millisecond,
 		MinGap: time.Millisecond, BackoffBase: 5 * time.Millisecond,
+		Retention: 95 * 24 * time.Hour,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

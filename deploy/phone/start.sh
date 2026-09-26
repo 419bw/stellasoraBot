@@ -12,7 +12,10 @@ if [ -z "$SSL_CERT_FILE" ] && [ -f "/data/data/com.termux/files/usr/etc/tls/cert
 fi
 
 chmod +x ./xingtabot ./chrome-headless
-screen -dmS xingtabot bash -c 'exec ./xingtabot -creds creds.json -db data/xingta.db -chrome ./chrome-headless >> run.log 2>&1'
+# 参数不再走命令行：机器级的值在 config.yml，各功能的值在它旁边的 config/<功能>.yml。
+# 上面已经 cd 到本目录，所以凭据、data/xingta.db、./chrome-headless 都按这里相对定位。
+# 少传一份配置文件现在是"启动即失败并打印缺哪个键"，而不是静默用旧默认值跑起来。
+screen -dmS xingtabot bash -c 'exec ./xingtabot >> run.log 2>&1'
 sleep 1
 
 if screen -list 2>/dev/null | grep -q "xingtabot"; then

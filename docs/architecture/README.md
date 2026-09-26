@@ -8,14 +8,19 @@ QQ 群机器人，从《星塔旅人》中文官网抓活动公告并监控官�
 ## 包结构与依赖方向
 
 ```
+config.yml                ← 机器级参数（凭据/数据库/浏览器/时区/两个域名/管理员）
+config/<功能>.yml          ← 每个功能一份可调参数；两者合起来是可调参数的唯一源
+
 cmd/                      ← 唯一的组装点
-  xingtabot/main.go       ← 生产入口：把下面所有包接线并装配 activeSink 多媒体提供者
+  xingtabot/main.go       ← 生产入口：把下面所有包接线并装配 activeSink 多媒体提供者；
+                             每个功能那几行顺带读它自己的 config/<功能>.yml
   qqsim/main.go           ← 本地网关模拟器 + 压测驾驶舱
   qqprobe/main.go         ← 真连调试工具（脱敏输出）
   qqwatch/main.go         ← 真连事件采集
   calshot/main.go         ← 本地离线海报出图测试工具
 
 internal/
+  config/                 ← 配置文件的通用读入：形状校验、注释收集、启动日志回显（零业务词）
   qq/                     ← QQ 平台薄客户端（token/签名/HTTP/WS/去重/Hub/MediaCache）
   store/                  ← bbolt Doc 接口 + 实现 + memDoc 测试替身
   render/                 ← 通用无头浏览器驱动（视口测量、无头 Chromium 截图，零业务词；两趟各挂默认 60s 墙钟上限）
@@ -40,6 +45,8 @@ internal/
 
 依赖方向严格单向：`cmd → feature → command/annsync → kernel → qq/store/render`。
 功能之间不互相 import，通过 `kernel.API` 和共享接口交互。
+`internal/config` 是只 import 标准库的叶子：`cmd` 与每个 `feature` 都可以向下依赖它
+（功能包自己的 `deploy.go` 声明本功能那份配置的形状与校验），它的名字里没有任何业务词。
 
 ## 分层契约
 
@@ -65,7 +72,28 @@ internal/
 海报模板内嵌在 `internal/feature/calposter/template.html`，动态模板内嵌在 `internal/feature/biliwatch/template.html`。
 业务何时出图、出哪张图、缓存怎么管、发过没有，全部下沉在各自的功能包内完全自治。
 
-关掉一个功能 = 删掉 `main.go` 里对应那行 `rt.Register(...)`。它的命令、定时任务、命名空间写入一起停。
+关掉一个功能 = 删掉 `main.go` 里对应那行 `rt.Register(...)`，以及它自己那份
+`config/<功能>.yml`。它的命令、定时任务、命名空间写入一起停。两处要一起删这件事由
+`cmd/xingtabot` 的反向锁测试兜住：`config/` 里的文件集合、`main.go` 里
+`featureConfigPath("...")` 喂过的名字、测试登记的功能表三者必须一致，孤儿文件与缺失文件都红。
+
+### 配置分层：总配置 + 每功能一份，文件是唯一源
+
+- **形状由功能包自己导出**：每个功能在自己的 `deploy.go` 里声明 `DeployConfig`、
+  `LoadDeployConfig(path)` 与 `ToConfig(Config) Config`。"哪个键必须为正""`workers` 为 0
+  为什么是挂死而不是串行""`pushDelay` 的 0 为什么是合法值"这些判断本来就写在该包的字段注释里，
+  schema 住在这儿就不用把功能知识搬到组装层去。
+- **`internal/config` 因此是干净的叶子**：只有 `Dur`（时长只认字符串）、`Load`（形状校验 +
+  注释收集）、`Bad`（一次报全）、`Dump`（把进程真正吃进去的每个值连注释打到启动日志），
+  没有一个业务词。
+- **代码里没有兜底字面量**：各包 `withDefaults()` 只兜接线依赖（`Zone`/`Now`/`Logf`/
+  `Fetcher`/`Template`），部署参数一律不兜。于是 `Config` 的零值不可用，包注释按这个口径改写。
+- **代价交底**：想一眼看完所有参数要开七个文件，所以启动时那几份 `Dump` 输出就是运行时聚合视图；
+  以及"改一个参数"从"改代码重编"变成"改文件重启"，手机侧因此不必再传二进制。
+- **注释不参与校验**：少一句注释照样跑得对，用"起不来"去逼写注释是把写作规范提到配置正确性的
+  档位上。入库那七份文件由 CI 检查每行都带着注释
+  （`TestShippedConfigYMLKeepsItsComments`、`TestShippedFeatureConfigsLoadWithComments`），
+  现场改的那份则不做此要求。
 
 ### 推送目标管理与多主题订阅（target 包）
 - **按主题独立订阅**：群管理员通过 `push on/off [topic]` 可以独立订阅不同业务模块的推送（如 `expiry` 到期提醒、`poster` 版本日历海报、`bili` B站动态）。
@@ -93,7 +121,7 @@ calquery.active() / ending() / upcoming()
 
 2. 版本日历海报链（calposter）：
 annsync 投影出的 []Rec（ReadRecs，功能自己按 Provenance 过滤版本窗口）
-       ↓ 每 -warm 一轮（启动立刻先跑一轮）
+       ↓ 每 warm（config/calposter.yml）一轮，启动立刻先跑一轮
 calposter.warmArt → 只补本窗缺的海报字节：每张先问公告里的原地址，被拒才换 OSS 传输加速
        ↓            端点补一次；失败的 URL 进 10 分钟冷却，同一 URL 并发只抓一次
 calposter.Image(key)   ← 「日历」命令走这条：只读本地字节，零网络，缺海报就画占位。
@@ -114,7 +142,7 @@ qq.UploadGroupImage 四步 → file_info → msg_type=7
 
 3. B站官方动态监听链（biliwatch）：
 api.bilibili.com
-       ↓ 每 -bili-interval (默认 3 分钟一轮，启动时先跑一轮建立基线)
+       ↓ 每 interval（config/biliwatch.yml，5 分钟一轮；启动时先跑一轮建立基线）
 biliwatch.round()
   ├─ fetcher.FetchLatest() (访客 CookieJar + WBI 混淆签名 space/feed)
   ├─ 发现未推送新动态 (按时间倒序遍历，确保旧动态先入队、聊天流时序正确)
@@ -210,11 +238,11 @@ main.activeSink（只管出图与发送，不参与记账）
   以前用"排序后的下标"（`#x0`~`#x2`、`vi0.png`），新版本一出现下标全体左移，同一个文件名下的内容就换了。
 - **当前版本 = 已开闸的最新一个**（`act0 + openOffsetMs <= now`），不是"窗口含今天"：版本交接那天新旧两窗
   重叠（旧版本只剩兑换尾段），按窗口判会同时冒出两个"当前版本"，而且默认挑到旧的那个。
-- **开闸偏移 17:00 由数据下发**：`openOffsetMs` 写在 `data.json`（Go 侧 `openAt` 常量），模板读 `DATA.openOffsetMs`。
-  这个数以前只活在模板里，机器人出图那份要再存一份，两边必然漂移。**它只管"新版本算不算已开"**
-  （当值判定、常驻玩法判据、页面 fuzzy 起点），不管推送时刻——推送另有 `PushDelay`
-  （`-poster-push-delay`，默认 30m）：`pushAt = 开闸 + PushDelay`，`armPushes` 排它、过气预算
-  （`pushGrace`）也从它起算。把这两个数当同一个来调，会连带动到渲染口径。
+- **开闸偏移 17:00 由数据下发**：`openOffsetMs` 写在 `data.json`（值来自 `config/calposter.yml` 的 `openAt`），
+  模板读 `DATA.openOffsetMs`。这个数以前只活在模板里，机器人出图那份要再存一份，两边必然漂移。
+  **它只管"新版本算不算已开"**（当值判定、常驻玩法判据、页面 fuzzy 起点），不管推送时刻——
+  推送另有同一份文件里的 `pushDelay`（30m）：`pushAt = 开闸 + pushDelay`，`armPushes` 排它、
+  过气预算（`pushGrace`）也从它起算。把这两个数当同一个来调，会连带动到渲染口径。
 - 模板 `internal/feature/calposter/template.html` 是**内嵌的运行时资产**（机器人自己出图要用它），产物页
   `.probe/timetable/web/{data.json,calendar.html}` 与全部校验脚本仍在 `.probe/`（不入库）；
   `.probe/calgen` 的 Go 渲染器冻结在旧天格模型，`.probe/timetable/web` 读的是上面这份模板。
@@ -253,6 +281,9 @@ main.activeSink（只管出图与发送，不参与记账）
 | CI 持续集成 | GitHub Actions (`.github/workflows/ci.yml`) | push / PR 自动化触发，Linux 容器全量跑测与跨平台构建 |
 | 并发正确性与竞态 | `go test -race ./...` | CI 环境 (Ubuntu gcc) / 本机容器 `xingta-race:go1.26-1.27`（`--entrypoint bash` + `PATH=/opt/g126/bin:...`，挂载仓库跑全量约 75s） |
 | 依赖与静态检查 | `go mod verify` + `go vet ./...` | CI 自动运行 |
+| 配置文件的写坏法 | `internal/config/config_test.go`（少一个键、值留空、时长写成裸数字、键名拼错、同一个键写两遍、功能文件里混进机器级键，各红一次） | 任何环境 |
+| 每个值落到对的包 | `cmd/xingtabot/wiring_test.go`（六份功能配置各喂一组互不相同的可辨值，逐字段核对 `ToConfig` 落点；两个同名 `pageSize` 串了要红；负对照 = 把 `calquery.ToConfig` 写死成 6） | 任何环境 |
+| 配置文件与接线双向锁 | `cmd/xingtabot/config_test.go`（`config/` 目录、`main.go` 里 `featureConfigPath` 的实参、测试登记表三份清单必须一致；入库那几份文件逐个过加载器且每行带注释） | 任何环境 |
 | 多平台跨架构编译 | Linux (amd64, arm64) + Windows (amd64) | CI 矩阵编译并上传发布产物 |
 | 单飞并发与防轰炸 | `internal/feature/biliwatch/biliwatch_test.go` | 20 goroutine 瞬发并发合并测试 + 倒序时序与冷启动基线测试 |
 | 解析器回归 | `internal/stellasora/parse_test.go` (变异表) | 变异表驱动测试，核验 v3 正则切分稳定性 |
@@ -264,22 +295,24 @@ main.activeSink（只管出图与发送，不参与记账）
 | 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG（5 分钟桶）与海报两级缓存、singleflight、推图排期与账本；负对照 `python .probe/mutate/pushmutate.py`） | 任何环境 |
 | 抓取只在后台 | `internal/feature/calposter/*_test.go`（命令路径零网络请求、缺海报照常出图、预热抓到才带图、失败按 RetryAfter 冷却、并发预热同 URL 只抓一次；海报取字节先问原地址、被拒才换候选域、两边都失败才画占位；负对照 `python .probe/mutate/artmutate.py`） | 任何环境 |
 | 入口阻塞压测 | `go run ./.probe/posterload -mode=stall\|ws\|warm\|chrome`（真 Hub + 真命令表 + 真 calposter，画布是可控耗时假件；量排队等待、心跳间隔、判死、预热开销、并发浏览器进程数） | 本机 |
-| 平台模拟与端到端 | `cmd/qqsim` + `cmd/xingtabot -creds` | 本机沙箱与真连验证 |
+| 平台模拟与端到端 | `cmd/qqsim` + `cmd/xingtabot`（参数读 `config.yml` 与 `config/<功能>.yml`） | 本机沙箱与真连验证 |
 | 真库真浏览器出图 | `go run ./cmd/calshot -db .probe/livesync.db -repeat 3`（三段耗时打进日志；-noart 只核结构） | 本机 Chrome |
 | 冷启动验证 | `.probe/livesync/main.go` | 本机 |
 
 ## 构建与运行
 
 ```bash
-# 本地运行（纯文本模式）
-go run ./cmd/xingtabot -creds creds.json -db data/xingta.db
+# 本地运行：机器级参数（凭据/数据库/浏览器/时区/两个域名）读仓库根的 config.yml，
+# 各功能的参数读它自己那份 config/<功能>.yml
+go run ./cmd/xingtabot
 
-# 完整出图模式（启用日历海报与 B站动态推图）
-go run ./cmd/xingtabot -creds creds.json -db data/xingta.db \
-  -chrome "C:/Program Files/Google/Chrome/Application/chrome.exe" \
-  -bili-interval 3m
+# 换一套路径：拷一份改了再指过去（config.yml 里 chrome 留空 = 纯文本模式，不出图）。
+# 只有总配置的位置由 -config 说了算，config/ 始终按当前工作目录相对定位——
+# 所以"换一套机器级参数"是拷一个文件，"换一套功能参数"要么改 cwd 要么整目录拷。
+cp config.yml .probe/config.local.yml
+go run ./cmd/xingtabot -config .probe/config.local.yml
 
-# 离线批量生成日历长图
+# 离线批量生成日历长图（calshot 不读配置文件，它有自己的 -db/-chrome/-key/-noart）
 go run ./cmd/calshot -db data/xingta.db -repeat 1
 ```
 
@@ -290,7 +323,7 @@ go run ./cmd/calshot -db data/xingta.db -repeat 1
 3. **bbolt 不 mkdir**：`openDB()` 先 `os.MkdirAll` 再开库。data/ 在干净检出里不存在。
 4. **command 注册在 Feature.Start()**：不是 New()。启动日志里 `命令:` 为空是正常的（打印在 rt.Run 之前）。
 5. **被动回复不降级为主动消息**：触上限只记日志，绝不绕过。
-6. **时区假设**：官网日期默认 +08:00，无法从文本验证。若官方用 JST 则全部偏 1 小时。
+6. **时区假设**：官网日期默认 +08:00，无法从文本验证。若官方用 JST 则全部偏 1 小时。这个值是 `config.yml` 的 `tz`，一处生效到日历、海报、到期提醒与队列的当日额度切线——以前额度切线硬编码在 `queue.DefaultPolicy()` 里，与 `tz` 各持一处。
 7. **空壳文件陷阱**：rm -rf 后"对照记录还原"会产生大小正确内容全零的文件。判恢复要读内容，受害集合正好是 .gitignore 排除的目录。
 8. **B站 WBI 签名与访客池**：B站 Web 端动态接口启用了 WBI 混淆签名校验，直接请求返回 `-403`。通过请求首页预热提取 `img_key` / `sub_key`、进行字符重排并拼接加盐 MD5，并在客户端维护带 CookieJar 的访客会话池，彻底免去登录态与账号被封风险。
 9. **Singleflight 并发单飞与 Panic 保护**：多群瞬间出队推图时，若不合并会导致几十个 headless Chrome 进程同时启动压垮 CPU。必须通过 Singleflight 汇聚合并。但在单飞执行闭包中，若无头浏览器偶发崩溃引发 panic，会导致 group 内部 `c.done` 无法正常关闭、其余等待协程永久死锁。因此 Singleflight 内部必须带有具名返回值与 `defer func() { if r := recover(); r != nil { ... } }()` 保护。

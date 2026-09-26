@@ -87,10 +87,10 @@ func TestBuildTakesOnlyThisWindow(t *testing.T) {
 		actRec("4900-0", "画框之外的", "2026-10-20 00:00", "2026-10-27 03:59"),
 	}
 	recs[3].Status = annsync.StatusFuzzyStart
-	d, err := Build(context.Background(), recs, Options{
+	d, err := Build(context.Background(), recs, optKnobs(Options{
 		Zone: zone, OpenAt: 17 * time.Hour, Label: "version",
 		Key: "202609071600", Now: at("2026-09-08 20:00"),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +167,9 @@ func TestDetectPermanent(t *testing.T) {
 
 func TestBuildRejectsUnknownKey(t *testing.T) {
 	recs := []annsync.Rec{verRec("4540", "奋斗吧", "2026-09-08 00:00", "2026-09-22 03:59", "2026-09-29 10:59")}
-	_, err := Build(context.Background(), recs, Options{
+	_, err := Build(context.Background(), recs, optKnobs(Options{
 		Zone: zone, Label: "version", Key: "202601010000", Now: at("2026-09-08 20:00"),
-	})
+	}))
 	if err == nil || !strings.Contains(err.Error(), "202601010000") {
 		t.Errorf("未知版本键要报错并带上键本身，得到 %v", err)
 	}
@@ -210,12 +210,34 @@ func (f *fakeCap) count() int {
 	return f.calls
 }
 
+// optKnobs 是同一条前提的另一头：直接调 Build 的用例不走 Poster.options()，
+// 那三项也得有人给。
+func optKnobs(o Options) Options {
+	o.Workers = 4
+	o.PerImage = 20 * time.Second
+	o.RetryAfter = 10 * time.Minute
+	return o
+}
+
+// knobs 给测试补齐那五个"部署参数"：代码里已经没有默认值可退（唯一源是
+// config/calposter.yml），所以每个用例都得自己给。这里的数字是用例的前提，不是对那份
+// 文件的引用 —— 改配置文件不会让这些用例跟着变。
+// Warm 一律给一小时：起了后台轮的用例也不希望它在测试活着的时候真跑一轮。
+func knobs(c Config) Config {
+	c.OpenAt = 17 * time.Hour
+	c.Warm = time.Hour
+	c.Workers = 4
+	c.PerImage = 20 * time.Second
+	c.RetryAfter = 10 * time.Minute
+	return c
+}
+
 func posterFor(t *testing.T, recs []annsync.Rec, cap Capturer, now time.Time) *Poster {
 	t.Helper()
-	return New(Config{
+	return New(knobs(Config{
 		Records: func() ([]annsync.Rec, error) { return recs, nil },
 		Cap:     cap, Label: "version", Zone: zone, Now: func() time.Time { return now },
-	})
+	}))
 }
 
 func TestImageCachesUntilDataOrBucketChanges(t *testing.T) {
@@ -355,5 +377,31 @@ func TestFingerprintOnlyCaresAboutPictureFields(t *testing.T) {
 		if got := drop(mut); got != fp {
 			t.Errorf("%s：指纹变了，会白重画一张一模一样的图", name)
 		}
+	}
+}
+
+// ---------- Config → Options 的注入口 ----------
+
+// TestPosterConfigKnobsReachOptions 钉的是管道本身：Workers/PerImage/RetryAfter
+// 全仓只有 options() 这一个注入口，接线漏一项，配下去的值就不生效，
+// 而 dataset.Options 自己的兜底会把漏接伪装成"跑得正常"。
+// 所以这里故意用与兜底不同的数（7 / 3s / 9m）：漏接必然露出来。
+// 这条故意不走 knobs：它要钉的就是"我给的数原样落到 Options 上"，
+// 而 knobs 会把这三项覆盖成用例前提值。
+func TestPosterConfigKnobsReachOptions(t *testing.T) {
+	p := New(Config{
+		Records: func() ([]annsync.Rec, error) { return nil, nil },
+		Cap:     &fakeCap{}, Label: "version", Zone: zone,
+		Workers: 7, PerImage: 3 * time.Second, RetryAfter: 9 * time.Minute,
+	})
+	opt := p.options("", at("2026-09-08 12:00"), true)
+	if opt.Workers != 7 {
+		t.Errorf("Workers = %d, want 7：没接上就是 0，而 0 会把那一轮抓海报卡死", opt.Workers)
+	}
+	if opt.PerImage != 3*time.Second {
+		t.Errorf("PerImage = %v, want 3s", opt.PerImage)
+	}
+	if opt.RetryAfter != 9*time.Minute {
+		t.Errorf("RetryAfter = %v, want 9m", opt.RetryAfter)
 	}
 }

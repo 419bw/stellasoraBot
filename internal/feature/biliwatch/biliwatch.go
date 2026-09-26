@@ -18,8 +18,6 @@ import (
 const (
 	// NS 是 biliwatch 在 store.Doc 中的命名空间。
 	NS = "biliwatch"
-	// DefaultUID 是《星塔旅人》官方账号 UID。
-	DefaultUID = "3546645778139206"
 	// maxCachedItems 是内存中暂存的动态元数据条目上限（避免无界增长）
 	maxCachedItems = 30
 	// pushedMemoryTTL 是内存中已推记录的保活窗口（超期从内存清理，磁盘 BoltDB 永久保留）
@@ -31,24 +29,22 @@ type Capturer interface {
 	Capture(page []byte, route string) ([]byte, error)
 }
 
-// Config 配置 biliwatch 功能。
+// Config 的零值不可用：UID 与 Interval 是部署参数，得调用方给
+// （生产那份来自 config/biliwatch.yml）。
 type Config struct {
 	Doc      store.Doc
 	Cap      Capturer
 	Fetcher  Fetcher
-	UID      string
-	Interval time.Duration
-	Cookie   string // B站登录态 Cookie（如 SESSDATA 等），大幅降低风控概率
-	Logf     func(format string, args ...any)
+	UID      string        // 监听哪个 B站账号
+	Interval time.Duration // 隔多久问一轮；0 会让 time.NewTicker panic
+	// Cookie 是 B站登录态（如 SESSDATA 等），大幅降低风控概率。它是凭据，
+	// 从 creds.json 读，不写在配置文件里。
+	Cookie string
+	Logf   func(format string, args ...any)
 }
 
 func (c Config) withDefaults() Config {
-	if c.UID == "" {
-		c.UID = DefaultUID
-	}
-	if c.Interval <= 0 {
-		c.Interval = 5 * time.Minute
-	}
+	// UID/Interval 不在这里兜：部署参数的唯一源是 config/biliwatch.yml。
 	if c.Logf == nil {
 		c.Logf = func(string, ...any) {}
 	}

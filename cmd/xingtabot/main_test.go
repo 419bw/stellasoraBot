@@ -1,12 +1,11 @@
 package main
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
 
-// 主入口里只有两个手写的解析件：时区与提醒目标前缀。
+// 主入口里只有两个手写的解析件：时区与提醒目标前缀（逗号列表那份搬进了 internal/config）。
 // 这两个错了都是静默的——时区偏 1 小时不会报错，只会让所有活动时间都错；
 // 前缀写错不会报错，只会让投递永远失败。所以钉死它们。
 
@@ -87,14 +86,5 @@ func TestSplitTarget(t *testing.T) {
 		if id, group, err := splitTarget(in); err == nil {
 			t.Errorf("splitTarget(%q) = %q, %v：没有前缀就分不清群还是单聊，必须报错", in, id, group)
 		}
-	}
-}
-
-func TestSplitList(t *testing.T) {
-	if got := splitList("a, ,b,, c "); strings.Join(got, "|") != "a|b|c" {
-		t.Errorf("splitList = %v", got)
-	}
-	if got := splitList(""); len(got) != 0 {
-		t.Errorf("空串该切出 0 项，实际 %v", got)
 	}
 }

@@ -18,6 +18,16 @@ import (
 	"xingta/internal/store/storetest"
 )
 
+// knobs 补齐 Config 里那两个部署参数：代码已经没有默认值可退，而它们是本包用例的
+// 前提而不是对 config/biliwatch.yml 的引用 —— 改配置文件不会让这些用例变。
+// Interval 给一小时：Start 的第一轮是立刻跑的，这个值只决定"测试期间不再来第二轮"。
+// UID 用一个明显的假号：mockFetcher 不看它，真号不该出现在测试里。
+func knobs(c Config) Config {
+	c.UID = "uid-under-test"
+	c.Interval = time.Hour
+	return c
+}
+
 // mockCapturer 用于测试无头浏览器截图与计数
 type mockCapturer struct {
 	mu       sync.Mutex
@@ -236,10 +246,10 @@ func TestSingleflightAndSingleSlotCacheConcurrency(t *testing.T) {
 		retBytes: []byte("render-result-dyn-001"),
 	}
 
-	feat := New(Config{
+	feat := New(knobs(Config{
 		Doc: doc,
 		Cap: cap,
-	})
+	}))
 
 	dynID := "dyn-001"
 	// 注入动态数据以供出图
@@ -335,11 +345,11 @@ func TestColdBootProtection(t *testing.T) {
 		},
 	}
 
-	feat := New(Config{
+	feat := New(knobs(Config{
 		Doc:     doc,
 		Cap:     cap,
 		Fetcher: fetcher,
-	})
+	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -469,11 +479,11 @@ func TestMemoryBoundedEvictionAndDiskPersistence(t *testing.T) {
 	capturer := &mockCapturer{}
 	fetcher := &mockFetcher{}
 
-	feat := New(Config{
+	feat := New(knobs(Config{
 		Doc:     doc,
 		Cap:     capturer,
 		Fetcher: fetcher,
-	})
+	}))
 
 	ctx := context.Background()
 	if err := feat.Start(ctx, api); err != nil {
@@ -533,7 +543,7 @@ func TestPartialDeliveryResumesOnlyMissingTarget(t *testing.T) {
 	doc := storetest.NewMem()
 	api := &mockKernelAPI{targetList: []string{"g:group_1", "g:group_2"}}
 	fetcher := &mockFetcher{}
-	feat := New(Config{Doc: doc, Cap: &mockCapturer{}, Fetcher: fetcher})
+	feat := New(knobs(Config{Doc: doc, Cap: &mockCapturer{}, Fetcher: fetcher}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -592,7 +602,7 @@ func TestShrunkTargetSetSettlesLedger(t *testing.T) {
 	doc := storetest.NewMem()
 	api := &mockKernelAPI{targetList: []string{"g:group_1", "g:group_2"}}
 	fetcher := &mockFetcher{}
-	feat := New(Config{Doc: doc, Cap: &mockCapturer{}, Fetcher: fetcher})
+	feat := New(knobs(Config{Doc: doc, Cap: &mockCapturer{}, Fetcher: fetcher}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -639,7 +649,7 @@ func TestShrunkTargetSetSettlesLedger(t *testing.T) {
 // 也可能被运行时的并发 map 检查直接判死。这条用例的判别力在 race 通道
 // （scripts/container-verify.sh / .probe/race-run.sh），本机 git-bash 跑不了 race。
 func TestLedgerReadsAreSynchronized(t *testing.T) {
-	f := New(Config{Doc: storetest.NewMem(), Cap: &mockCapturer{}, Fetcher: &mockFetcher{}})
+	f := New(knobs(Config{Doc: storetest.NewMem(), Cap: &mockCapturer{}, Fetcher: &mockFetcher{}}))
 	f.api = &mockKernelAPI{targetList: []string{"g:a", "g:b"}}
 	f.ledger["dyn_1"] = &pushRec{Targets: map[string]time.Time{}}
 

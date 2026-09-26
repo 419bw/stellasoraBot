@@ -8,7 +8,7 @@ echo "正在优雅停止 xingtabot..."
 # 按进程名精确匹配，不按命令行：以前这里是 pgrep -f "./xingtabot -creds"，参数一挪个
 # 位置就永不匹配 —— 于是下面那段 SIGTERM 整块被跳过，只剩 screen 硬拆，bbolt 的优雅
 # 收尾不声不响就没了。所以匹配不到必须说出来，不能假装停止成功。
-PID=$(pgrep -x xingtabot 2>/dev/null)
+PID=$(pgrep -x xingtabot 2>/dev/null || pgrep -x ./xingtabot 2>/dev/null)
 if [ -z "$PID" ]; then
     echo "[x] 没 pgrep 到 xingtabot 进程：这次不会优雅退出（下面只关 screen 会话）"
 fi

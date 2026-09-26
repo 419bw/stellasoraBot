@@ -6,7 +6,7 @@ echo "=== 星塔机器人运行状态 ==="
 if screen -list 2>/dev/null | grep -q "xingtabot"; then
     echo "状态: 正在运行 (screen: xingtabot)"
     # 按进程名匹配，不按命令行：命令行一改，"正在运行"却查不到 PID 是很容易看漏的假象。
-    PID=$(pgrep -x xingtabot 2>/dev/null)
+    PID=$(pgrep -x xingtabot 2>/dev/null || pgrep -x ./xingtabot 2>/dev/null)
     if [ -n "$PID" ]; then
         echo "PID: $PID"
         ps -o pid,user,%cpu,%mem,vsz,rss,comm -p "$PID" 2>/dev/null

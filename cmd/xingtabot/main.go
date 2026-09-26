@@ -55,8 +55,8 @@ func main() {
 	}
 }
 
-// featureConfigDir 是各功能配置文件所在的目录：与总配置同级、按 cwd 相对定位
-// （deploy/phone/start.sh 先 cd 到脚本目录，所以手机上那份 config/ 就在部署目录里）。
+// featureConfigDir 是各功能配置文件所在的目录：按当前工作目录 (cwd) 定位，
+// 不随 -config 路径走（deploy/phone/start.sh 先 cd 到脚本目录，所以手机上那份 config/ 就在部署目录里）。
 const featureConfigDir = "config"
 
 func featureConfigPath(name string) string {
@@ -64,7 +64,7 @@ func featureConfigPath(name string) string {
 }
 
 func run() error {
-	configPath := flag.String("config", "config.yml", "部署配置文件：机器级参数在这份文件里，各功能参数在它旁边的 config/<功能>.yml 里")
+	configPath := flag.String("config", "config.yml", "部署配置文件：机器级参数在这份文件里，各功能参数在当前工作目录的 config/<功能>.yml 里（按 cwd 定位，不随 -config 路径走）")
 	flag.Parse()
 
 	logf := func(format string, args ...any) {

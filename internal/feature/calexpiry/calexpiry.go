@@ -103,7 +103,7 @@ func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	_ = api.RegisterTopic(target.Topic{
 		Key:  "expiry",
 		Name: "活动到期提醒",
-		Desc: "活动结束前48小时文字提醒",
+		Desc: fmt.Sprintf("活动结束前%s文字提醒", text.LeadHours(f.cfg.Lead, false)),
 	})
 	if err := f.loadSent(); err != nil {
 		return fmt.Errorf("calexpiry: 读已提醒记录: %w", err)

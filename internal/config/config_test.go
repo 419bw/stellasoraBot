@@ -227,10 +227,13 @@ func TestLoadRunRejectsBlankRequiredStrings(t *testing.T) {
 	}
 }
 
-func TestLoadRunRejectsEmptyAdminItem(t *testing.T) {
-	_, err := loadRun(t, replaceValue(t, runBody, "admin", `["ok", "  "]`))
-	if err == nil || !strings.Contains(err.Error(), "空串") {
-		t.Errorf("admin 里一个空项该被拒（原来 splitList 是静默跳过的）: %v", err)
+func TestLoadRunFiltersEmptyAdminItem(t *testing.T) {
+	r, err := loadRun(t, replaceValue(t, runBody, "admin", `["ok", "  ", "ok2"]`))
+	if err != nil {
+		t.Fatalf("LoadRun 失败: %v", err)
+	}
+	if len(r.Admin) != 2 || r.Admin[0] != "ok" || r.Admin[1] != "ok2" {
+		t.Errorf("admin = %q, want [ok, ok2]", r.Admin)
 	}
 }
 
@@ -266,15 +269,16 @@ func TestBadCollectsEveryProblem(t *testing.T) {
 }
 
 func TestCleanListSemantics(t *testing.T) {
-	got, err := CleanList("k", []string{"a", " b c ", "d"})
-	if err != nil || len(got) != 3 || got[1] != "b c" {
-		t.Errorf("CleanList = %q, %v；want [a, \"b c\", d] 且无错", got, err)
+	got := CleanList([]string{"a", " b c ", "d"})
+	if len(got) != 3 || got[1] != "b c" {
+		t.Errorf("CleanList = %q；want [a, \"b c\", d]", got)
 	}
-	if got, err := CleanList("k", nil); err != nil || got != nil {
-		t.Errorf("空列表该原样给回 nil，得到 %q, %v", got, err)
+	if got := CleanList(nil); got != nil {
+		t.Errorf("空列表该原样给回 nil，得到 %q", got)
 	}
-	if _, err := CleanList("k", []string{""}); err == nil {
-		t.Error("空项该报错")
+	got = CleanList([]string{"", "  ", "x", "\t", "y"})
+	if len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Errorf("空项与空白项该被过滤丢弃，得到 %q", got)
 	}
 }
 

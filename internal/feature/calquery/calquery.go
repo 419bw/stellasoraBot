@@ -78,7 +78,7 @@ func (f *feature) Name() string { return "calquery" }
 func (f *feature) Start(ctx context.Context, api kernel.API) error {
 	cmds := []command.Cmd{
 		{Name: "events", Usage: "正在进行的活动，可加页码：events 2", Run: command.Text(f.active)},
-		{Name: "ending", Usage: fmt.Sprintf("即将结束的活动，可加小时数：ending 12（默认 %d 小时）", int(f.cfg.DefaultEndLead.Hours())),
+		{Name: "ending", Usage: fmt.Sprintf("即将结束的活动，可加小时数：ending 12（默认 %s）", text.LeadHours(f.cfg.DefaultEndLead, true)),
 			Run: command.Text(f.ending)},
 		{Name: "upcoming", Usage: fmt.Sprintf("即将开始的活动，可加天数：upcoming 3（默认 %d 天）", f.cfg.DefaultSoonDays),
 			Run: command.Text(f.upcoming)},
@@ -117,7 +117,7 @@ func (f *feature) ending(ctx context.Context, m *qq.Message, args []string) (str
 		rows = append(rows, fmt.Sprintf("· %s → %s 结束（剩 %s）",
 			a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
 	}
-	return f.render(fmt.Sprintf("%d 小时内结束的活动", int(lead.Hours())), rows, pageArg(rest, 1), "ending"), nil
+	return f.render(fmt.Sprintf("%s内结束的活动", text.LeadHours(lead, true)), rows, pageArg(rest, 1), "ending"), nil
 }
 
 func (f *feature) upcoming(ctx context.Context, m *qq.Message, args []string) (string, error) {

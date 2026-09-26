@@ -61,3 +61,20 @@ var wsRe = regexp.MustCompile(`[ \t\r\n]+`)
 func OneLine(s string) string {
 	return strings.TrimSpace(wsRe.ReplaceAllString(s, " "))
 }
+
+// LeadHours 把提前量时长格式化为小时数表达。
+// <= 0 返回 "0小时"（若 space 为 true 则为 "0 小时"）；整小时返回 "N小时"；非整小时回退到 d.String()。
+// space 为 true 时在数字与单位之间添加空格（如 "48 小时"），供命令用法等松散排版使用。
+func LeadHours(d time.Duration, space bool) string {
+	unit := "小时"
+	if space {
+		unit = " 小时"
+	}
+	if d <= 0 {
+		return "0" + unit
+	}
+	if d%time.Hour == 0 {
+		return fmt.Sprintf("%d%s", int(d.Hours()), unit)
+	}
+	return d.String()
+}

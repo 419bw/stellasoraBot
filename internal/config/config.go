@@ -105,11 +105,7 @@ func LoadRun(path string) (Run, *File, error) {
 	bad.NonEmpty("tz", r.TZ)
 	bad.NonEmpty("api", r.API)
 	bad.NonEmpty("source", r.Source)
-	admin, err := CleanList("admin", r.Admin)
-	if err != nil {
-		bad.Other(err)
-	}
-	r.Admin = admin
+	r.Admin = CleanList(r.Admin)
 	if err := bad.Err(path); err != nil {
 		return Run{}, nil, err
 	}
@@ -274,21 +270,21 @@ func (b *Bad) Err(path string) error {
 	return fmt.Errorf("%s 的参数不合用：%s", path, strings.Join(b.msgs, "；"))
 }
 
-// CleanList 逐项 TrimSpace 并拒绝空项。取代 main.go 原来的 splitList：
-// 那版静默跳过空项，而手改配置文件时多出一个空串通常是删漏了，吞掉等于替他把错留着。
-func CleanList(key string, in []string) ([]string, error) {
+// CleanList 逐项 TrimSpace 并过滤跳过空项。
+// 手改配置文件或模板渲染时偶尔产生的空行/空格项直接清洗丢弃，避免无害空白阻断进程启动。
+func CleanList(in []string) []string {
 	if len(in) == 0 {
-		return nil, nil
+		return nil
 	}
 	out := make([]string, 0, len(in))
-	for i, s := range in {
+	for _, s := range in {
 		t := strings.TrimSpace(s)
 		if t == "" {
-			return nil, fmt.Errorf("%s 的第 %d 项是空串", key, i+1)
+			continue
 		}
 		out = append(out, t)
 	}
-	return out, nil
+	return out
 }
 
 // Dump 把一个已加载的文件打成 "文件名.键 = 值｜注释第一句"。

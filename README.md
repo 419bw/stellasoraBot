@@ -133,12 +133,9 @@ go run ./cmd/xingtabot -config .probe/config.local.yml
 
 #### Android 手机 (Termux) 后台常驻
 
-项目针对 Android Termux 环境进行了专项适配（内置 DNS 优化、字体挂载及无沙箱环境兼容），GitHub Actions 每次提交均会自动打包发布适用于 Termux 的 ARM64 二进制文件，并提供了开箱即用的后台管理脚本：
+项目针对 Android Termux 环境进行了专项适配（内置 DNS 优化、字体挂载及无沙箱环境兼容），GitHub Actions 每次提交均会自动打包发布包含二进制、config.yml 及完整 config/ 目录的发布产物包（ARM64 与 AMD64），升级时解压覆盖即可同批更新。同时提供了后台管理脚本：
 
-**升级时 `xingtabot`、`config.yml`、整个 `config/` 目录必须同批传**：代码里已经没有
-默认值可退，二进制与配置文件不同批就意味着新加的键在手机上读不到，进程会拒绝启动
-（好消息是它启动即失败并点名缺哪个键，不会带着半套参数跑起来）。传完 `./stop.sh`
-再 `./start.sh`——`stop.sh` 走 SIGTERM，bbolt 才会优雅落盘。
+升级时建议解压产物包覆盖，确保二进制与配置文件同批更新。传完执行 ./stop.sh 优雅停止（发送 SIGTERM 触发 bbolt 安全落盘），再执行 ./start.sh 启动。
 
 ```bash
 cd ~/xingtabot

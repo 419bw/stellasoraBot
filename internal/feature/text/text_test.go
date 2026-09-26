@@ -108,3 +108,24 @@ func TestOneLineCollapsesEveryLineBreak(t *testing.T) {
 		}
 	}
 }
+
+func TestLeadHours(t *testing.T) {
+	cases := []struct {
+		d     time.Duration
+		space bool
+		want  string
+	}{
+		{0, false, "0小时"},
+		{0, true, "0 小时"},
+		{-time.Hour, false, "0小时"},
+		{48 * time.Hour, false, "48小时"},
+		{48 * time.Hour, true, "48 小时"},
+		{90 * time.Minute, false, "1h30m0s"},
+		{90 * time.Minute, true, "1h30m0s"},
+	}
+	for _, c := range cases {
+		if got := text.LeadHours(c.d, c.space); got != c.want {
+			t.Errorf("LeadHours(%v, %v) = %q, want %q", c.d, c.space, got, c.want)
+		}
+	}
+}

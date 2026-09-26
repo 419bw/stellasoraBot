@@ -35,7 +35,7 @@ internal/
   feature/                ← 业务功能（功能自治，功能间零互相 import）
     calposter/            ← 版本活动日历海报（完全自治：内嵌专属 template.html、dataset 装配、出图、预热与推图）
     biliwatch/            ← B站官方动态监听（完全自治：内嵌专属 template.html、WBI 签名、CookieJar、单图槽位缓存与 Singleflight）
-    calquery/             ← 查活动（活动/快结束/即将/帮助）
+    calquery/             ← 查活动（events/ending/upcoming/help）
     calops/               ← 运维操作（待确认/覆盖/确认/隐藏/显示）
     pushops/              ← 推送设置（push on/off [expiry|poster|bili] 控制群推送开关）
     calexpiry/            ← 到期提醒（定时扫描 + 主动推送）
@@ -45,7 +45,7 @@ internal/
 
 依赖方向严格单向：`cmd → feature → command/annsync → kernel → qq/store/render`。
 功能之间不互相 import，通过 `kernel.API` 和共享接口交互。
-`internal/config` 是只 import 标准库的叶子：`cmd` 与每个 `feature` 都可以向下依赖它
+`internal/config` 是只依赖标准库与 `yaml.v3` 的叶子：`cmd` 与每个 `feature` 都可以向下依赖它
 （功能包自己的 `deploy.go` 声明本功能那份配置的形状与校验），它的名字里没有任何业务词。
 
 ## 分层契约
@@ -83,7 +83,7 @@ internal/
   `LoadDeployConfig(path)` 与 `ToConfig(Config) Config`。"哪个键必须为正""`workers` 为 0
   为什么是挂死而不是串行""`pushDelay` 的 0 为什么是合法值"这些判断本来就写在该包的字段注释里，
   schema 住在这儿就不用把功能知识搬到组装层去。
-- **`internal/config` 因此是干净的叶子**：只有 `Dur`（时长只认字符串）、`Load`（形状校验 +
+- **`internal/config` 因此是干净的叶子**：只依赖标准库与 `yaml.v3`，只有 `Dur`（时长只认字符串）、`Load`（形状校验 +
   注释收集）、`Bad`（一次报全）、`Dump`（把进程真正吃进去的每个值连注释打到启动日志），
   没有一个业务词。
 - **代码里没有兜底字面量**：各包 `withDefaults()` 只兜接线依赖（`Zone`/`Now`/`Logf`/

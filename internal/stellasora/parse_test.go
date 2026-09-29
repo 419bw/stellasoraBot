@@ -439,6 +439,67 @@ func TestVersionImageOnlyEmitsNothing(t *testing.T) {
 	}
 }
 
+// 验证各种括号格式（「」、[]、【】）与各种前后缀变体（版本活动一览、版本内容一览、限时活动一览等）
+func TestVersionOverviewBracketAndSuffixVariants(t *testing.T) {
+	body := `<p>查看长图可了解活动详情~</p>` +
+		`<p>▌开放时间</p><p>活动时间：2026/09/29 00:00 ~ 2026/10/13 03:59</p>` +
+		`<p>活动商店与奖励兑换时间：2026/09/29 00:00 ~ 2026/10/20 10:59</p>`
+
+	// 1. 全角引号「」+ 版本活动一览（4730 遥远的塔）
+	r1 := stellasora.Parse(syn("「遥远的塔」版本活动一览", body), testZone)
+	if r1.Provenance != stellasora.ProvVersion {
+		t.Fatalf("「遥远的塔」版本活动一览 Provenance = %q, want version", r1.Provenance)
+	}
+	if r1.Ver == nil || r1.Ver.Name != "遥远的塔" {
+		t.Fatalf("版本窗口提取失败: %+v", r1.Ver)
+	}
+	if want := at("2026-10-13 03:59"); !r1.Ver.PlayEnd.Equal(want) {
+		t.Errorf("PlayEnd = %s, want %s", r1.Ver.PlayEnd, want)
+	}
+	if want := at("2026-10-20 10:59"); !r1.Ver.RedeemEnd.Equal(want) {
+		t.Errorf("RedeemEnd = %s, want %s", r1.Ver.RedeemEnd, want)
+	}
+	if len(r1.Entries) != 1 || r1.Entries[0].Name != "遥远的塔" {
+		t.Errorf("主活动条目 = %+v", r1.Entries)
+	}
+	if r1.Suspect() {
+		t.Errorf("干净的版本活动一览被标成待确认: %s", r1.Note())
+	}
+
+	// 2. 全角引号「」+ 版本内容一览（4731 纯长图）
+	r2 := stellasora.Parse(syn("「遥远的塔」版本内容一览", `<p><img src="https://example.com/v.jpg"></p>`), testZone)
+	if r2.Provenance != stellasora.ProvVersion {
+		t.Fatalf("「遥远的塔」版本内容一览 Provenance = %q, want version", r2.Provenance)
+	}
+	if r2.Ver != nil {
+		t.Errorf("整图内容一览不应产生版本窗口: %+v", r2.Ver)
+	}
+	if len(r2.Entries) != 0 {
+		t.Errorf("整图内容一览不应产生事件条目: %+v", r2.Entries)
+	}
+	if r2.Suspect() {
+		t.Errorf("整图版本内容一览不应报警")
+	}
+
+	// 3. 全角方头括号【】
+	r3 := stellasora.Parse(syn("【测试大版本】版本活动一览", body), testZone)
+	if r3.Provenance != stellasora.ProvVersion || r3.Ver == nil || r3.Ver.Name != "测试大版本" {
+		t.Fatalf("【】括号提取失败: Prov=%q Ver=%+v", r3.Provenance, r3.Ver)
+	}
+
+	// 4. 早期「」+ 限时活动一览（3802 形状）
+	r4 := stellasora.Parse(syn("「枪林弹雨覆黄沙」限时活动一览", body), testZone)
+	if r4.Provenance != stellasora.ProvVersion || r4.Ver == nil || r4.Ver.Name != "枪林弹雨覆黄沙" {
+		t.Fatalf("限时活动一览提取失败: Prov=%q Ver=%+v", r4.Provenance, r4.Ver)
+	}
+
+	// 5. 普通活动（不以一览结尾）绝对不能被误判为版本公告
+	r5 := stellasora.Parse(syn("「猎影合围Beta」活动说明", body), testZone)
+	if r5.Provenance == stellasora.ProvVersion {
+		t.Errorf("普通活动说明被误判为版本公告: %+v", r5)
+	}
+}
+
 func repeat(s string, n int) string {
 	out := make([]byte, 0, len(s)*n)
 	for i := 0; i < n; i++ {

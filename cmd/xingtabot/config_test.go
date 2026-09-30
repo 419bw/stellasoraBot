@@ -11,6 +11,7 @@ import (
 
 	"xingta/internal/annsync"
 	"xingta/internal/config"
+	"xingta/internal/feature/aichat"
 	"xingta/internal/feature/biliwatch"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
@@ -52,6 +53,7 @@ func TestShippedConfigYMLKeepsItsComments(t *testing.T) {
 // 它不是第二份接线：main.go 里那几行 LoadDeployConfig 才是真正的读点，
 // 这张表的价值恰恰是"第三只眼"——三处集合要一致，漏登记任何一处都会红。
 var featureFiles = map[string]func(path string) (*config.File, error){
+	"aichat":    func(p string) (*config.File, error) { _, f, err := aichat.LoadDeployConfig(p); return f, err },
 	"annsync":   func(p string) (*config.File, error) { _, f, err := annsync.LoadDeployConfig(p); return f, err },
 	"biliwatch": func(p string) (*config.File, error) { _, f, err := biliwatch.LoadDeployConfig(p); return f, err },
 	"calexpiry": func(p string) (*config.File, error) { _, f, err := calexpiry.LoadDeployConfig(p); return f, err },

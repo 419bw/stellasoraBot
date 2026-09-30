@@ -31,6 +31,7 @@ import (
 	"xingta/internal/annsync"
 	"xingta/internal/command"
 	"xingta/internal/config"
+	"xingta/internal/feature/aichat"
 	"xingta/internal/feature/biliwatch"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
@@ -97,6 +98,13 @@ func run() error {
 	}
 	file.Dump(logf)
 	opsDC, file, err := calops.LoadDeployConfig(featureConfigPath("calops"))
+	if err != nil {
+		return err
+	}
+	file.Dump(logf)
+	// aichat 这份无条件读：它管的是"文字功能"，chrome 留空也用得上。
+	// 开关不在配置文件里，在凭据里 —— modelApiKey 留空就是不接线（见下面那段）。
+	aichatDC, file, err := aichat.LoadDeployConfig(featureConfigPath("aichat"))
 	if err != nil {
 		return err
 	}
@@ -227,12 +235,34 @@ func run() error {
 
 	// ---- QQ 接入：命令机制挂在事件入口上 ----------------------------------
 
+	// 兜底只在配了模型密钥时接线。留空 = 完全不接：没凭据时那条链路只会失败，
+	// 而"非命令消息静默"本来就是今天的行为，不接线就没有任何变化。
+	var ai *aichat.Service
+	if apiKey := strings.TrimSpace(creds.ModelAPIKey); apiKey != "" {
+		logf("aichat: 已配置模型接口密钥（长度 %d 字节），没命中命令的消息交给看板娘兜底", len(apiKey))
+		ai = aichat.New(cal, aichatDC.ToConfig(aichat.Config{
+			APIKey: apiKey,
+			Zone:   zone,
+			Status: annsync.NewStatusReader(doc, src.Name()),
+			// 两段窗口沿用 calquery 那份文件的值：同一个数不在第二处存一份，
+			// 否则改了 /ending 的默认窗口，看板娘嘴里的"快结束"还是老数。
+			EndingLead: queryDC.DefaultEndLead.Duration,
+			SoonDays:   queryDC.DefaultSoonDays,
+			Logf:       logf,
+		}))
+	} else {
+		logf("aichat: 未配置 modelApiKey，@机器人的闲话继续静默（所有命令不受影响）")
+	}
+
 	hub := qq.NewHub(nil, logf)
 	// 命令走 Attach 内部的被动 worker：网关循环（心跳/判死）不等命令跑完。
 	// 返回值这里用不上（Drain 供测试与诊断），生命周期随 ctx——与 rt、网关同级。
+	// 挂了 Fallback 才会另起第二条同形制的流：慢的那一趟（等外网上游）全在那条上，
+	// 命令流照旧串行、照旧零网络。
 	command.Attach(ctx, reg, hub, sender, command.Config{
 		AdminOpenIDs: cfg.Admin,
 		Logf:         logf,
+		Fallback:     fallbackOf(ai),
 	})
 
 	gw, err := client.Gateway(ctx)
@@ -437,10 +467,25 @@ func parentDir(path string) string {
 	return path[:i]
 }
 
+// fallbackOf 把可能为 nil 的兜底服务转成机制层要的那个函数值。
+//
+// 不能直接写 `Fallback: ai.Fallback`：ai 是 nil 指针时方法值依然非 nil，
+// 机制层判"有没有挂兜底"就判错了，要等到第一条闲话进来才在空指针上炸。
+func fallbackOf(ai *aichat.Service) func(context.Context, *qq.Message) (command.Reply, error) {
+	if ai == nil {
+		return nil
+	}
+	return ai.Fallback
+}
+
 type creds struct {
 	AppID      string `json:"appId"`
 	AppSecret  string `json:"clientSecret"`
 	BiliCookie string `json:"biliCookie,omitempty"`
+	// ModelAPIKey 是闲聊兜底那个模型接口的密钥。名字厂商中立是有意的：上游是谁
+	// 由 config/aichat.yml 的 endpoint 决定，凭据字段不该跟着厂商改名。
+	// 留空 = 不接兜底，非命令消息继续静默（loadCreds 不校验它，和 biliCookie 同规格）。
+	ModelAPIKey string `json:"modelApiKey,omitempty"`
 }
 
 func loadCreds(path string) (creds, error) {

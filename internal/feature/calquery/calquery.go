@@ -100,8 +100,7 @@ func (f *feature) active(ctx context.Context, m *qq.Message, args []string) (str
 
 	rows := make([]string, 0, len(list))
 	for _, a := range list {
-		rows = append(rows, fmt.Sprintf("· %s → %s 结束（剩 %s）",
-			a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
+		rows = append(rows, text.EndingRow(a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
 	}
 	return f.render("进行中的活动", rows, pageArg(args, 1), "events"), nil
 }
@@ -114,8 +113,7 @@ func (f *feature) ending(ctx context.Context, m *qq.Message, args []string) (str
 
 	rows := make([]string, 0, len(list))
 	for _, a := range list {
-		rows = append(rows, fmt.Sprintf("· %s → %s 结束（剩 %s）",
-			a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
+		rows = append(rows, text.EndingRow(a.Title, f.fmtTime(a.End, now), text.Human(a.End.Sub(now))))
 	}
 	return f.render(fmt.Sprintf("%s内结束的活动", text.LeadHours(lead, true)), rows, pageArg(rest, 1), "ending"), nil
 }
@@ -127,8 +125,7 @@ func (f *feature) upcoming(ctx context.Context, m *qq.Message, args []string) (s
 
 	rows := make([]string, 0, len(list))
 	for _, a := range list {
-		rows = append(rows, fmt.Sprintf("· %s → %s 开始（还有 %s）",
-			a.Title, f.fmtTime(a.Start, now), text.Human(a.Start.Sub(now))))
+		rows = append(rows, text.StartingRow(a.Title, f.fmtTime(a.Start, now), text.Human(a.Start.Sub(now))))
 	}
 	return f.render(fmt.Sprintf("%d 天内开始的活动", days), rows, pageArg(rest, 1), "upcoming"), nil
 }

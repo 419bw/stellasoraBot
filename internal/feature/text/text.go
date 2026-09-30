@@ -78,3 +78,16 @@ func LeadHours(d time.Duration, space bool) string {
 	}
 	return d.String()
 }
+
+// EndingRow 排一行「某样东西在某时刻收摊、还剩多久」：· <名称> → <时刻> 结束（剩 <时长>）
+//
+// 三个入参都是调用方已经格式化好的字符串。不收 time.Duration、更不收任何业务结构体：
+// 本包要是认识"活动"，拆掉查活动的那个功能就会连带拖累别人用它。
+func EndingRow(title, timeStr, remain string) string {
+	return fmt.Sprintf("· %s → %s 结束（剩 %s）", title, timeStr, remain)
+}
+
+// StartingRow 排一行「某样东西在某时刻开始、还要等多久」，与 EndingRow 成对。
+func StartingRow(title, timeStr, remain string) string {
+	return fmt.Sprintf("· %s → %s 开始（还有 %s）", title, timeStr, remain)
+}

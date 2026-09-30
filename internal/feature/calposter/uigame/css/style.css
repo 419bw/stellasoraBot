@@ -60,7 +60,7 @@ body{
 .navtag .pin{width:20px;height:20px;color:#fff;filter:drop-shadow(0 1px 1px rgba(0,0,0,.2))}
 
 /* ---------- 双层卡纸（尖角；底层深蓝衬板向右微斜叠放） ---------- */
-.win{position:relative;width:1240px;margin:0 auto;border-radius:0;z-index:1}
+.win{position:relative;width:1240px;margin:0 auto;border-radius:0;z-index:1;--pad-x:26px}
 .win::before{ /* 深藏青衬板：3°轻斜，未旋转时略小于主纸，仅靠旋转把左上/右上/下边各甩出一点 */
   content:"";position:absolute;top:19px;left:30px;right:12px;bottom:19px;
   border-radius:0;background:linear-gradient(150deg,#2a3a6e,var(--navy-deep));
@@ -176,7 +176,7 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .drow span.t{background:#fff;color:var(--red);border:1.8px solid var(--red);border-radius:11px}
 
 /* ---------- 主绘图区 ---------- */
-.plot{position:relative;padding:10px 26px 14px}
+.plot{position:relative;padding:10px var(--pad-x) 14px}
 .grp{margin-bottom:10px}.grp:last-child{margin-bottom:0}
 .gh{display:flex;align-items:center;gap:8px;margin:0 0 6px}
 /* 和纸胶带分类标：粉/黄/蓝，前带专属矢量标，斜角 */
@@ -201,6 +201,8 @@ h1 em{font-style:normal;color:#e86a8a;-webkit-text-stroke:3.5px #fff;paint-order
 .cell.wk0{border-left:1.5px solid rgba(43,58,107,.18)}
 
 /* 红色马克笔今天线：连续无断口、半透明可透底色，笔头略宽、两层错位 + 极轻纸感毛边；无顶部圈 */
+/* lane 的左右边界即条带/日格的边界，所以红线只需百分比；.plot 的内边距改起来不必再同步 JS 里的常数 */
+.nowline-lane{position:absolute;top:0;bottom:0;left:var(--pad-x);right:var(--pad-x);pointer-events:none}
 .nowline{position:absolute;top:-10px;bottom:0;width:16px;margin-left:-8px;z-index:4;pointer-events:none;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 1200' preserveAspectRatio='none'><filter id='m'><feTurbulence type='fractalNoise' baseFrequency='0.01 0.7' numOctaves='2' seed='4' result='n'/><feDisplacementMap in='SourceGraphic' in2='n' scale='1' xChannelSelector='R' yChannelSelector='G'/></filter><g filter='url(%23m)' fill='none' stroke-linecap='round'><path d='M8 0 V1200' stroke='%23e85a6a' stroke-width='3.4' opacity='.42'/><path d='M9.2 0 V1200' stroke='%23e85a6a' stroke-width='1.8' opacity='.26'/></g></svg>");
   background-size:100% 100%;background-repeat:no-repeat}

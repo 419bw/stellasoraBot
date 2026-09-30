@@ -143,6 +143,7 @@
 
   function sizeWin(f) {
     const win = document.querySelector('.win');
+    // 96 是卡片横向总留白的实测值：其中条带区两侧内边距占 52（style.css 的 --pad-x×2），余下 44 无推导。
     const clamp = w => Math.max(w, f.n * MIN_PPD + 96);
     if (!EX) { win.style.width = (f.n * PPD + 96) + 'px'; return; }
     let w = f.n * PPD + 96;
@@ -192,9 +193,8 @@
       return s;
     };
     // 红墨水手绘虚线：出图时刻贯穿三轨道，顶部手绘红圈由 CSS 画
-    // 条带的百分比是相对 .rows 的内框，换算成相对 .plot：31 = plot 内边距 26 + rows 内边距 5，62 = 左右各那么多。
     const nowLine = () => inWin
-      ? `<div class="nowline" style="left:calc(31px + (100% - 62px) * ${(pct(now, f) / 100).toFixed(6)})"></div>` : '';
+      ? `<div class="nowline-lane"><div class="nowline" style="left:${pct(now, f).toFixed(6)}%"></div></div>` : '';
 
     document.getElementById('plot').innerHTML = TRACKS.map(t => {
       const gs = all.filter(g => g.track === t.k);

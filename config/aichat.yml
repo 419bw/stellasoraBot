@@ -7,7 +7,11 @@
 # 请求打到哪儿。存完整地址而不是域名根：换自建反代、换官方直连、换别家的
 # OpenAI 形态服务，都只改这一行。
 # 换协议族（比如 Google 原生 generateContent）改不动 —— 那要再写一个实现文件。
-endpoint: https://gemini-proxy.zheng1950537289.workers.dev/v1beta/openai/chat/completions
+# 这份反代走 Cloudflare Pages 而不是 workers.dev：同一个 CF 边缘，拦的是 TLS 里那串
+# 明文 SNI "workers.dev"（2×2 交叉试验：把它钉到能通的 Pages IP 上照样握手失败，
+# 反过来 pages.dev 的 SNI 钉到 workers.dev 的真 IP 就 200），本机默认 DNS 还会给那个
+# 名字返回假记录。pages.dev 不在这份名单里，于是国内可直连；服务节点是 SEA，不是国内点。
+endpoint: https://gemini-proxy-c50.pages.dev/v1beta/openai/chat/completions
 
 # 问哪个模型。写具体型号，别用 -latest 之类别名：别名把"用哪一档额度"这件事
 # 交给厂商，而 Flash 与 Flash-Lite 的日额度差一个数量级（控制台实测 20 vs 500）。
@@ -20,7 +24,8 @@ timeout: 5s
 # 出网代理，支持 http:// 与 socks5://（Go 原生认这两种，不需要额外依赖）。
 # 留空写 ""：表示不建自定义 Transport —— 那时 Go 仍会读 HTTP(S)_PROXY 环境变量。
 # 一旦在这里写明代理，本机的 NO_PROXY 分派对这个 client 就失效了。
-# workers.dev 在国内的可达性待实测；不通就填本机 Clash 的 http://127.0.0.1:7897。
+# 上面那份 pages.dev 地址在本机实测可直连（0.88s 拿到 Worker 的响应），所以留空。
+# 手机端那张网还没测；不通就填本机 Clash 的 http://127.0.0.1:7897（那条路实测更慢）。
 proxy: ""
 
 # 同一个人两句话之间的最小间隔。命中时只回 cd_reply 那一句，零 API 调用。

@@ -99,8 +99,12 @@ func permanentFailure(err error) (bool, string) {
 const maxResponseBytes = 1 << 20
 
 // readCapped 读到上限为止，返回正文与"是不是超限"。
-// 多留一个字节就是为了分辨"正好这么大"和"更大"。读到 EOF 或上限再返回，
-// 底层连接才回得了空闲池（README 硬坑 10：只 Close 不排空会攒 TIME_WAIT）。
+// 多留一个字节就是为了分辨"正好这么大"和"更大"。
+//
+// 正常那一路读到 EOF 才返回，底层连接因此回得了空闲池（README 硬坑 10：只 Close
+// 不排空会攒 TIME_WAIT）。超限那一路不排空：剩下的只会是反代灌回来的整页错误 HTML，
+// 为了池化一条连接去读它才是本末倒置，代价是这条连接被丢弃、下次重建，每个异常
+// 响应一次。
 func readCapped(r io.Reader) ([]byte, bool, error) {
 	data, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
 	if err != nil {

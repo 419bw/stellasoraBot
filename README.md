@@ -129,9 +129,10 @@ go run ./cmd/xingtabot -config .probe/config.local.yml
 那一行改成自己的浏览器路径，`chrome: ""` 则是纯文本模式（不出图，查询与到期提醒照常——
 这种情况下 `config/calposter.yml` 与 `config/biliwatch.yml` 连存在都不要求）。
 
-一共七份文件：`config.yml` 管机器（凭据在哪、库在哪、用哪个浏览器、哪个时区），
+一共八份文件：`config.yml` 管机器（凭据在哪、库在哪、用哪个浏览器、哪个时区），
 `config/` 下每个功能一份（`annsync` 同步节奏、`calposter` 出图与推送、`calexpiry` 提醒
-窗口、`calquery` 查询口径、`calops` 运维分页、`biliwatch` 监听谁、隔多久）。
+窗口、`calquery` 查询口径、`calops` 运维分页、`biliwatch` 监听谁、隔多久、`aichat`
+打哪个上游与冷却多久）。
 **这些参数在代码里没有默认值可退了**：文件是唯一源，少一个键、值写成空、键名拼错
 一律启动失败并点名，不会静默拿某个默认值跑起来。
 

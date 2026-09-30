@@ -774,3 +774,243 @@ func TestWorkerStopsWhenCtxCanceled(t *testing.T) {
 		t.Errorf("停机后仍处理了消息：%d → %d 条回复", before, len(h.send.group))
 	}
 }
+
+// ---- 兜底流（Config.Fallback）------------------------------------------------
+
+// 机制层只搬一个函数值：非命令消息才投给兜底，命中命令的、空文本的、群里发私聊
+// 命令的，一条都不许漏过去。
+//
+// 这条用例同时是 Drain 链式屏障的守门人：sayGroup 里的 flush 若只排空命令流，
+// 兜底回复会晚于断言到达，本用例就会飘红——这正是"屏障必须由命令流转投"的理由。
+func TestFallbackTakesOnlyUnknownText(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	h := newHarness(t, command.Config{Fallback: func(_ context.Context, m *qq.Message) (command.Reply, error) {
+		mu.Lock()
+		seen = append(seen, m.Text())
+		mu.Unlock()
+		return command.Reply{Text: "在的在的"}, nil
+	}})
+	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: echo("x")})
+	mustAdd(t, h.reg, command.Cmd{Name: "私貨", C2COnly: true, Run: echo("y")})
+
+	h.sayGroup(t, "M1", "今天天气不错", "member")
+	h.sayGroup(t, "M2", "活動", "member")
+	h.sayGroup(t, "M3", "私貨", "member") // 群里发私聊专用命令：继续静默，不能变成闲聊入口
+	h.sayGroup(t, "M4", "   ", "member")
+	h.sayC2C(t, "M5", "在吗", "USER9")
+
+	got := h.send.all()
+	// M2 是命令自己的回复（走命令流、不经兜底），M3/M4 一条都不该有。
+	if len(got) != 3 || got[0].msgID != "M1" || got[1].msgID != "M2" || got[2].msgID != "M5" {
+		t.Errorf("回复成了 %+v，want M1 兜底、M2 命令、M5 兜底三条", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(seen, "|") != "今天天气不错|在吗" {
+		t.Errorf("兜底被喂了 %q，want 只有那两条非命令文本", seen)
+	}
+}
+
+// 兜底失败要当没说过：错误只进日志，绝不拼进群消息——上游错误串里常带端点与配额，
+// 而命令那条路（dispatch 尾部）把 err.Error() 回给用户是刻意的，两种场景政策相反。
+func TestFallbackFailureIsSilent(t *testing.T) {
+	h := newHarness(t, command.Config{Fallback: func(context.Context, *qq.Message) (command.Reply, error) {
+		return command.Reply{}, errors.New("429 quota exceeded at https://upstream.test/v1")
+	}})
+	h.sayGroup(t, "M1", "闲话", "member")
+
+	if got := h.send.all(); len(got) != 0 {
+		t.Errorf("兜底失败还回了 %d 条：%v（失败静默与\"不是命令\"同口径）", len(got), got)
+	}
+	lg := h.logged()
+	if !strings.Contains(lg, "兜底") || !strings.Contains(lg, "429") {
+		t.Errorf("兜底失败没进日志：%q", lg)
+	}
+}
+
+// 空 Reply 是"决定不回话"的唯一合法出口，兜底也走它（上游内容审查吃掉回复时用）。
+func TestFallbackEmptyReplyIsSilent(t *testing.T) {
+	h := newHarness(t, command.Config{Fallback: func(context.Context, *qq.Message) (command.Reply, error) {
+		return command.Reply{Text: "   "}, nil
+	}})
+	h.sayGroup(t, "M1", "闲话", "member")
+	if got := h.send.all(); len(got) != 0 {
+		t.Errorf("空回复被发出去了：%v", got)
+	}
+}
+
+// 兜底跑在另一条流上，它卡多久都不该拖住命令。这条是"命令路径零网络"在机制层的落点：
+// 回调里是一次外网往返，压在命令流上就是闲聊拖死所有人的「日历」（冷出图本就 60s 级）。
+func TestFallbackStallDoesNotBlockCommands(t *testing.T) {
+	var once sync.Once
+	release := make(chan struct{})
+	releaseNow := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow) // 断言中途失败也别让兜底流挂着
+
+	entered := make(chan struct{})
+	var mark sync.Once
+	h := newHarness(t, command.Config{Fallback: func(context.Context, *qq.Message) (command.Reply, error) {
+		mark.Do(func() { close(entered) })
+		<-release
+		return command.Reply{Text: "久等了"}, nil
+	}})
+	mustAdd(t, h.reg, command.Cmd{Name: "活動", Run: echo("好")})
+
+	h.offerGroup(t, "M1", "闲话", "member")
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("兜底流始终没被执行")
+	}
+
+	h.offerGroup(t, "M2", "活動", "member")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := h.send.all(); len(got) > 0 {
+			if got[0].msgID != "M2" {
+				t.Errorf("先到的是 %s 的回复，命令被兜底拖住了", got[0].msgID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("兜底卡在释放闸门上时命令也没回复：两条流没分道")
+		}
+		time.Sleep(10 * time.Millisecond) // 轮询只在测试侧，产品面没有轮询
+	}
+
+	releaseNow()
+	h.flush(t)
+	if got := h.send.all(); len(got) != 2 || got[1].msgID != "M1" {
+		t.Errorf("兜底回复没落地：%+v", got)
+	}
+}
+
+// 两条流都随 ctx 退出后，Drain 必须很快返回 false。跨流交互点少一个 done 分支，
+// 这里就会永久阻塞——jobs 从不 close，往死流的 jobs 上裸投是挂死而不是 panic。
+func TestDrainNeverBlocksAfterStreamsDie(t *testing.T) {
+	h := newHarness(t, command.Config{Fallback: func(context.Context, *qq.Message) (command.Reply, error) {
+		return command.Reply{Text: "在"}, nil
+	}})
+	h.sayGroup(t, "M1", "闲话", "member")
+
+	h.cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for h.w.Drain() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() { h.w.Drain(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("流已退出而 Drain 永久阻塞：兜底流的 done 分支没接上")
+	}
+}
+
+// 兜底流已经退出、命令流却还困在一条慢命令里。少了外层 select 的 next.done 那一支，
+// Drain 会一直等到慢命令腾出位置（生产里可能就是 60 秒的冷出图），停机诊断卡死在这儿。
+func TestDrainGivesUpWhenFallbackDiesWhileCommandIsStuck(t *testing.T) {
+	var once sync.Once
+	release := make(chan struct{})
+	releaseNow := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow)
+
+	inside := make(chan struct{})
+	h := newHarness(t, command.Config{Fallback: func(context.Context, *qq.Message) (command.Reply, error) {
+		return command.Reply{Text: "在"}, nil
+	}})
+	mustAdd(t, h.reg, command.Cmd{Name: "卡住", Run: func(context.Context, *qq.Message, []string) (command.Reply, error) {
+		close(inside)
+		<-release
+		return command.Reply{Text: "好了"}, nil
+	}})
+
+	h.offerGroup(t, "M1", "卡住", "member")
+	select {
+	case <-inside:
+	case <-time.After(5 * time.Second):
+		t.Fatal("命令没开始执行")
+	}
+
+	// 两条流共用同一个 ctx：取消之后空闲的兜底流立刻就退，命令流还卡在 Run 里
+	// 没回到自己的 select，所以 w.done 仍然是开着的。
+	h.cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	blocked := make(chan bool, 1)
+	go func() { blocked <- h.w.Drain() }()
+	select {
+	case ok := <-blocked:
+		if ok {
+			t.Error("兜底流已退、命令流还困着，Drain 却报了「已排空」")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drain 在等命令流腾出来：外层 select 少了兜底流的 done 那一支")
+	}
+	releaseNow()
+}
+func TestDrainGivesUpWhenFallbackQueueFull(t *testing.T) {
+	var once sync.Once
+	release := make(chan struct{})
+	releaseNow := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow)
+
+	var mark sync.Once
+	entered := make(chan struct{})
+	h := newHarness(t, command.Config{QueueSize: 2, Fallback: func(context.Context, *qq.Message) (command.Reply, error) {
+		mark.Do(func() { close(entered) })
+		<-release
+		return command.Reply{Text: "在"}, nil
+	}})
+
+	// 先让第 1 条被兜底流取走并卡住，再灌后面三条：命令流此刻是空闲的，
+	// 每条都会被立刻派发，于是填满的是兜底队列而不是命令 inbox。
+	// 一上来就连灌四条的话，被挡的是哪条取决于调度顺序，测的就不是饱和态了。
+	h.offerGroup(t, "M1", "闲话M1", "member")
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("兜底流没被执行，饱和态构造不了")
+	}
+	for _, id := range []string{"M2", "M3", "M4"} {
+		h.offerGroup(t, id, "闲话"+id, "member")
+	}
+
+	// 第 2、3 条填满队列（容量 2），第 4 条才被丢 —— 看到丢弃日志即饱和态成立。
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(h.logged(), "兜底 inbox 已满") {
+		if time.Now().After(deadline) {
+			t.Fatalf("没等到兜底溢出日志，饱和态构造失败：%s", h.logged())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	blocked := make(chan bool, 1)
+	go func() { blocked <- h.w.Drain() }()
+	select {
+	case ok := <-blocked:
+		if ok {
+			t.Error("兜底队列还满着，Drain 却报了\"已排空\"")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drain 在等兜底队列腾空位：屏障投递少了 default 分支")
+	}
+
+	releaseNow()
+	// 队列腾空之前 Drain 会诚实报"没排空"，所以这里是有界重试而不是 flush。
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if h.w.Drain() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("兜底队列始终没排空")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := h.send.all(); len(got) != 3 {
+		t.Errorf("want M1/M2/M3 三条兜底回复（M4 在溢出时被丢弃），实际 %+v", got)
+	}
+}

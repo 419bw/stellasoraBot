@@ -158,7 +158,7 @@ func (s *Service) statusNote(now time.Time) string {
 	case st.LastSuccess.IsZero():
 		return "注意：公告还在首次同步中，上面的列表可能还不完整，别断言「什么也没有」。"
 	case st.Fails > 0:
-		return fmt.Sprintf("注意：公告源最近失败 %d 次（%s），列表可能落后于官网，涉及具体日期时提醒引航者以官网为准。",
+		return fmt.Sprintf("注意：公告源最近失败 %d 次（%s），列表可能落后于官网，涉及具体日期时提醒前辈以官网为准。",
 			st.Fails, text.Clip(text.OneLine(st.LastError), 40))
 	default:
 		return "公告数据最近同步成功于 " + text.Clock(st.LastSuccess, now, s.cfg.Zone) + "。"

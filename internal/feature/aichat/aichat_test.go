@@ -141,7 +141,7 @@ func TestFallbackAsksTheModelWithCurrentFacts(t *testing.T) {
 
 	sys := h.chat.system[0]
 	for _, want := range []string{
-		"引航者",              // 静态层：人设与称呼
+		"前辈",               // 静态层：人设与称呼
 		"【当期事实】",           // 动态段的分隔
 		"2026-09-30 12:00", // 当前时间必须带年份：省了年份模型会自己编
 		"正在进行：1 条",

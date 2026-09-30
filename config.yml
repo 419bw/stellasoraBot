@@ -4,12 +4,12 @@
 # 在 config/<功能>.yml 里（那些值归那个功能包自己解析与校验）。
 #
 # 凭据绝不写在这里 —— 这个文件要入库。creds 只给出凭据文件的路径，
-# AppID/AppSecret/B站 Cookie 仍住在那份被 .gitignore 排除的 creds.json 里。
+# AppID/AppSecret/B站 Cookie/模型密钥 仍住在那份被 .gitignore 排除的 creds.json 里。
 #
 # 本机（Windows）跑法：把这份拷成 .probe/config.local.yml 改路径，启动带
 # -config .probe/config.local.yml；仓库里这份保持手机部署的值。
 
-# 凭据文件路径（JSON: appId / clientSecret / biliCookie）。填错就启动失败并打印原因。
+# 凭据文件路径（JSON: appId / clientSecret / biliCookie / modelApiKey）。填错就启动失败并打印原因。
 creds: creds.json
 
 # bbolt 数据库文件路径。bbolt 单进程独占锁，同一路径不能起两个实例。

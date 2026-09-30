@@ -29,7 +29,8 @@ internal/
     target/               ← 推送目标管理（持久化 + 内存镜像，主题 Topic 自声明与订阅）
     queue/                ← 发送队列（多维限流、合并、退避重试、主动消息投递）
     schedule/             ← 最小堆调度器（动态改期/取消）
-  command/                ← 命令机制层（注册表 + dispatch + 被动 worker inbox + 被动回复铁律）
+  command/                ← 命令机制层（注册表 + dispatch + 被动 worker inbox + 被动回复铁律；
+                             挂了 Fallback 才有第二条同形制的兜底流）
   annsync/                ← 通用公告同步引擎（列目录→抓详情→投影→日历）
   stellasora/             ← 中文网 Source（HTTP 客户端 + 规则 v3 解析器 + 跨条合并）
   feature/                ← 业务功能（功能自治，功能间零互相 import）
@@ -39,6 +40,7 @@ internal/
     calops/               ← 运维操作（待确认/覆盖/确认/隐藏/显示）
     pushops/              ← 推送设置（push on/off [expiry|poster|bili] 控制群推送开关）
     calexpiry/            ← 到期提醒（定时扫描 + 主动推送）
+    aichat/               ← 看板娘闲聊兜底（非命令消息 → 模型接口 → 一条被动回复）
     text/                 ← 文本工具
   devtools/               ← 开发辅助（qqsim payload 生成器 + loadtest 框架）
 ```
@@ -55,12 +57,13 @@ internal/
 | 基础设施 | 暴露接口 | 消费者 |
 |----------|---------|--------|
 | store | `Doc` (Get/Put/Scan/Delete/Batch) | annsync, calops, calexpiry, target, calposter, biliwatch |
-| calendar | `View` (Active/EndingSoon/StartingSoon/All) | calquery |
+| calendar | `View` (Get/Active/Upcoming/EndingWithin) | calquery, aichat |
 | calendar | `Writer` (BulkUpsert/Upsert/Remove) | annsync |
 | target | `View` (Targets/TargetsFor/Has) | kernel.API (calexpiry, calposter, biliwatch) |
 | target | `Manager` (Enable/EnableTopic/Disable/DisableTopic/Topics) | pushops |
 | kernel | `API` (Submit/Schedule/Cancel/Calendar/Targets/TargetsFor/RegisterTopic/Topics) | Feature.Start() 参数 |
 | command | `Registrar` (Add)、`Text(fn)` 适配 | calquery, calops, calposter, pushops |
+| command | `Config.Fallback`（可选回调 + 第二条被动流；nil = 静默） | aichat |
 | stellasora | `Source` (Name/List/Fetch) | annsync |
 | render | `Capturer` (`Capture(page, route) ([]byte, error)`) | calposter, biliwatch |
 
@@ -88,10 +91,10 @@ internal/
   没有一个业务词。
 - **代码里没有兜底字面量**：各包 `withDefaults()` 只兜接线依赖（`Zone`/`Now`/`Logf`/
   `Fetcher`/`Template`），部署参数一律不兜。于是 `Config` 的零值不可用，包注释按这个口径改写。
-- **代价交底**：想一眼看完所有参数要开七个文件，所以启动时那几份 `Dump` 输出就是运行时聚合视图；
+- **代价交底**：想一眼看完所有参数要开八个文件，所以启动时那几份 `Dump` 输出就是运行时聚合视图；
   以及"改一个参数"从"改代码重编"变成"改文件重启"，手机侧因此不必再传二进制。
 - **注释不参与校验**：少一句注释照样跑得对，用"起不来"去逼写注释是把写作规范提到配置正确性的
-  档位上。入库那七份文件由 CI 检查每行都带着注释
+  档位上。入库那八份文件由 CI 检查每行都带着注释
   （`TestShippedConfigYMLKeepsItsComments`、`TestShippedFeatureConfigsLoadWithComments`），
   现场改的那份则不做此要求。
 
@@ -162,6 +165,16 @@ queue.Dispatcher (多群消息出队，整批成功后逐条回调条目自带�
 main.activeSink（只管出图与发送，不参与记账）
        ├─ Media.Kind == "poster" → calposter.Fetch() → 上传 → 发送 → calposter 记回执账
        └─ Media.Kind == "bili"   → biliwatch.Fetch() → 上传 → 发送 → biliwatch 记回执账
+
+5. 闲聊兜底链（aichat，未命中任何命令时才走）：
+@机器人 的文本 → command.dispatch 的 Lookup 未命中
+       ↓ 投进第二条被动流；命令流立刻返回 ——「命令路径零网络」在这条链上照旧成立
+aichat.Fallback：熔断窗口 → 同人冷却 → 全局令牌桶（三层拦截全在网络之前）
+       ↓ calendar.View 三段查询（EndingWithin ⊂ Active，先剔重）+ 内嵌 persona.md 静态层
+OpenAI 兼容的 Chat 面（endpoint/model/timeout 在 config/aichat.yml，key 在 creds.json）
+       ↓ 一条 Reply{Text}
+command.reply → SendGroupReply / SendC2CReply（挂在被 @ 的那条 msg_id 上，不占主动配额）
+上游失败一律静默 + 日志；只有"同一个人说太快"回一句 cd_reply。
 ```
 
 ## QQ 平台硬约束
@@ -256,6 +269,13 @@ main.activeSink（只管出图与发送，不参与记账）
   - worker 挂 **runtime ctx** 而非网关连接 ctx：断线重连不掐在途命令（seq 补发 + msg_id 去重兜底）。停机即退不排空。
   - 逐 job panic 保险丝（带栈日志，同 P2-3 哲学）。`Attach` 返回 `*Worker`，`Drain()` 是测试/压测用的排空屏障。
   - 主动消息不走这里——主动在 `kernel/queue`（限流/合并/重试/日额度），两条通道互不相干。
+- **兜底流（2026-09-30 从命令流分道）**：`command.Config.Fallback` 挂了才存在，形制与命令
+  worker 完全相同（有界 inbox、串行、逐 job panic 保险丝、挂 runtime ctx），因为复用就是那个
+  `Worker` 类型——裸 `go` 会落在保险丝之外。为什么必须另起一条：兜底要等外网上游，压在唯一
+  那条命令流上就是让闲聊拖住所有人的「日历」（冷出图单趟已 60s 级），也直接违反「命令路径零网络」。
+  于是三条流各管一段：命令流串行且零网络；兜底流串行、只跑网络；主动消息在 `kernel/queue`。
+  `Drain()` 现在是两条流的**链式屏障**：屏障由命令流转投兜底流（从外面直投会让兜底作业排在
+  屏障之后，测试看到 0 条回复却通过），任一条流退出或兜底队列满都返回 false = 没排空，绝不卡死。
 - **calendar.Store**：`sync.RWMutex` 保护。写侧只有 annsync.loop 一个 goroutine；读侧命令 dispatch 共享。
 - **queue.Dispatcher**：独立 goroutine 消费 + 定时 flush + 2 个并发 worker 出队发送。
 - **biliwatch 单槽位与单飞合并**：
@@ -294,6 +314,7 @@ main.activeSink（只管出图与发送，不参与记账）
 | file_info 内容缓存 | `internal/qq/mediacache_test.go`（同字节只合并一次、异字节各传、ttl 上限过期重传、群/单聊与不同目标隔离、Forget 后重传；`IsPlatformRejection` 只认平台明确回拒）+ `internal/command/command_test.go`（命中缓存被拒→Forget+重传再发一次；网络错不重试；新上传那份被拒不重传）；负对照 `python .probe/mutate/cachemutate.py` | 任何环境 |
 | 日历图口径与缓存 | `internal/feature/calposter/*_test.go`（版本键/当前版本判据、只取本窗记录、周期玩法判据、指纹敏感性、PNG（5 分钟桶）与海报两级缓存、singleflight、推图排期与账本；负对照 `python .probe/mutate/pushmutate.py`） | 任何环境 |
 | 抓取只在后台 | `internal/feature/calposter/*_test.go`（命令路径零网络请求、缺海报照常出图、预热抓到才带图、失败按 RetryAfter 冷却、并发预热同 URL 只抓一次；海报取字节先问原地址、被拒才换候选域、两边都失败才画占位；负对照 `python .probe/mutate/artmutate.py`） | 任何环境 |
+| 兜底闲聊与第二条被动流 | `internal/command/command_test.go`（只有未命中命令的文本投兜底：命中命令 / 空文本 / 群里发私聊命令都不投；失败静默且不把错误串回给用户；兜底卡死 5s 不拖住命令流；`Drain` 链式屏障的三种退出——流已死、命令流困着而兜底流先退、兜底队列满）+ `internal/feature/aichat/*_test.go`（临期条目不重复列、条数上限三段合计、冷却按人不跨人、令牌桶突发与不攒爆、密钥只在 header 不在 URL、字符串/整数/null 三种 `code` 都不炸解析、HTML 错误页与空 `choices` 一律降级）；负对照 `python .probe/mutate/aichatmutate.py`（八条） | 任何环境：假上游一律 `httptest`，黑洞代理下整包照常全绿 |
 | 入口阻塞压测 | `go run ./.probe/posterload -mode=stall\|ws\|warm\|chrome`（真 Hub + 真命令表 + 真 calposter，画布是可控耗时假件；量排队等待、心跳间隔、判死、预热开销、并发浏览器进程数） | 本机 |
 | 平台模拟与端到端 | `cmd/qqsim` + `cmd/xingtabot`（参数读 `config.yml` 与 `config/<功能>.yml`） | 本机沙箱与真连验证 |
 | 真库真浏览器出图 | `go run ./cmd/calshot -db .probe/livesync.db -repeat 3`（三段耗时打进日志；-noart 只核结构） | 本机 Chrome |

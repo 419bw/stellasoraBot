@@ -3,10 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"xingta/internal/annsync"
+	"xingta/internal/feature/aichat"
 	"xingta/internal/feature/biliwatch"
 	"xingta/internal/feature/calexpiry"
 	"xingta/internal/feature/calops"
@@ -144,6 +146,57 @@ uid: "uid-under-test"
 		}
 	})
 
+	// aichat 的数值一个是浮点、一个是整数（temperature 与 max_output_tokens），
+	// 接反了各自都还是合法数字、谁都不报错 —— 靠的就是这组互不相撞的可辨值。
+	t.Run("aichat", func(t *testing.T) {
+		dc, _, err := aichat.LoadDeployConfig(writeFeatureYML(t, "aichat", `
+endpoint: https://upstream.test/v1/chat/completions
+model: model-under-test
+timeout: 7s
+proxy: ""
+cooldown: 97s
+max_per_min: 5
+max_output_tokens: 137
+temperature: 0.7
+max_prompt_events: 9
+cd_reply: 太快啦，%d 秒后再来
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := dc.ToConfig(aichat.Config{})
+		if c.Endpoint != "https://upstream.test/v1/chat/completions" {
+			t.Errorf("Endpoint = %q", c.Endpoint)
+		}
+		if c.Model != "model-under-test" {
+			t.Errorf("Model = %q，想要 model-under-test", c.Model)
+		}
+		if c.Timeout != 7*time.Second {
+			t.Errorf("Timeout = %v，想要 7s", c.Timeout)
+		}
+		if c.Proxy != "" {
+			t.Errorf("Proxy = %q，想要空串（直连）", c.Proxy)
+		}
+		if c.Cooldown != 97*time.Second {
+			t.Errorf("Cooldown = %v，想要 97s", c.Cooldown)
+		}
+		if c.MaxPerMin != 5 {
+			t.Errorf("MaxPerMin = %d，想要 5", c.MaxPerMin)
+		}
+		if c.MaxOutputTokens != 137 {
+			t.Errorf("MaxOutputTokens = %d，想要 137", c.MaxOutputTokens)
+		}
+		if c.Temperature != 0.7 {
+			t.Errorf("Temperature = %v，想要 0.7", c.Temperature)
+		}
+		if c.MaxPromptEvents != 9 {
+			t.Errorf("MaxPromptEvents = %d，想要 9", c.MaxPromptEvents)
+		}
+		if !strings.Contains(c.CDReply, "%d") {
+			t.Errorf("CDReply = %q，占位符丢了", c.CDReply)
+		}
+	})
+
 	// 两个 pageSize 一起断言，且值不同：这条就是"接反了要红"的那把尺子。
 	t.Run("calquery 与 calops 的 pageSize 不串", func(t *testing.T) {
 		qdc, _, err := calquery.LoadDeployConfig(writeFeatureYML(t, "calquery", `
@@ -260,5 +313,27 @@ uid: "uid-under-test"
 	}
 	if b := bdc.ToConfig(biliwatch.Config{Cookie: "sessdata=abc"}); b.Cookie != "sessdata=abc" {
 		t.Error("biliwatch 的 Cookie 被 ToConfig 覆盖了")
+	}
+
+	// APIKey 是接线（从 creds.json 来），配置文件一个密钥都不装：ToConfig 要是
+	// 顺手盖了它，表现是"密钥明明配了却每条都 401"。
+	adc, _, err := aichat.LoadDeployConfig(writeFeatureYML(t, "aichat", `
+endpoint: https://upstream.test/v1/chat/completions
+model: model-under-test
+timeout: 5s
+proxy: ""
+cooldown: 15s
+max_per_min: 12
+max_output_tokens: 300
+temperature: 0.3
+max_prompt_events: 8
+cd_reply: 太快啦，%d 秒后再来
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := adc.ToConfig(aichat.Config{Zone: zone, APIKey: "AQ.secret", Logf: logf}); a.Zone != zone ||
+		a.APIKey != "AQ.secret" || a.Logf == nil {
+		t.Error("aichat 的接线依赖（Zone/APIKey/Logf）被 ToConfig 覆盖或清空了")
 	}
 }

@@ -164,6 +164,15 @@ type Config struct {
 	// 待处理消息。满了直接丢弃 + 记日志——消息来自 WS 补发或用户重发都不亏，
 	// 被动回复的窗口（群 5 分钟）本来就撑不过深积压。零值兜默认值。
 	QueueSize int
+	// Fallback 处理没命中任何命令的文本消息。机制层把它投给第二条被动流执行，
+	// 命令流立刻返回（见 worker.go 的 Attach）；留 nil = 静默，Config 的零值可用
+	// 这条纪律就靠它撑着。本包只搬一个函数值，谁来回话、拿什么回话都不在这里决定。
+	//
+	// 与 Cmd.Run 的约定差两点，都是刻意的：
+	//   - 返回 error 只记日志，绝不把 err.Error() 拼进回复——兜底是可选服务，
+	//     失败静默与"不是命令"同口径，而上游错误串里常带端点与配额信息。
+	//   - 返回空 Reply 就是不回话，沿用命令那条现成出口。
+	Fallback func(ctx context.Context, m *qq.Message) (Reply, error)
 }
 
 // DefaultQueueSize 是被动 inbox 的默认容量。量级依据：处理均值 <1s（文字命令
@@ -183,14 +192,26 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-func dispatch(ctx context.Context, reg *Registry, send SendAPI, cfg Config, m *qq.Message) {
+func dispatch(ctx context.Context, reg *Registry, send SendAPI, cfg Config, fb *Worker, m *qq.Message) {
 	fields := strings.Fields(m.Text())
 	if len(fields) == 0 {
 		return
 	}
 	c, ok := reg.Lookup(fields[0])
 	if !ok {
-		return // 不是命令：静默。群里 @机器人说闲话不该被回一句"没听懂"
+		if fb == nil {
+			return // 不是命令，也没人兜底：静默。群里 @机器人说闲话不该被回一句"没听懂"
+		}
+		// 不在本流就地执行：回调要等网络，命令流必须立刻腾出去接下一条命令。
+		job := func(ctx context.Context) { runFallback(ctx, send, cfg, m) }
+		select {
+		case fb.jobs <- job:
+		case <-fb.done:
+			cfg.Logf("command: 兜底流已退出，丢弃消息 %s", m.ID)
+		default:
+			cfg.Logf("command: 兜底 inbox 已满（容量 %d），丢弃消息 %s", fb.size, m.ID)
+		}
+		return
 	}
 
 	if c.C2COnly && m.IsGroup() {
@@ -209,6 +230,20 @@ func dispatch(ctx context.Context, reg *Registry, send SendAPI, cfg Config, m *q
 	}
 	if strings.TrimSpace(rep.Text) == "" && len(rep.Image) == 0 {
 		return // 命令明确表示不回话（例如后台任务已受理）
+	}
+	reply(ctx, send, cfg, m, rep)
+}
+
+// runFallback 是兜底流的作业体。它不共用 dispatch 尾部那几行，因为错误处理政策不同：
+// 命令失败要让群友看见（那是他自己点的命令），兜底失败要当没说过（那是可选服务）。
+func runFallback(ctx context.Context, send SendAPI, cfg Config, m *qq.Message) {
+	rep, err := cfg.Fallback(ctx, m)
+	if err != nil {
+		cfg.Logf("command: 兜底 %s 失败: %v", m.ID, err)
+		return
+	}
+	if strings.TrimSpace(rep.Text) == "" && len(rep.Image) == 0 {
+		return
 	}
 	reply(ctx, send, cfg, m, rep)
 }

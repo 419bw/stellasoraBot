@@ -3,6 +3,9 @@ package main
 import (
 	"testing"
 	"time"
+
+	"xingta/internal/feature/aichat"
+	"xingta/internal/kernel/calendar"
 )
 
 // 主入口里只有两个手写的解析件：时区与提醒目标前缀（逗号列表那份搬进了 internal/config）。
@@ -86,5 +89,23 @@ func TestSplitTarget(t *testing.T) {
 		if id, group, err := splitTarget(in); err == nil {
 			t.Errorf("splitTarget(%q) = %q, %v：没有前缀就分不清群还是单聊，必须报错", in, id, group)
 		}
+	}
+}
+
+// 接线处那个 nil 的坑必须钉住：Go 里 nil 指针的**方法值依然非 nil**，
+// 直接写 `Fallback: ai.Fallback` 会让机制层以为挂了兜底，然后第一条闲话进来
+// 就在空指针上崩 —— 而崩在第二条流上，看起来像"闲聊功能一说话就死"。
+func TestFallbackOfTurnsNilServiceIntoNilFunc(t *testing.T) {
+	if fn := fallbackOf(nil); fn != nil {
+		t.Error("没配密钥（ai 为 nil）却传出了非 nil 的兜底函数")
+	}
+	ai := aichat.New(calendar.NewStore(), aichat.Config{
+		Endpoint: "https://upstream.test/v1/chat/completions", Model: "m",
+		Timeout: time.Second, Cooldown: 15 * time.Second, MaxPerMin: 12,
+		MaxOutputTokens: 300, Temperature: 0.3, MaxPromptEvents: 8,
+		CDReply: "请 %d 秒后再来",
+	})
+	if fn := fallbackOf(ai); fn == nil {
+		t.Error("配好了服务却传出 nil：兜底永远不会被调用")
 	}
 }

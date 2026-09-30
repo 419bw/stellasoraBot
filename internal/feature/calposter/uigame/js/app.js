@@ -192,8 +192,9 @@
       return s;
     };
     // 红墨水手绘虚线：出图时刻贯穿三轨道，顶部手绘红圈由 CSS 画
+    // 条带的百分比是相对 .rows 的内框，换算成相对 .plot：31 = plot 内边距 26 + rows 内边距 5，62 = 左右各那么多。
     const nowLine = () => inWin
-      ? `<div class="nowline" style="left:calc(16px + (100% - 32px) * ${(pct(now, f) / 100).toFixed(6)})"></div>` : '';
+      ? `<div class="nowline" style="left:calc(31px + (100% - 62px) * ${(pct(now, f) / 100).toFixed(6)})"></div>` : '';
 
     document.getElementById('plot').innerHTML = TRACKS.map(t => {
       const gs = all.filter(g => g.track === t.k);

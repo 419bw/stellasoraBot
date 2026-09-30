@@ -24,6 +24,29 @@ jobs:
       - name: Verify Dependencies
         run: go mod verify
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Poster template artifacts are fresh
+        run: |
+          set -uo pipefail
+          node internal/feature/calposter/uigame/build-inline.js
+          fail=0
+          for f in internal/feature/calposter/template.html internal/feature/calposter/uigame/dist/template_uigame.html; do
+            want=$(git rev-parse "HEAD:$f")
+            got=$(git hash-object "$f")
+            if [ "$want" = "$got" ]; then
+              echo "fresh: $f ($got)"
+            else
+              fail=1
+              echo "::error::$f 不等于源重建结果（重建 $got ≠ 已提交 $want）：要么产物被手改，要么改完源没跑 node internal/feature/calposter/uigame/build-inline.js"
+              git --no-pager diff -- "$f" | head -40 || true
+            fi
+          done
+          exit $fail
+
       - name: Go Vet
         run: go vet ./...
 

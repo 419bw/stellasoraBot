@@ -42,12 +42,15 @@ uigame/
 
 ```bash
 cd internal/feature/calposter/uigame
-node build-inline.js   # → dist/template_uigame.html 和 ../template.html（同一个内容）
+node build-inline.js   # → dist/template_uigame.html 和 ../template.html（必须同一个内容）
 ```
 
 改完源文件就跑一次，把「源 + 两个产物」一起提交。直接编辑 `../template.html` 会被下一次
-构建整份覆盖 —— 那次改动凭空消失，而且没有任何东西会提醒你。`Page()` 与两趟截图流程都
-不用改。
+构建整份覆盖 —— 那次改动凭空消失。CI 的 `Poster template artifacts are fresh` 会重跑这个构建，
+再把**两个**产物逐个比 git blob 哈希（`git hash-object` 对 `git rev-parse HEAD:<路径>`，行尾差异
+已被 clean 过滤吸收），不等就红。两个都查是因为 `dist/` 副本没有任何 Go 代码读它（Go 只 embed
+`../template.html`）：不查它，「同一个内容」就只是句没人兑现的话 —— 2026-09-29 的 e0de754 就是
+只改了 `../template.html`、源没动而漏过去的。`Page()` 与两趟截图流程都不用改。
 
 ## 视觉对应关系（游戏 UI → 甘特）
 

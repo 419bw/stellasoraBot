@@ -331,11 +331,19 @@ func (d *Dispatcher) enqueue(item Item) []Item {
 	}
 	ready := now
 	if canMerge(item) {
-		// 窗口从本条自己的入队时刻起算，不锚定批首：分批在头条目到期 + 定时器
-		// 迟到量 Δ 的那一刻触发，邻居要在这之前自己也到期（入队间隔 ε ≤ Δ，平时
-		// 恒成立）才并入——所以实际语义是"同一调度瞬间入队的才合成一条"，跨批次
-		// "等同伴凑齐"从不发生。这是既定边界不是 bug（实证见 notes 2026-09-13）。
 		ready = now.Add(d.p.MergeWindow)
+
+		// 相同 Target 和 Topic 的可合并消息共享已有批首的最早 readyAt，
+		// 消除入队微秒差 ε 与定时器迟到量 Δ 的赛跑，保证窗口期内入队的同伴必能合批；
+		// 取最小值绝不向后推迟批首触发时刻，不产生饥饿。
+		for _, st := range q {
+			if !canMerge(st.item) || st.item.Topic != item.Topic {
+				continue
+			}
+			if st.readyAt.Before(ready) {
+				ready = st.readyAt
+			}
+		}
 	}
 	d.pending[item.Target] = append(q, &itemState{
 		item:     item,

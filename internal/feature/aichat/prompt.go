@@ -21,7 +21,8 @@ import (
 //go:embed persona.md
 var personaStatic string
 
-// personaRuneLimit 是静态层的硬上限，单测钉住。
+// personaRuneLimit 是静态层的硬上限，由 TestPersonaStaysUnderRuneLimit 钉住
+// （黑盒文件够不着这个常量，所以那条用例在白盒文件里）。
 // 量级推导：MVP 那份约 400 rune，1500 给到约 3.7 倍余量，够塞下一整套黑话字典；
 // 再往上就是"有人往里贴了几万字百科、把每次请求的上下文吃光"那种事故。
 // 它是刹车，不是刻度。

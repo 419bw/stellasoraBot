@@ -205,9 +205,12 @@ func TestPromptStaysWithinBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	sys := h.chat.system[0]
-	// 上界的推导：静态层 1500 rune（persona 的硬上限）+ 每条活动行 80 rune 的余量
-	// ×8 条 + 表头与同步状况 300 rune。行宽的实测值远小于 80（名称 40 封顶 +
-	// 时刻 16 + 措辞 20），所以这里留的是刹车位，不是刻度。
+	// 上界的推导：静态层 1500 rune + 每条活动行 80 rune 的余量 ×8 条（这份用例的
+	// max_prompt_events）+ 表头与同步状况 300 rune。行宽的实测值远小于 80（名称 40
+	// 封顶 + 时刻 16 + 措辞 20），所以这里留的是刹车位，不是刻度。
+	// 那个 1500 与包内常量 personaRuneLimit 是同一个数，两处各自写死是有意分账：
+	// 静态层本体由白盒用例把住，这里只把总量。谁改了常量而总量真超了，这条会红，
+	// 红的是"预算该重新算一遍"这个信号，不是巧合。
 	bound := 1500 + 80*8 + 300
 	if n := len([]rune(sys)); n > bound {
 		t.Errorf("上下文 %d rune，超过上界 %d", n, bound)

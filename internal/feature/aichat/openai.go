@@ -98,7 +98,10 @@ func (o *openaiChat) Chat(ctx context.Context, systemPrompt, userText string) (s
 
 	body, over, err := readCapped(resp.Body)
 	if err != nil {
-		return "", &UpstreamError{Status: resp.StatusCode, Kind: failTransport, Reason: "读响应失败"}
+		// 状态码都到手了却在读正文时断，就是连接中途死掉（反代 Worker 挂掉的典型
+		// 形状）。底层错误串只有网络措辞，不含端点也不含正文，值得留在日志里。
+		return "", &UpstreamError{Status: resp.StatusCode, Kind: failTransport,
+			Reason: "读响应失败（" + transportReason(err) + "）"}
 	}
 	elapsed := time.Since(started)
 

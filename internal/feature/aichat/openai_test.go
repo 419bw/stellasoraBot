@@ -2,6 +2,7 @@ package aichat_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -52,11 +53,11 @@ func (s *spy) handler(status int, contentType, body string, delay time.Duration)
 // 漏进 URL、错误串或群里可见的文本里。
 const testKey = "AQ.fake-key-for-tests"
 
-// live 挂一个假上游并造出指向它的服务。
-func live(t *testing.T, status int, contentType, body string, delay time.Duration, tweak func(*aichat.Config)) (*harness, *spy, *httptest.Server) {
+// serve 挂一个自定义假上游并造出指向它的服务。上游的"坏形状"不止状态码与正文两种
+// （还有吐一半就断的那种），所以这一层要能塞任意 handler。
+func serve(t *testing.T, handler http.HandlerFunc, tweak func(*aichat.Config)) (*harness, *httptest.Server) {
 	t.Helper()
-	sp := &spy{}
-	srv := httptest.NewServer(sp.handler(status, contentType, body, delay))
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	h := &harness{ck: &clock{at: fix}, logs: &logs{}}
@@ -81,6 +82,14 @@ func live(t *testing.T, status int, contentType, body string, delay time.Duratio
 		tweak(&cfg)
 	}
 	h.svc = aichat.New(fixture(), cfg)
+	return h, srv
+}
+
+// live 是最常用的那种上游：固定状态码、固定正文、可选延迟，外加一个记下请求的 spy。
+func live(t *testing.T, status int, contentType, body string, delay time.Duration, tweak func(*aichat.Config)) (*harness, *spy, *httptest.Server) {
+	t.Helper()
+	sp := &spy{}
+	h, srv := serve(t, sp.handler(status, contentType, body, delay), tweak)
 	return h, sp, srv
 }
 
@@ -251,6 +260,40 @@ func TestHTMLGatewayPageDegradesToError(t *testing.T) {
 	if got, err := ask(t, h2, groupMsg("M2", "在吗", "U1")); err == nil || got != "" {
 		t.Errorf("200 配 HTML 正文被当成了正常回复：(%q, %v)", got, err)
 	}
+}
+
+// 第三种坏形状：状态码与 Content-Length 都发出来了，正文只吐几个字节就断线（反代的
+// Worker 半路挂掉就是这个样子）。"降级成错误、不回话"那两条用例已经证过，这条要证的
+// 是错误里留着底层原因——"unexpected EOF" 还是 "connection reset"，将来判的就是
+// "上游半路断了"还是"我这跳网络坏了"，而这正是唯一能把两者分开的线索。
+func TestTruncatedBodyKeepsUnderlyingCause(t *testing.T) {
+	h, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack 失败，测不到半路断线： %v", err)
+			return
+		}
+		defer conn.Close()
+		io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"+
+			"Content-Length: 5000\r\n\r\n{\"choices\":[")
+	}, nil)
+
+	got, err := ask(t, h, groupMsg("M1", "在吗", "U1"))
+	if err == nil {
+		t.Fatal("正文只吐了几个字节，却被当成正常回复收下了")
+	}
+	if got != "" {
+		t.Errorf("把半截响应回给用户了：%q", got)
+	}
+	var ue *aichat.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("错误没带上游形状： %T %v", err, err)
+	}
+	cause := strings.TrimSuffix(strings.TrimPrefix(ue.Reason, "读响应失败（"), "）")
+	if cause == "" || cause == ue.Reason {
+		t.Errorf("底层原因被丢了：Reason = %q，want「读响应失败（<网络措辞>）」", ue.Reason)
+	}
+	t.Logf("读正文半途而废的错误串：http=%d kind=%s reason=%s", ue.Status, ue.Kind, ue.Reason)
 }
 
 // 上游"成功"但零产出：不回话，但日志里要留下 finish_reason，

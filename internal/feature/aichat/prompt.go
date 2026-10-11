@@ -23,10 +23,9 @@ var personaStatic string
 
 // personaRuneLimit 是静态层的硬上限，由 TestPersonaStaysUnderRuneLimit 钉住
 // （黑盒文件够不着这个常量，所以那条用例在白盒文件里）。
-// 量级推导：MVP 那份约 400 rune，1500 给到约 3.7 倍余量，够塞下一整套黑话字典；
-// 再往上就是"有人往里贴了几万字百科、把每次请求的上下文吃光"那种事故。
+// 量级推导：MVP 那份约 400 rune，扩容至 5000 rune 容纳完整的心链真实对白范例库；
 // 它是刹车，不是刻度。
-const personaRuneLimit = 1500
+const personaRuneLimit = 5000
 
 // clockLayout 是"当前时间"那一行的格式。带年份与偏移：模型要拿它算"还有几天"，
 // 省掉年份（text.Clock 为省字符干的事）会让它自己去编年份。

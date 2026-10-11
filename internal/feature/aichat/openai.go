@@ -65,13 +65,17 @@ type errorResponse struct {
 	} `json:"error"`
 }
 
-func (o *openaiChat) Chat(ctx context.Context, systemPrompt, userText string) (string, error) {
+func (o *openaiChat) Chat(ctx context.Context, systemPrompt string, history []Message, userText string) (string, error) {
+	msgs := make([]chatMessage, 0, 2+len(history))
+	msgs = append(msgs, chatMessage{Role: "system", Content: systemPrompt})
+	for _, h := range history {
+		msgs = append(msgs, chatMessage{Role: h.Role, Content: h.Content})
+	}
+	msgs = append(msgs, chatMessage{Role: "user", Content: userText})
+
 	payload, err := json.Marshal(chatRequest{
-		Model: o.cfg.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userText},
-		},
+		Model:       o.cfg.Model,
+		Messages:    msgs,
 		MaxTokens:   o.cfg.MaxOutputTokens,
 		Temperature: o.cfg.Temperature,
 	})

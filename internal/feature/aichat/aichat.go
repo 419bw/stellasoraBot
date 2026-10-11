@@ -85,15 +85,21 @@ func (c Config) withDefaults() Config {
 
 // Service 是兜底本体。它没有后台循环：来一条非命令消息才动一次。
 type Service struct {
-	cal calendar.View
-	cfg Config
-	lim *limiter
+	cal      calendar.View
+	cfg      Config
+	lim      *limiter
+	sessions *sessionManager
 }
 
 // New 造出兜底服务。cal 是只读面，本包改不了日历，要改期得走 calops 的人工覆盖。
 func New(cal calendar.View, cfg Config) *Service {
 	cfg = cfg.withDefaults()
-	return &Service{cal: cal, cfg: cfg, lim: newLimiter(cfg)}
+	return &Service{
+		cal:      cal,
+		cfg:      cfg,
+		lim:      newLimiter(cfg),
+		sessions: newSessionManager(10*time.Minute, 4),
+	}
 }
 
 // Fallback 是 command.Config.Fallback 的实现，跑在机制层的第二条被动流上：
@@ -118,9 +124,13 @@ func (s *Service) Fallback(ctx context.Context, m *qq.Message) (command.Reply, e
 		return command.Reply{}, nil
 	}
 
+	sKey := sessionKeyOf(m)
+	history := s.sessions.Get(sKey, now)
+	q := questionOf(m)
+
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
-	answer, err := s.cfg.Chat.Chat(cctx, s.systemPrompt(now), questionOf(m))
+	answer, err := s.cfg.Chat.Chat(cctx, s.systemPrompt(now), history, q)
 	if err != nil {
 		if permanent, why := permanentFailure(err); permanent {
 			s.lim.trip(now, why)
@@ -133,6 +143,7 @@ func (s *Service) Fallback(ctx context.Context, m *qq.Message) (command.Reply, e
 		// 一句带 finish_reason 的日志，这里同样不回话。
 		return command.Reply{}, nil
 	}
+	s.sessions.Append(sKey, q, answer, now)
 	return command.Reply{Text: answer}, nil
 }
 

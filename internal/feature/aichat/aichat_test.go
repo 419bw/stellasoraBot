@@ -56,18 +56,19 @@ func (l *logs) f(format string, args ...any) {
 }
 func (l *logs) String() string { return strings.Join(l.lines, "\n") }
 
-// fakeChat 是被注入的模型接口：记下每次问了什么，按脚本答。
 type fakeChat struct {
-	calls  int
-	system []string
-	asked  []string
-	answer string
-	err    error
+	calls   int
+	system  []string
+	history [][]aichat.Message
+	asked   []string
+	answer  string
+	err     error
 }
 
-func (f *fakeChat) Chat(_ context.Context, systemPrompt, userText string) (string, error) {
+func (f *fakeChat) Chat(_ context.Context, systemPrompt string, history []aichat.Message, userText string) (string, error) {
 	f.calls++
 	f.system = append(f.system, systemPrompt)
+	f.history = append(f.history, history)
 	f.asked = append(f.asked, userText)
 	return f.answer, f.err
 }
@@ -343,5 +344,48 @@ func TestLongQuestionIsFlattenedAndClipped(t *testing.T) {
 	}
 	if strings.Contains(q, "\n") {
 		t.Error("换行没被压成一行")
+	}
+}
+
+// 群聊中跨用户追问：用户 A 先问，用户 B 紧接着追问，用户 B 的提问里必须能拿到 A 那一轮的上下文。
+func TestFallbackPassesHistoryInGroupChat(t *testing.T) {
+	h := newHarness(t, nil)
+	h.chat.answer = "今天有星塔探险哦！"
+
+	// 用户 A 提问
+	got1, err := ask(t, h, groupMsg("M1", "今天有什么活动", "USER_A"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got1 != "今天有星塔探险哦！" {
+		t.Fatalf("第 1 轮回复异常: %q", got1)
+	}
+	if len(h.chat.history[0]) != 0 {
+		t.Fatalf("第 1 次提问历史应为空，got %d", len(h.chat.history[0]))
+	}
+
+	// 时间推进 2 秒，用户 B 提问（换人所以不受 A 的冷却限制）
+	h.ck.advance(2 * time.Second)
+	h.chat.answer = "晚上 22 点就结束啦！"
+
+	got2, err := ask(t, h, groupMsg("M2", "那它几点结束？", "USER_B"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2 != "晚上 22 点就结束啦！" {
+		t.Fatalf("第 2 轮回复异常: %q", got2)
+	}
+	if len(h.chat.history) < 2 {
+		t.Fatalf("应该有第 2 次调用记录")
+	}
+	hist2 := h.chat.history[1]
+	if len(hist2) != 2 {
+		t.Fatalf("第 2 次提问应带上 1 轮（2条）历史，got %d: %+v", len(hist2), hist2)
+	}
+	if hist2[0].Role != "user" || hist2[0].Content != "今天有什么活动" {
+		t.Errorf("历史第一条应为 user 今天有什么活动，got %+v", hist2[0])
+	}
+	if hist2[1].Role != "assistant" || hist2[1].Content != "今天有星塔探险哦！" {
+		t.Errorf("历史第二条应为 assistant 回复，got %+v", hist2[1])
 	}
 }

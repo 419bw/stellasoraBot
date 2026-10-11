@@ -21,7 +21,7 @@ import (
 // 实现必须尊重 ctx 的截止：本包只在调用方那一级挂 WithTimeout，不在 client 上再设
 // 一道墙——两处各设一遍超时，出问题时分不清是谁先到点。
 type Chat interface {
-	Chat(ctx context.Context, systemPrompt, userText string) (string, error)
+	Chat(ctx context.Context, systemPrompt string, history []Message, userText string) (string, error)
 }
 
 // Failure 是一次上游失败的归类。

@@ -366,3 +366,44 @@ func TestTimeoutComesFromConfig(t *testing.T) {
 	}
 	_ = sp
 }
+
+// 多轮对话时，发给上游的请求体里 messages 应当是 [system, user, assistant, user]。
+func TestOpenAIMultiTurnHistoryShape(t *testing.T) {
+	h, sp, _ := live(t, http.StatusOK, "application/json", okBody, 0, nil)
+
+	// 第 1 轮
+	if _, err := ask(t, h, groupMsg("M1", "第一句", "U1")); err != nil {
+		t.Fatal(err)
+	}
+	h.ck.advance(time.Second)
+
+	// 第 2 轮（换人提问，同群）
+	if _, err := ask(t, h, groupMsg("M2", "第二句", "U2")); err != nil {
+		t.Fatal(err)
+	}
+
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(sp.body, &req); err != nil {
+		t.Fatalf("请求体不是合法 JSON: %v", err)
+	}
+	if len(req.Messages) != 4 {
+		t.Fatalf("第 2 轮 messages 应该有 4 条 [system, user, assistant, user]，got %d: %+v", len(req.Messages), req.Messages)
+	}
+	if req.Messages[0].Role != "system" {
+		t.Errorf("第 1 条应为 system: %+v", req.Messages[0])
+	}
+	if req.Messages[1].Role != "user" || req.Messages[1].Content != "第一句" {
+		t.Errorf("第 2 条应为 user 第一句: %+v", req.Messages[1])
+	}
+	if req.Messages[2].Role != "assistant" || req.Messages[2].Content != "在的在的~" {
+		t.Errorf("第 3 条应为 assistant: %+v", req.Messages[2])
+	}
+	if req.Messages[3].Role != "user" || req.Messages[3].Content != "第二句" {
+		t.Errorf("第 4 条应为 user 第二句: %+v", req.Messages[3])
+	}
+}

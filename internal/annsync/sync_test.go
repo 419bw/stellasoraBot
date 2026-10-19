@@ -234,6 +234,14 @@ func idsOf(list []calendar.Activity) []string {
 	return out
 }
 
+func recIDs(list []annsync.Rec) []string {
+	out := make([]string, 0, len(list))
+	for _, r := range list {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
 func has(id string, list []calendar.Activity) bool {
 	for _, a := range list {
 		if a.ID == id {
@@ -491,6 +499,75 @@ func TestHideOverrideRemovesFromCalendarViaRemoveSet(t *testing.T) {
 	})
 	if _, ok := w.inner.Get("fake:1:0"); !ok {
 		t.Error("隐藏一条却把另一条也带走了")
+	}
+}
+
+// 海报出图（ReadActiveRecs）与文字日历必须是同一份口径：覆盖写完两边同时看见，
+// 而底单仍是官网原值。这条曾经只对文字日历成立——海报读的是没打过覆盖的底单，
+// 管理员 hide 掉的活动于是照样画进海报。
+func TestReadActiveRecsSeesWhatCalendarSees(t *testing.T) {
+	doc := storetest.NewMem()
+	w := newWriter()
+	src := newSource("fake", ref("1"), ref("2"))
+	src.setItem("1", "招募A", ev("招募A", base, base.Add(time.Hour), annsync.StatusOK))
+	src.setItem("2", "販售B", ev("販售B", base, base.Add(time.Hour), annsync.StatusOK))
+
+	s := annsync.NewFeature(doc, w, src, nil, testCfg(nil))
+	start(t, s)
+	waitFor(t, "两条都在日历里", func() bool {
+		_, ok1 := w.inner.Get("fake:1:0")
+		_, ok2 := w.inner.Get("fake:2:0")
+		return ok1 && ok2
+	})
+
+	ov := annsync.NewOverrideStore(doc)
+	newEnd := base.Add(9 * time.Hour)
+	if err := ov.Put("fake:1:0", annsync.Override{End: newEnd, Title: "招募A（改期）", By: "tester", At: base}); err != nil {
+		t.Fatalf("Put override: %v", err)
+	}
+	if err := ov.Put("fake:2:0", annsync.Override{Hide: true}); err != nil {
+		t.Fatalf("Put hide: %v", err)
+	}
+	s.Refresh()
+
+	waitFor(t, "文字日历收敛到只剩改过的那条", func() bool {
+		if _, ok := w.inner.Get("fake:2:0"); ok {
+			return false
+		}
+		a, ok := w.inner.Get("fake:1:0")
+		return ok && a.End.Equal(newEnd) && a.Title == "招募A（改期）"
+	})
+
+	active, err := annsync.ReadActiveRecs(doc, "fake")
+	if err != nil {
+		t.Fatalf("ReadActiveRecs: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != "fake:1:0" {
+		t.Fatalf("海报读到的生效态 = %v，want 只有 fake:1:0（hide 的撤掉、改期的按新的算）", recIDs(active))
+	}
+	if !active[0].End.Equal(newEnd) || active[0].Title != "招募A（改期）" {
+		t.Errorf("生效态字段 = %+v，want 与文字日历同口径", active[0])
+	}
+
+	// 底单仍是官网原值：calops 的「原解析」提示与 review 待确认桶都读它
+	raw, err := annsync.ReadRecs(doc, "fake")
+	if err != nil {
+		t.Fatalf("ReadRecs: %v", err)
+	}
+	if len(raw) != 2 {
+		t.Fatalf("底单 = %v，want 仍是两条（覆盖只作用于视图，不写底单）", recIDs(raw))
+	}
+	for _, r := range raw {
+		switch r.ID {
+		case "fake:1:0":
+			if !r.End.Equal(base.Add(time.Hour)) || r.Title != "招募A" {
+				t.Errorf("底单里的 fake:1:0 被覆盖改写了：%+v", r)
+			}
+		case "fake:2:0":
+			if r.Title != "販售B" {
+				t.Errorf("底单里的 fake:2:0 不该被 hide 动到：%+v", r)
+			}
+		}
 	}
 }
 

@@ -9,7 +9,8 @@ import (
 )
 
 // 这个文件是引擎给功能插件的**只读**面：calquery 靠 Status 判断"还在同步中"，
-// calops 靠 ReadRecs / ReadPending 列待确认桶。功能不碰 Source，也不碰日历写侧。
+// calops 靠 ReadRecs / ReadPending 列待确认桶，calposter 靠 ReadActiveRecs 读生效态
+// 记录（底单 + 人工覆盖，与 calendar.View 同一份口径）。功能不碰 Source，也不碰日历写侧。
 
 // Status 是引擎的运行状况快照。LastSuccess 为零值 = 还没同步成功过一次。
 type Status struct {
@@ -78,6 +79,28 @@ func ReadRecs(doc store.Doc, src string) ([]Rec, error) {
 	})
 	sortRecs(out)
 	return out, err
+}
+
+// ReadActiveRecs 读"生效态"活动记录：底单 + 人工覆盖。src 为空表示所有源。
+//
+// 与 ReadRecs 的分工：ReadRecs 是"官网最初解析出什么"（calops 的「原解析」提示与
+// review 待确认桶要的是它，所以它永远不被打过覆盖）；ReadActiveRecs 是"群友现在
+// 看到的"——hide 的撤掉、改时间的按新的算，与 calendar.View 同一份口径。
+//
+// 给要完整元数据的展示侧用：海报出图要画长图，得拿到 Poster / Label / ClaimEnd /
+// Provenance / Status，而 calendar.Activity 把这些都裁掉了。读覆盖失败就报错，
+// 不静默退化成无覆盖——把管理员明确 hide 掉的活动画进海报比这一趟失败更糟。
+func ReadActiveRecs(doc store.Doc, src string) ([]Rec, error) {
+	recs, err := ReadRecs(doc, src)
+	if err != nil {
+		return nil, err
+	}
+	ovs, err := NewOverrideStore(doc).All()
+	if err != nil {
+		return nil, err
+	}
+	live, _ := effective(recs, ovs)
+	return live, nil
 }
 
 // ReadPending 只读待确认桶：状态不是 ok / fuzzy_start 的记录，

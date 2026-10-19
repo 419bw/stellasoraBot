@@ -59,7 +59,8 @@ type Config struct {
 	// 没有这份账，每次重启都会把窗口期内的版本再推一遍。
 	Doc store.Doc
 	// Records 读本源的活动记录。只给这一个闭包而不给整个 store.Doc：功能要的是
-	// "读到 Rec"，不是"能读写任意命名空间"。main 里接 annsync.ReadRecs，
+	// "读到 Rec"，不是"能读写任意命名空间"。main 里接 annsync.ReadActiveRecs
+	// （生效态：底单 + 人工覆盖，管理员的 hide / 改时间在这里就要算进去），
 	// 单测里直接给一段切片。
 	Records func() ([]annsync.Rec, error)
 	Cap     Capturer

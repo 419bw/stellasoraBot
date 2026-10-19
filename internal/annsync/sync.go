@@ -425,13 +425,19 @@ func wantsRetry(it Item, now time.Time) bool {
 	return false
 }
 
-// project 把活动记录投成日历条目：pending 不进日历，override 逐条应用。
-// 返回的 dups 是被三元组去重挡下的记录——正常路径为空，非空即源侧合并漏了。
-func project(recs []Rec, ov map[string]Override) (acts []calendar.Activity, dups []Rec) {
+// effective 把底单投影成"生效态"记录：pending 不进日历，override 逐条应用，
+// 按 (标题,起,止) 三元组去重。
+//
+// 文字日历（project）与海报出图（ReadActiveRecs）共用这一条口径：两边看到的
+// 活动集合因此只可能有一个来源。返回的 dups 是被三元组去重挡下的记录——正常
+// 路径为空，非空即源侧合并漏了。
+func effective(recs []Rec, ov map[string]Override) (live []Rec, dups []Rec) {
+	// 绝大多数记录都活得下来：一次分配到位，别让切片在扩容里反复拷贝整个 Rec。
+	live = make([]Rec, 0, len(recs))
 	type triple struct{ title, start, end string }
 	seen := map[triple]bool{}
 
-	for _, r := range recs {
+	for _, r := range recs { // r 是值拷贝，就地改不碰底单
 		if !r.InCalendar() {
 			continue
 		}
@@ -439,29 +445,38 @@ func project(recs []Rec, ov map[string]Override) (acts []calendar.Activity, dups
 		if has && o.Hide {
 			continue
 		}
-		title, start, end := r.Title, r.Start, r.End
 		if has {
 			if o.Title != "" {
-				title = o.Title
+				r.Title = o.Title
 			}
 			if !o.Start.IsZero() {
-				start = o.Start
+				r.Start = o.Start
 			}
 			if !o.End.IsZero() {
-				end = o.End
+				r.End = o.End
 			}
 		}
-		if !end.After(start) {
+		if !r.End.After(r.Start) {
 			continue // 覆盖写坏了：宁可不显示，也不显示一个不可能的区间
 		}
-		k := triple{title, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339)}
+		k := triple{r.Title, r.Start.UTC().Format(time.RFC3339), r.End.UTC().Format(time.RFC3339)}
 		if seen[k] {
 			dups = append(dups, r)
 			continue
 		}
 		seen[k] = true
+		live = append(live, r)
+	}
+	return live, dups
+}
+
+// project 把生效态记录投成日历条目：口径全在 effective，这里只剩形状转换。
+func project(recs []Rec, ov map[string]Override) (acts []calendar.Activity, dups []Rec) {
+	live, dups := effective(recs, ov)
+	acts = make([]calendar.Activity, 0, len(live))
+	for _, r := range live {
 		acts = append(acts, calendar.Activity{
-			ID: r.ID, Game: r.SourceID, Title: title, Start: start, End: end, URL: r.URL,
+			ID: r.ID, Game: r.SourceID, Title: r.Title, Start: r.Start, End: r.End, URL: r.URL,
 		})
 	}
 	return acts, dups

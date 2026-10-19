@@ -70,7 +70,7 @@ func main() {
 	// 这四个数是本工具的用例前提，不是部署默认值：calshot 不读 config/calposter.yml
 	// （它有自己的 -db/-key/-chrome/-noart）。机器人那份的出处只有那个文件。
 	ps := calposter.New(calposter.Config{
-		Records:    func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, stellasora.SourceName) },
+		Records:    func() ([]annsync.Rec, error) { return annsync.ReadActiveRecs(doc, stellasora.SourceName) },
 		Label:      stellasora.ProvVersion,
 		Client:     client,
 		Now:        func() time.Time { return now },

@@ -185,7 +185,7 @@ func run() error {
 		// config/calposter.yml，代码里已经不留默认值。
 		poster = calposter.New(posterDC.ToConfig(calposter.Config{
 			Doc:     doc,
-			Records: func() ([]annsync.Rec, error) { return annsync.ReadRecs(doc, src.Name()) },
+			Records: func() ([]annsync.Rec, error) { return annsync.ReadActiveRecs(doc, src.Name()) },
 			Cap:     browser,
 			ArtDir:  artDir(cfg.DB),
 			Label:   stellasora.ProvVersion,

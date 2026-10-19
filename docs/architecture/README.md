@@ -123,7 +123,7 @@ calquery.active() / ending() / upcoming()
 格式化 → command.dispatch → SendGroupReply → QQ 平台 (api.bot.qq.com)
 
 2. 版本日历海报链（calposter）：
-annsync 投影出的 []Rec（ReadRecs，功能自己按 Provenance 过滤版本窗口）
+annsync 投影出的生效态记录（ReadActiveRecs：底单 + 人工覆盖，功能自己按 Provenance 过滤版本窗口）
        ↓ 每 warm（config/calposter.yml）一轮，启动立刻先跑一轮
 calposter.warmArt → 只补本窗缺的海报字节：每张先问公告里的原地址，被拒才换 OSS 传输加速
        ↓            端点补一次；失败的 URL 进 10 分钟冷却，同一 URL 并发只抓一次

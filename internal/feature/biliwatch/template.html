@@ -473,8 +473,33 @@
 
     {{if .OrigCard}}
       <div class="orig-card">
-        <div class="orig-author">@{{.OrigCard.AuthorName}}</div>
-        <div class="orig-text">{{.OrigCard.HTMLContent}}</div>
+        <div class="orig-author">@{{.OrigCard.AuthorName}}{{if .OrigCard.AuthorAction}} {{.OrigCard.AuthorAction}}{{end}}</div>
+        {{if .OrigCard.HTMLContent}}
+          <div class="orig-text">{{.OrigCard.HTMLContent}}</div>
+        {{end}}
+
+        {{if .OrigCard.Video}}
+          <div class="video-card">
+            <div class="video-cover-wrap">
+              <img class="video-cover" src="{{.OrigCard.Video.Cover}}">
+              <div class="video-play-btn">
+                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              </div>
+              <div class="video-stats">
+                <span>▶ {{.OrigCard.Video.PlayCount}}</span>
+                <span>💬 {{.OrigCard.Video.DanmakuCount}}</span>
+              </div>
+              <div class="video-duration">{{.OrigCard.Video.Duration}}</div>
+            </div>
+            <div class="video-body">
+              <div class="video-title">{{.OrigCard.Video.Title}}</div>
+              {{if .OrigCard.Video.Desc}}
+                <div class="video-desc">{{.OrigCard.Video.Desc}}</div>
+              {{end}}
+            </div>
+          </div>
+        {{end}}
+
         {{if .OrigCard.Pics}}
           <div class="media-container">
             {{if eq (len .OrigCard.Pics) 1}}
@@ -486,6 +511,17 @@
                 {{end}}
               </div>
             {{end}}
+          </div>
+        {{end}}
+
+        {{if .OrigCard.GameCard}}
+          <div class="game-card">
+            <img class="game-cover" src="{{.OrigCard.GameCard.Cover}}">
+            <div class="game-info">
+              <div class="game-title">{{.OrigCard.GameCard.Title}}</div>
+              <div class="game-desc">{{.OrigCard.GameCard.Desc2}}</div>
+            </div>
+            <div class="game-btn">{{.OrigCard.GameCard.BtnText}}</div>
           </div>
         {{end}}
       </div>

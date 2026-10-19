@@ -55,9 +55,12 @@ type VideoData struct {
 }
 
 type OrigCardData struct {
-	AuthorName  string
-	HTMLContent template.HTML
-	Pics        []string
+	AuthorName   string
+	AuthorAction string // 原动态作者的 pub_action，如 "投稿了视频"
+	HTMLContent  template.HTML
+	Pics         []string
+	Video        *VideoData
+	GameCard     *GameCardData
 }
 
 type GameCardData struct {
@@ -95,6 +98,22 @@ func formatRichText(nodes []RichNode, fallback string) string {
 		}
 	}
 	return sb.String()
+}
+
+// videoDataFrom 从视频投稿元数据构建卡片视频数据；顶层投稿与转发引用的原投稿
+// 走同一套映射，避免两处各写一遍、日后改字段漏改一处。arc 为 nil 时返回 nil。
+func videoDataFrom(arc *Archive) *VideoData {
+	if arc == nil {
+		return nil
+	}
+	return &VideoData{
+		Cover:        arc.Cover,
+		Title:        arc.Title,
+		Desc:         arc.Desc,
+		Duration:     arc.Duration,
+		PlayCount:    arc.Stat.Play,
+		DanmakuCount: arc.Stat.Danmaku,
+	}
 }
 
 // BuildCardPage 将动态项转为带有完整样式与自报尺寸脚本的 HTML 页面字节。
@@ -162,16 +181,8 @@ func BuildCardPage(item DynamicItem) ([]byte, error) {
 	}
 
 	// 视频投稿处理
-	if dyn.Major != nil && dyn.Major.Archive != nil {
-		arc := dyn.Major.Archive
-		data.Video = &VideoData{
-			Cover:        arc.Cover,
-			Title:        arc.Title,
-			Desc:         arc.Desc,
-			Duration:     arc.Duration,
-			PlayCount:    arc.Stat.Play,
-			DanmakuCount: arc.Stat.Danmaku,
-		}
+	if dyn.Major != nil {
+		data.Video = videoDataFrom(dyn.Major.Archive)
 	}
 
 	// 转发原动态处理
@@ -197,10 +208,38 @@ func BuildCardPage(item DynamicItem) ([]byte, error) {
 			}
 		}
 
+		// 原动态是视频投稿（MAJOR_TYPE_ARCHIVE）时渲染被引用的视频卡；
+		// 与 Major.Opus/Draw 互斥，同一个 orig 不会既是视频又是图文。
+		var origVideo *VideoData
+		if orig.Modules.ModuleDynamic.Major != nil {
+			origVideo = videoDataFrom(orig.Modules.ModuleDynamic.Major.Archive)
+		}
+
+		// 原动态附带的关联游戏/活动小卡片（与顶层 additional.common 同构）
+		var origGameCard *GameCardData
+		if orig.Modules.ModuleDynamic.Additional != nil && orig.Modules.ModuleDynamic.Additional.Common != nil {
+			c := orig.Modules.ModuleDynamic.Additional.Common
+			btnText := "进入"
+			if c.Button != nil && c.Button.JumpStyle.Text != "" {
+				btnText = c.Button.JumpStyle.Text
+			}
+			origGameCard = &GameCardData{
+				Title:    c.Title,
+				Cover:    c.Cover,
+				HeadText: c.HeadText,
+				Desc1:    c.Desc1,
+				Desc2:    c.Desc2,
+				BtnText:  btnText,
+			}
+		}
+
 		data.OrigCard = &OrigCardData{
-			AuthorName:  orig.Modules.ModuleAuthor.Name,
-			HTMLContent: template.HTML(formatRichText(origNodes, origFallback)),
-			Pics:        origPics,
+			AuthorName:   orig.Modules.ModuleAuthor.Name,
+			AuthorAction: orig.Modules.ModuleAuthor.PubAction,
+			HTMLContent:  template.HTML(formatRichText(origNodes, origFallback)),
+			Pics:         origPics,
+			Video:        origVideo,
+			GameCard:     origGameCard,
 		}
 	}
 

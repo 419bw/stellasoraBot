@@ -195,17 +195,7 @@ func TestBuildCardPageFormattingAndXSS(t *testing.T) {
 		Draw *struct {
 			Items []PicInfo `json:"items"`
 		} `json:"draw"`
-		Archive *struct {
-			Bvid     string `json:"bvid"`
-			Title    string `json:"title"`
-			Cover    string `json:"cover"`
-			Desc     string `json:"desc"`
-			Duration string `json:"duration_text"`
-			Stat     struct {
-				Play    string `json:"play"`
-				Danmaku string `json:"danmaku"`
-			} `json:"stat"`
-		} `json:"archive"`
+		Archive *Archive `json:"archive"`
 	}{
 		Draw: &struct {
 			Items []PicInfo `json:"items"`
@@ -234,6 +224,70 @@ func TestBuildCardPageFormattingAndXSS(t *testing.T) {
 	// 验证双图网格布局
 	if !strings.Contains(page, "grid-pics-2") {
 		t.Errorf("双图应采用 grid-pics-2 布局: %s", page)
+	}
+}
+
+// TestBuildCardPageForwardedVideoQuote 回归：官方转发视频投稿动态时，被引用的原动态是
+// MAJOR_TYPE_ARCHIVE，卡片必须渲染出视频封面/标题/时长/播放量/弹幕，不能只渲染转发语。
+// fixture 形状取自真实动态 1260530218034003970（星塔旅人转发自己的视频投稿 BV1kLn36WEc6）。
+func TestBuildCardPageForwardedVideoQuote(t *testing.T) {
+	rawJSON := `{
+		"id_str": "1260530218034003970",
+		"type": "DYNAMIC_TYPE_FORWARD",
+		"modules": {
+			"module_author": { "name": "星塔旅人", "pub_action": "" },
+			"module_dynamic": {
+				"major": null,
+				"additional": null,
+				"desc": { "text": "尊敬魔王大人：……（转发语，断言其在位防回归）" }
+			}
+		},
+		"orig": {
+			"type": "DYNAMIC_TYPE_AV",
+			"modules": {
+				"module_author": { "name": "星塔旅人", "pub_action": "投稿了视频" },
+				"module_dynamic": {
+					"desc": null,
+					"major": { "type": "MAJOR_TYPE_ARCHIVE",
+						"archive": {
+							"bvid": "BV1kLn36WEc6",
+							"title": "《星塔旅人》一周年特别节目",
+							"cover": "http://i1.hdslb.com/bfs/archive/3ffbc67e5bf38cdea2124b45f2079344510235ac.jpg",
+							"duration_text": "01:21:47",
+							"desc": "主线特别篇更新纪念活动",
+							"stat": { "play": "5.6万", "danmaku": "2672" }
+						} }
+				}
+			}
+		}
+	}`
+
+	var item DynamicItem
+	if err := json.Unmarshal([]byte(rawJSON), &item); err != nil {
+		t.Fatalf("反序列化动态 JSON 失败: %v", err)
+	}
+	// 先证明数据链没断：orig 的视频投稿必须被解析出来
+	if item.Orig == nil || item.Orig.Modules.ModuleDynamic.Major == nil ||
+		item.Orig.Modules.ModuleDynamic.Major.Archive == nil {
+		t.Fatalf("orig 的视频投稿没有被解析出来")
+	}
+
+	page, err := BuildCardPage(item)
+	if err != nil {
+		t.Fatalf("BuildCardPage 失败: %v", err)
+	}
+	for _, want := range []string{
+		"http://i1.hdslb.com/bfs/archive/3ffbc67e5bf38cdea2124b45f2079344510235ac.jpg", // 封面
+		"《星塔旅人》一周年特别节目",                                                                // 标题
+		"01:21:47", // 时长
+		"5.6万",     // 播放量
+		"2672",     // 弹幕
+		"尊敬魔王大人",   // 转发语仍在（防回归）
+		"投稿了视频",    // 原动态作者动作
+	} {
+		if !strings.Contains(string(page), want) {
+			t.Errorf("渲染页面缺少 %q", want)
+		}
 	}
 }
 

@@ -48,17 +48,7 @@ type DynamicItem struct {
 				Draw *struct {
 					Items []PicInfo `json:"items"`
 				} `json:"draw"`
-				Archive *struct {
-					Bvid     string `json:"bvid"`
-					Title    string `json:"title"`
-					Cover    string `json:"cover"`
-					Desc     string `json:"desc"`
-					Duration string `json:"duration_text"`
-					Stat     struct {
-						Play    string `json:"play"`
-						Danmaku string `json:"danmaku"`
-					} `json:"stat"`
-				} `json:"archive"`
+				Archive *Archive `json:"archive"`
 			} `json:"major"`
 			Additional *struct {
 				Type   string `json:"type"`
@@ -89,6 +79,19 @@ type DynamicItem struct {
 		} `json:"module_stat"`
 	} `json:"modules"`
 	Orig *DynamicItem `json:"orig,omitempty"`
+}
+
+// Archive 是视频投稿元信息；顶层投稿与转发引用的原投稿共用同一结构。
+type Archive struct {
+	Bvid     string `json:"bvid"`
+	Title    string `json:"title"`
+	Cover    string `json:"cover"`
+	Desc     string `json:"desc"`
+	Duration string `json:"duration_text"`
+	Stat     struct {
+		Play    string `json:"play"`
+		Danmaku string `json:"danmaku"`
+	} `json:"stat"`
 }
 
 // RichNode 是富文本节点。

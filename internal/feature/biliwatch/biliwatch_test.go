@@ -733,3 +733,39 @@ func TestLedgerReadsAreSynchronized(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// 检查点必须落在整点网格上而不是启动相位：重启时刻再随机，检查点也收敛到同一
+// 网格（5 分钟周期即 :01/:06/:11…）。nextPollDelay 是封闭形式，两条边界靠这张
+// 表钉死：恰踩检查点及其后一纳秒（不能返回 0 延迟重跑本点），以及整点后第一
+// 分钟内（负 Duration 整除截断会跳过第一个检查点）。
+func TestNextPollDelayAlignsToClockGrid(t *testing.T) {
+	at := func(h, m, s int) time.Time {
+		return time.Date(2026, 10, 28, h, m, s, 0, time.UTC)
+	}
+	for _, tc := range []struct {
+		name   string
+		now    time.Time
+		period time.Duration
+		want   time.Duration
+	}{
+		{"整点过后的第一个检查点", at(10, 0, 0), 5 * time.Minute, time.Minute},
+		{"网格中间推进到下一检查点", at(10, 3, 0), 5 * time.Minute, 3 * time.Minute},
+		{"网格内跨检查点线", at(10, 5, 30), 5 * time.Minute, 30 * time.Second},
+		{"恰在检查点上不重复触发", at(10, 6, 0), 5 * time.Minute, 5 * time.Minute},
+		{"检查点后一纳秒", at(10, 6, 0).Add(time.Nanosecond), 5 * time.Minute, 5*time.Minute - time.Nanosecond},
+		{"整点后第一分钟内", at(10, 0, 30), 5 * time.Minute, 30 * time.Second},
+		{"恰踩第一个检查点", at(10, 1, 0), 5 * time.Minute, 5 * time.Minute},
+		{"跨小时不丢点", at(10, 59, 59), 5 * time.Minute, 61 * time.Second},
+		{"十分钟周期同样对齐", at(10, 3, 0), 10 * time.Minute, 8 * time.Minute},
+		{"不整除小时的周期", at(10, 3, 0), 7 * time.Minute, 5 * time.Minute},
+		{"不整除周期跨小时", at(10, 59, 59), 7 * time.Minute, 4*time.Minute + time.Second},
+		{"周期超过一小时", at(10, 30, 0), 90 * time.Minute, 61 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextPollDelay(tc.now, tc.period); got != tc.want {
+				t.Errorf("nextPollDelay(%s, %v) = %v, want %v",
+					tc.now.Format("15:04:05"), tc.period, got, tc.want)
+			}
+		})
+	}
+}

@@ -420,7 +420,9 @@ func (p *Poster) armPushes(tl *Timeline) {
 			continue
 		}
 		key, at := tl.wins[i].Key, tl.wins[i].pushAt
-		p.api.Schedule("poster:"+key, at, func(ctx context.Context) error { return p.push(ctx, key) })
+		p.api.SchedulePush("poster:"+key, at, func(ctx context.Context, submit func(queue.Item) error) error {
+			return p.push(ctx, key, submit)
+		})
 	}
 }
 
@@ -476,7 +478,7 @@ func (p *Poster) prune(tl *Timeline) {
 // 账本也不在这里写：只有队列报"发出去了"（条目的 OnDelivered 回执）才算了结。
 // 画不出来或发送失败时队列自己退避重试，最终放弃也不记账，下一轮 armPushes 会
 // 重新排上——宁可晚发，也不要发一张空的或干脆不发还装作发过了。
-func (p *Poster) push(_ context.Context, key string) error {
+func (p *Poster) push(_ context.Context, key string, submit func(queue.Item) error) error {
 	// 以账本为准再判一次：armPushes 的"查已推 → 排期"不是原子的，排期循环可能
 	// 刚越过那道检查、这个任务就触发了，于是它会被重新排上、被调度器立刻再跑一遍。
 	if p.settled(key) {
@@ -504,7 +506,7 @@ func (p *Poster) push(_ context.Context, key string) error {
 			OnDelivered: func() { p.MarkPushed(tgt, key) },
 		}
 		// 每个目标都试完再汇总：中途因为队列满返回，会漏掉后面的目标。
-		if err := p.api.Submit(item); err != nil {
+		if err := submit(item); err != nil {
 			errs = append(errs, fmt.Errorf("投版本 %s 到 %s: %w", key, tgt, err))
 		}
 	}

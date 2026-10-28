@@ -125,6 +125,9 @@ func (m *mockKernelAPI) clearSubmitted() {
 
 func (m *mockKernelAPI) Schedule(id string, at time.Time, fn func(context.Context) error) {}
 
+func (m *mockKernelAPI) SchedulePush(id string, at time.Time, fn func(context.Context, func(queue.Item) error) error) {
+}
+
 func (m *mockKernelAPI) Cancel(id string) bool { return true }
 
 func (m *mockKernelAPI) Calendar() calendar.View { return nil }

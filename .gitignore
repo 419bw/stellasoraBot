@@ -1,6 +1,7 @@
 .probe/
 cmd/qqprobe/qqprobe.exe
 *.exe
+xingtabot.linux-*
 creds*.json
 data/
 *.db

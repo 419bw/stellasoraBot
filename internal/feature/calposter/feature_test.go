@@ -14,6 +14,7 @@ import (
 
 	"xingta/internal/annsync"
 	"xingta/internal/command"
+	"xingta/internal/kernel"
 	"xingta/internal/kernel/calendar"
 	"xingta/internal/kernel/queue"
 	"xingta/internal/kernel/schedule"
@@ -54,6 +55,10 @@ func (a *fakeAPI) Schedule(id string, at time.Time, fn func(context.Context) err
 	defer a.mu.Unlock()
 	a.tasks[id] = fn
 	a.at[id] = at
+}
+
+func (a *fakeAPI) SchedulePush(id string, at time.Time, fn func(context.Context, func(queue.Item) error) error) {
+	a.Schedule(id, at, func(ctx context.Context) error { return fn(ctx, a.Submit) })
 }
 
 func (a *fakeAPI) Cancel(string) bool            { return false }
@@ -226,6 +231,119 @@ func TestPushArmedAtOpenMoment(t *testing.T) {
 	}
 	if got := len(api.items()); got != 1 {
 		t.Errorf("同一个版本投了 %d 条, want 1", got)
+	}
+}
+
+type posterGateSink struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+
+	mu  sync.Mutex
+	ids []string
+}
+
+func (s *posterGateSink) Send(ctx context.Context, b *queue.Batch) error {
+	s.mu.Lock()
+	for _, it := range b.Items {
+		s.ids = append(s.ids, it.ID)
+	}
+	s.mu.Unlock()
+	s.entered <- struct{}{}
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *posterGateSink) unblock() { s.once.Do(func() { close(s.release) }) }
+
+func (s *posterGateSink) sentIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ids...)
+}
+
+type posterTargetView struct{ id string }
+
+func (v posterTargetView) Targets() []string { return []string{v.id} }
+func (v posterTargetView) TargetsFor(string) []string {
+	return []string{v.id}
+}
+func (v posterTargetView) Has(string) bool              { return true }
+func (v posterTargetView) HasTopic(string, string) bool { return true }
+func (v posterTargetView) TopicsOf(string) []string     { return []string{"poster"} }
+
+func TestPosterDoesNotResubmitWhilePreviousPushInFlight(t *testing.T) {
+	pushAt := time.Now().Add(300 * time.Millisecond)
+	start := pushAt.Add(-17*time.Hour - 30*time.Minute)
+	rec := annsync.Rec{
+		ID: "inflight-regression", RefID: "inflight", Title: "在途回归", Label: "活动时间",
+		Start: start, End: start.Add(24 * time.Hour), ClaimEnd: start.Add(48 * time.Hour),
+		Status: annsync.StatusOK, Provenance: "version",
+	}
+	key := Windows([]annsync.Rec{rec}, "version", zone)[0].Key
+	sink := &posterGateSink{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	r := kernel.NewRuntime(sink, queue.DefaultPolicy(), calendar.NewStore(), posterTargetView{id: "g:grp"}, nil)
+	apiCh := make(chan kernel.API, 1)
+	r.Register(kernel.NewFeature("capture-api", func(_ context.Context, api kernel.API) error {
+		apiCh <- api
+		return nil
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	t.Cleanup(func() {
+		sink.unblock()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("Runtime 未退出")
+		}
+	})
+
+	p := New(knobs(Config{
+		Doc: storetest.NewMem(), Records: box(rec).recs, Cap: &fakeCap{}, Label: "version",
+		Zone: zone, Now: time.Now, PushDelay: 30 * time.Minute,
+	}))
+	select {
+	case p.api = <-apiCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("未取得真实 kernel.API")
+	}
+	p.round(context.Background())
+
+	select {
+	case <-sink.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("第一次海报未进入 Sink")
+	}
+	for i := 0; i < 3; i++ {
+		p.round(context.Background())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := r.Stats().Submitted; got != 1 {
+		t.Fatalf("ACK 前重复巡检后 Submitted = %d, want 1", got)
+	}
+	if got := sink.sentIDs(); len(got) != 1 {
+		t.Fatalf("ACK 前实际发送批次 = %d, want 1: %v", len(got), got)
+	}
+
+	sink.unblock()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !p.settled(key) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !p.settled(key) {
+		t.Fatal("放行后海报账本未收敛")
+	}
+	p.round(context.Background())
+	time.Sleep(30 * time.Millisecond)
+	if got := r.Stats().Submitted; got != 1 {
+		t.Errorf("成功回执后又提交海报，Submitted = %d", got)
 	}
 }
 

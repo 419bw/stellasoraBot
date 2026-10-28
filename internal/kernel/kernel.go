@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
+	"sync"
 	"time"
 
 	"xingta/internal/kernel/calendar"
@@ -18,6 +20,7 @@ import (
 type API interface {
 	Submit(item queue.Item) error
 	Schedule(id string, at time.Time, fn func(context.Context) error)
+	SchedulePush(id string, at time.Time, fn func(context.Context, func(queue.Item) error) error)
 	Cancel(id string) bool
 	Calendar() calendar.View
 	Scheduler() schedule.Scheduler
@@ -108,6 +111,79 @@ func (a *api) Submit(item queue.Item) error { return a.runtime.queue.Submit(item
 
 func (a *api) Schedule(id string, at time.Time, fn func(context.Context) error) {
 	a.runtime.sched.Schedule(schedule.Task{ID: id, At: at, Fn: fn})
+}
+
+type pushRun struct {
+	mu        sync.Mutex
+	accepting bool
+	pending   int
+	runErr    error
+	finished  bool
+	complete  func(error)
+}
+
+func (a *api) SchedulePush(id string, at time.Time, fn func(context.Context, func(queue.Item) error) error) {
+	a.runtime.sched.Schedule(schedule.Task{ID: id, At: at, AsyncFn: func(ctx context.Context, done func(error)) (err error) {
+		run := &pushRun{accepting: true, complete: done}
+		defer func() {
+			if r := recover(); r != nil {
+				run.finish(fmt.Errorf("kernel: SchedulePush panic: %v\n%s", r, debug.Stack()))
+				err = nil
+			}
+		}()
+		run.finish(fn(ctx, func(item queue.Item) error { return run.submit(a, item) }))
+		return nil
+	}})
+}
+
+func (r *pushRun) submit(a *api, item queue.Item) error {
+	r.mu.Lock()
+	r.pending++
+	r.mu.Unlock()
+
+	original := item.OnSettled
+	item.OnSettled = func(err error) {
+		if original != nil {
+			original(err)
+		}
+		r.settle()
+	}
+	err := a.Submit(item)
+	if err != nil {
+		r.mu.Lock()
+		r.pending--
+		r.mu.Unlock()
+	}
+	return err
+}
+
+func (r *pushRun) settle() {
+	r.mu.Lock()
+	r.pending--
+	complete, err, ok := r.completionLocked()
+	r.mu.Unlock()
+	if ok {
+		complete(err)
+	}
+}
+
+func (r *pushRun) finish(err error) {
+	r.mu.Lock()
+	r.accepting = false
+	r.runErr = err
+	complete, completeErr, ok := r.completionLocked()
+	r.mu.Unlock()
+	if ok {
+		complete(completeErr)
+	}
+}
+
+func (r *pushRun) completionLocked() (func(error), error, bool) {
+	if r.finished || r.accepting || r.pending != 0 {
+		return nil, nil, false
+	}
+	r.finished = true
+	return r.complete, r.runErr, true
 }
 
 func (a *api) Cancel(id string) bool { return a.runtime.sched.Cancel(id) }

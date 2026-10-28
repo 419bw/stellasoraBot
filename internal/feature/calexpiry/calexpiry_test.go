@@ -94,6 +94,10 @@ func (a *fakeAPI) Schedule(id string, at time.Time, fn func(context.Context) err
 	a.schedules[id]++
 }
 
+func (a *fakeAPI) SchedulePush(id string, at time.Time, fn func(context.Context, func(queue.Item) error) error) {
+	a.Schedule(id, at, func(ctx context.Context) error { return fn(ctx, a.Submit) })
+}
+
 func (a *fakeAPI) Cancel(id string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

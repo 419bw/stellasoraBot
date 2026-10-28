@@ -44,6 +44,8 @@ type Item struct {
 	// 它记账。合并批一条消息装着多个条目，逐条回调才能把账归到每个条目自己的
 	// Target×内容上。回调必须幂等且不得阻塞。
 	OnDelivered func()
+	// OnSettled 在 OnDelivered 后或最终丢弃后恰好调用一次；重试与 Submit 拒绝不调用。
+	OnSettled func(error)
 }
 
 type Batch struct {
@@ -301,9 +303,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 			return ctx.Err()
 		case item := <-d.in:
 			for _, it := range d.enqueue(item) {
-				if d.OnError != nil {
-					d.OnError(it, ErrOverflow)
-				}
+				d.reportDropped(it, ErrOverflow)
 			}
 		case <-d.wake:
 		case <-timer.C:
@@ -399,9 +399,7 @@ func (d *Dispatcher) pump(jobs chan<- *job) time.Duration {
 		d.mu.Unlock()
 
 		for _, it := range expired {
-			if d.OnError != nil {
-				d.OnError(it, ErrExpired)
-			}
+			d.reportDropped(it, ErrExpired)
 		}
 		if out == nil {
 			return clampDelay(wait)
@@ -603,6 +601,9 @@ func (d *Dispatcher) worker(ctx context.Context, jobs <-chan *job) {
 				if st.item.OnDelivered != nil {
 					st.item.OnDelivered()
 				}
+				if st.item.OnSettled != nil {
+					st.item.OnSettled(nil)
+				}
 			}
 		}
 		d.notify()
@@ -648,11 +649,18 @@ func (d *Dispatcher) requeue(j *job, cause error) {
 
 	// 回调可能在用户代码里再访问 Dispatcher，必须在锁外执行
 	for _, f := range failures {
-		if d.OnError != nil {
-			d.OnError(f.item, f.cause)
-		}
+		d.reportDropped(f.item, f.cause)
 	}
 	d.notify()
+}
+
+func (d *Dispatcher) reportDropped(it Item, cause error) {
+	if d.OnError != nil {
+		d.OnError(it, cause)
+	}
+	if it.OnSettled != nil {
+		it.OnSettled(cause)
+	}
 }
 
 func (d *Dispatcher) notify() {

@@ -161,8 +161,8 @@ func (f *feature) scan(api kernel.API) {
 			continue
 		}
 		act := a
-		api.Schedule(taskID(act.ID), act.End.Add(-f.cfg.Lead), func(ctx context.Context) error {
-			return f.remind(ctx, api, act)
+		api.SchedulePush(taskID(act.ID), act.End.Add(-f.cfg.Lead), func(ctx context.Context, submit func(queue.Item) error) error {
+			return f.remind(ctx, api, act, submit)
 		})
 		f.arm(act.ID)
 	}
@@ -176,7 +176,7 @@ func (f *feature) scan(api kernel.API) {
 // 队列静默丢弃（超期/重试耗尽/积压溢出）两条路都通向永久漏提醒。现在账只在
 // 回执（OnDelivered）里落：没送到的不记，下一轮扫描用同一任务 ID 重排补投——
 // 宁可极小概率重复，也不要静默漏掉一个到期提醒。
-func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activity) error {
+func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activity, submit func(queue.Item) error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -206,7 +206,7 @@ func (f *feature) remind(ctx context.Context, api kernel.API, a calendar.Activit
 			// 回执卡随包裹走：队列报发送成功才落账，失败与丢弃永远不记
 			OnDelivered: func() { f.markTo(tgt, a.ID) },
 		}
-		if err := api.Submit(item); err != nil {
+		if err := submit(item); err != nil {
 			return fmt.Errorf("calexpiry: 投递 %s 到 %s 失败: %w", a.ID, tgt, err)
 		}
 		submitted++

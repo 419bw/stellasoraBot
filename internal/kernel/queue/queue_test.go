@@ -195,6 +195,48 @@ func TestOnDeliveredFiresPerItemOnSuccessOnly(t *testing.T) {
 	}
 }
 
+func TestOnSettledFollowsDeliveredOnlyAfterFinalSuccess(t *testing.T) {
+	sink := &recSink{failFor: 1}
+	d := New(sink, fastPolicy())
+	startDispatcher(t, d)
+
+	var mu sync.Mutex
+	var events []string
+	settled := make(chan struct{}, 1)
+	d.Submit(Item{ID: "m1", Target: "g1", Text: "hi",
+		OnDelivered: func() {
+			mu.Lock()
+			events = append(events, "delivered")
+			mu.Unlock()
+		},
+		OnSettled: func(err error) {
+			_ = d.Stats()
+			mu.Lock()
+			if err != nil {
+				events = append(events, "settled:"+err.Error())
+			} else {
+				events = append(events, "settled:nil")
+			}
+			mu.Unlock()
+			settled <- struct{}{}
+		},
+	})
+
+	select {
+	case <-settled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("最终成功未触发 OnSettled")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0] != "delivered" || events[1] != "settled:nil" {
+		t.Errorf("回执顺序 = %v, want [delivered settled:nil]", events)
+	}
+	if st := d.Stats(); st.Retries != 1 {
+		t.Errorf("Retries = %d, want 1（首次失败不应提前 Settled）", st.Retries)
+	}
+}
+
 func TestDifferentTopicsAreNotMerged(t *testing.T) {
 	sink := &recSink{}
 	d := New(sink, fastPolicy())
@@ -298,12 +340,21 @@ func TestNonRetryableErrorDropsImmediately(t *testing.T) {
 	sink := &recSink{failFor: 99}
 	d := New(sink, fastPolicy())
 	var seenErrs atomicInt
+	settled := make(chan error, 1)
 	d.SetRetryClassifier(func(error) bool { return false })
 	d.OnError = func(Item, error) { seenErrs.add(1) }
 	startDispatcher(t, d)
 
-	d.Submit(Item{ID: "x", Target: "g1", Text: "hi"})
+	d.Submit(Item{ID: "x", Target: "g1", Text: "hi", OnSettled: func(err error) { settled <- err }})
 	waitForStats(t, d, func(s Stats) bool { return s.DroppedFailed == 1 }, 5*time.Second, "不可重试错误未被立刻丢弃")
+	select {
+	case err := <-settled:
+		if err == nil || err.Error() != "sink: 临时失败" {
+			t.Errorf("OnSettled 错误 = %v, want sink 临时失败", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("不可重试失败未触发 OnSettled")
+	}
 
 	st := d.Stats()
 	if st.Retries != 0 {
@@ -368,6 +419,8 @@ func TestOverflowDroppedItemReportsOnError(t *testing.T) {
 	var mu sync.Mutex
 	var overflowed []Item
 	var causes []error
+	var settledIDs []string
+	var settledCauses []error
 	d.OnError = func(it Item, err error) {
 		_ = d.Stats() // 回调可能回访 Dispatcher：持锁调用会自死锁（纪律同 OnDelivered）
 		mu.Lock()
@@ -375,15 +428,24 @@ func TestOverflowDroppedItemReportsOnError(t *testing.T) {
 		overflowed = append(overflowed, it)
 		causes = append(causes, err)
 	}
+	item := func(id string) Item {
+		return Item{ID: id, Target: "g1", Text: id, OnSettled: func(err error) {
+			_ = d.Backlog()
+			mu.Lock()
+			defer mu.Unlock()
+			settledIDs = append(settledIDs, id)
+			settledCauses = append(settledCauses, err)
+		}}
+	}
 	startDispatcher(t, d)
 
-	if err := d.Submit(Item{ID: "a", Target: "g1", Text: "1"}); err != nil {
+	if err := d.Submit(item("a")); err != nil {
 		t.Fatalf("Submit a: %v", err)
 	}
 	<-gate.entered // a 已被 worker 取走并卡在 Send 里
 
 	for _, id := range []string{"b", "c", "d"} {
-		if err := d.Submit(Item{ID: id, Target: "g1", Text: id}); err != nil {
+		if err := d.Submit(item(id)); err != nil {
 			t.Fatalf("Submit %s: %v", id, err)
 		}
 	}
@@ -393,8 +455,9 @@ func TestOverflowDroppedItemReportsOnError(t *testing.T) {
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		n := len(overflowed)
+		settledN := len(settledIDs)
 		mu.Unlock()
-		if n == 1 {
+		if n == 1 && settledN == 1 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -408,6 +471,9 @@ func TestOverflowDroppedItemReportsOnError(t *testing.T) {
 	}
 	if !errors.Is(causes[0], ErrOverflow) {
 		t.Errorf("溢出回调的错误 = %v, want ErrOverflow", causes[0])
+	}
+	if len(settledIDs) != 1 || settledIDs[0] != "c" || !errors.Is(settledCauses[0], ErrOverflow) {
+		t.Errorf("溢出 OnSettled = %v / %v, want c / ErrOverflow", settledIDs, settledCauses)
 	}
 	mu.Unlock()
 
@@ -548,13 +614,28 @@ func TestExpiredMessagesAreDroppedNotSent(t *testing.T) {
 	d := New(sink, p)
 	var expired int
 	var mu sync.Mutex
+	settled := make(chan error, 5)
 	d.OnError = func(Item, error) { mu.Lock(); expired++; mu.Unlock() }
 	startDispatcher(t, d)
 
 	for i := 0; i < 5; i++ {
-		d.Submit(Item{ID: itoa(i), Target: "g1", Text: "t"})
+		d.Submit(Item{ID: itoa(i), Target: "g1", Text: "t", OnSettled: func(err error) { settled <- err }})
 	}
 	waitForStats(t, d, func(s Stats) bool { return s.DroppedExpired >= 3 }, 3*time.Second, "超期消息未被丢弃")
+	for expiredSettled := 0; expiredSettled < 3; {
+		select {
+		case err := <-settled:
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, ErrExpired) {
+				t.Errorf("OnSettled 错误 = %v, want ErrExpired", err)
+			}
+			expiredSettled++
+		case <-time.After(3 * time.Second):
+			t.Fatal("超期丢弃未触发 OnSettled")
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if expired == 0 {
@@ -568,8 +649,13 @@ func TestSubmitRejectsWhenBufferFull(t *testing.T) {
 	d := New(&recSink{}, p) // 故意不 Run，in 通道不会被消费
 
 	var rejected int
+	callbacks := 0
 	for i := 0; i < 20; i++ {
-		if errors.Is(d.Submit(Item{ID: itoa(i), Target: "g1"}), ErrQueueFull) {
+		err := d.Submit(Item{ID: itoa(i), Target: "g1",
+			OnDelivered: func() { callbacks++ },
+			OnSettled:   func(error) { callbacks++ },
+		})
+		if errors.Is(err, ErrQueueFull) {
 			rejected++
 		}
 	}
@@ -578,6 +664,9 @@ func TestSubmitRejectsWhenBufferFull(t *testing.T) {
 	}
 	if st := d.Stats(); st.Rejected != rejected {
 		t.Errorf("Rejected 统计 = %d, 实际拒绝 %d", st.Rejected, rejected)
+	}
+	if callbacks != 0 {
+		t.Errorf("未 Run 的 Submit 触发 %d 个回执，同步拒绝不应有终态回调", callbacks)
 	}
 }
 

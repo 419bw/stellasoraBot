@@ -194,6 +194,133 @@ func TestRunReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestAsyncInFlightRejectsRescheduleAndStaleDone(t *testing.T) {
+	s := New()
+	onErr := make(chan error, 2)
+	s.OnError = func(_ string, err error) { onErr <- err }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+
+	var calls atomic.Int64
+	dones := make(chan func(error), 3)
+	scheduleAsync := func(at time.Time) {
+		s.Schedule(Task{ID: "a", At: at, AsyncFn: func(_ context.Context, done func(error)) error {
+			calls.Add(1)
+			dones <- done
+			return nil
+		}})
+	}
+	scheduleAsync(time.Now().Add(30 * time.Millisecond))
+	var firstDone func(error)
+	select {
+	case firstDone = <-dones:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一代异步任务未触发")
+	}
+
+	for i := 0; i < 3; i++ {
+		s.Schedule(Task{ID: "a", At: time.Now().Add(-time.Second), Fn: func(context.Context) error {
+			calls.Add(100)
+			return nil
+		}})
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("InFlight 期间 Fn 调用计数 = %d, want 1", got)
+	}
+	if s.Pending() != 0 {
+		t.Errorf("InFlight 被错误计入 Pending: %d", s.Pending())
+	}
+	if _, ok := s.Next(); ok {
+		t.Error("InFlight 不应成为 Next 待触发任务")
+	}
+	if s.Cancel("a") {
+		t.Error("InFlight 任务不应可取消")
+	}
+
+	firstDone(nil)
+	scheduleAsync(time.Now().Add(-time.Second))
+	var secondDone func(error)
+	select {
+	case secondDone = <-dones:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done 后第二代任务未触发")
+	}
+	firstDone(errors.New("stale done"))
+	s.Schedule(Task{ID: "a", At: time.Now().Add(-time.Second), Fn: func(context.Context) error {
+		calls.Add(100)
+		return nil
+	}})
+	time.Sleep(30 * time.Millisecond)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("旧 Done 误释放了新一代，calls = %d, want 2", got)
+	}
+	select {
+	case err := <-onErr:
+		t.Errorf("旧 Done 不应上报错误: %v", err)
+	default:
+	}
+
+	secondDone(nil)
+	fired := make(chan struct{}, 1)
+	s.Schedule(Task{ID: "a", At: time.Now().Add(-time.Second), Fn: func(context.Context) error {
+		calls.Add(1)
+		fired <- struct{}{}
+		return nil
+	}})
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第二代 Done 后无法注册同步任务")
+	}
+}
+
+func TestAsyncFailureReleasesInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fn   func(context.Context, func(error)) error
+	}{
+		{name: "error", fn: func(context.Context, func(error)) error { return errors.New("boom") }},
+		{name: "panic", fn: func(context.Context, func(error)) error { panic("boom") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New()
+			onErr := make(chan error, 2)
+			s.OnError = func(_ string, err error) { onErr <- err }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go s.Run(ctx)
+
+			s.Schedule(Task{ID: "a", At: time.Now().Add(-time.Second), AsyncFn: tc.fn})
+			select {
+			case err := <-onErr:
+				if !strings.Contains(err.Error(), "boom") {
+					t.Errorf("OnError = %v, want boom", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("异步失败未上报")
+			}
+
+			fired := make(chan struct{}, 1)
+			s.Schedule(Task{ID: "a", At: time.Now().Add(-time.Second), Fn: func(context.Context) error {
+				fired <- struct{}{}
+				return nil
+			}})
+			select {
+			case <-fired:
+			case <-time.After(2 * time.Second):
+				t.Fatal("异步失败后 InFlight 未释放")
+			}
+			select {
+			case err := <-onErr:
+				t.Errorf("重复 OnError: %v", err)
+			case <-time.After(30 * time.Millisecond):
+			}
+		})
+	}
+}
+
 // OnError 是 Fn 失败的唯一出口：任务到点即从堆里弹出删除，错误无人接就是静默丢失。
 // 成功路径绝不回调；失败任务不残留，补投是调用方用同 ID 幂等重排的事。
 func TestOnErrorReceivesFnError(t *testing.T) {

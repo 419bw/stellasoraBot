@@ -79,6 +79,10 @@ func (f flakySink) Send(ctx context.Context, b *queue.Batch) error {
 	return f.sink.Send(ctx, b, f.failEvery, f.latency)
 }
 
+type sinkFunc func(context.Context, *queue.Batch) error
+
+func (f sinkFunc) Send(ctx context.Context, b *queue.Batch) error { return f(ctx, b) }
+
 // ---------- 功能接缝 ----------
 
 func TestFeatureSeamWiresThrough(t *testing.T) {
@@ -138,6 +142,207 @@ func TestFeatureSeamWiresThrough(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("取消后 Run 未退出")
+	}
+}
+
+func TestSchedulePushWaitsForAllItemsAndBusinessReturn(t *testing.T) {
+	releases := map[string]chan struct{}{"one": make(chan struct{}), "two": make(chan struct{})}
+	var releaseOne, releaseTwo sync.Once
+	release := func(id string) {
+		if id == "one" {
+			releaseOne.Do(func() { close(releases[id]) })
+			return
+		}
+		releaseTwo.Do(func() { close(releases[id]) })
+	}
+	entered := make(chan string, 2)
+	sink := sinkFunc(func(ctx context.Context, b *queue.Batch) error {
+		id := b.Items[0].ID
+		entered <- id
+		select {
+		case <-releases[id]:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	r := NewRuntime(sink, queue.DefaultPolicy(), calendar.NewStore(), nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	allowReturn := make(chan struct{})
+	var allowOnce sync.Once
+	allow := func() { allowOnce.Do(func() { close(allowReturn) }) }
+	t.Cleanup(func() {
+		release("one")
+		release("two")
+		allow()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("Run 未退出")
+		}
+	})
+
+	api := &api{runtime: r}
+	settled := make(chan string, 2)
+	item := func(id string) queue.Item {
+		return queue.Item{ID: id, Target: "g:" + id, Text: id,
+			OnSettled: func(error) { settled <- id }}
+	}
+	api.SchedulePush("p", time.Now().Add(-time.Second), func(_ context.Context, submit func(queue.Item) error) error {
+		if err := submit(item("one")); err != nil {
+			return err
+		}
+		if err := submit(item("two")); err != nil {
+			return err
+		}
+		<-allowReturn
+		return nil
+	})
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(3 * time.Second):
+			t.Fatal("两个目标未全部进入 Sink")
+		}
+	}
+
+	release("one")
+	select {
+	case <-settled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("首个目标未终结")
+	}
+	duplicate := make(chan struct{}, 1)
+	api.SchedulePush("p", time.Now().Add(-time.Second), func(context.Context, func(queue.Item) error) error {
+		duplicate <- struct{}{}
+		return nil
+	})
+	select {
+	case <-duplicate:
+		t.Fatal("首个目标终结后就允许了重入")
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	release("two")
+	select {
+	case <-settled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("第二个目标未终结")
+	}
+	time.Sleep(20 * time.Millisecond)
+	api.SchedulePush("p", time.Now().Add(-time.Second), func(context.Context, func(queue.Item) error) error {
+		duplicate <- struct{}{}
+		return nil
+	})
+	select {
+	case <-duplicate:
+		t.Fatal("业务提交函数返回前就允许了重入")
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	allow()
+	nextRan := make(chan struct{}, 1)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		api.SchedulePush("p", time.Now().Add(-time.Second), func(context.Context, func(queue.Item) error) error {
+			nextRan <- struct{}{}
+			return nil
+		})
+		select {
+		case <-nextRan:
+			return
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	t.Fatal("全部终结且业务返回后仍未释放调度任务")
+}
+
+func TestSchedulePushFailureWaitsForAcceptedItem(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		panic bool
+	}{
+		{name: "error"},
+		{name: "panic", panic: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			sink := sinkFunc(func(ctx context.Context, _ *queue.Batch) error {
+				entered <- struct{}{}
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			p := queue.DefaultPolicy()
+			p.QueueSize = 1
+			r := NewRuntime(sink, p, calendar.NewStore(), nil, nil)
+			onErr := make(chan error, 2)
+			r.sched.OnError = func(_ string, err error) { onErr <- err }
+			ctx, cancel := context.WithCancel(context.Background())
+			schedDone := make(chan error, 1)
+			queueDone := make(chan error, 1)
+			go func() { schedDone <- r.sched.Run(ctx) }()
+			t.Cleanup(func() {
+				unblock()
+				cancel()
+				for _, done := range []chan error{schedDone, queueDone} {
+					select {
+					case <-done:
+					case <-time.After(3 * time.Second):
+						t.Error("组件未退出")
+					}
+				}
+			})
+
+			api := &api{runtime: r}
+			api.SchedulePush("p", time.Now().Add(-time.Second), func(_ context.Context, submit func(queue.Item) error) error {
+				if err := submit(queue.Item{ID: "accepted", Target: "g1", Text: "one"}); err != nil {
+					return err
+				}
+				err := submit(queue.Item{ID: "rejected", Target: "g2", Text: "two"})
+				if tc.panic {
+					panic("boom")
+				}
+				return err
+			})
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) && r.queue.Stats().Rejected != 1 {
+				time.Sleep(2 * time.Millisecond)
+			}
+			if r.queue.Stats().Rejected != 1 {
+				t.Fatal("第二个目标未按预期被同步拒绝")
+			}
+			go func() { queueDone <- r.queue.Run(ctx) }()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("已接受目标未进入 Sink")
+			}
+			select {
+			case err := <-onErr:
+				t.Fatalf("已接受目标仍在途就提前完成: %v", err)
+			case <-time.After(40 * time.Millisecond):
+			}
+
+			unblock()
+			select {
+			case err := <-onErr:
+				if tc.panic && !strings.Contains(err.Error(), "boom") {
+					t.Errorf("panic 上报 = %v, want boom", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("已接受目标终结后仍未完成业务错误")
+			}
+		})
 	}
 }
 

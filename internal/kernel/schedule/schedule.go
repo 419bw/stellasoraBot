@@ -17,6 +17,8 @@ type Task struct {
 	// Fn 的 panic 由调度器兜住：降级为错误走 OnError 上报，任务弹出即删的语义
 	// 不变，重排是功能自己的事——业务任务偶发崩溃不该带走整个进程（审计 P2-3）。
 	Fn func(ctx context.Context) error
+	// AsyncFn 返回 nil 后仍占用 ID，直到 done 被调用；返回错误或 panic 会自动完成。
+	AsyncFn func(ctx context.Context, done func(error)) error
 
 	heapIndex int
 	seq       uint64
@@ -70,19 +72,21 @@ type HeapScheduler struct {
 	// OnError 非空时用于接收 Fn 返回的错误。
 	OnError func(id string, err error)
 
-	mu     sync.Mutex
-	tasks  taskHeap
-	byID   map[string]*Task
-	seq    uint64
-	clock  func() time.Time
-	wakeCh chan struct{}
+	mu       sync.Mutex
+	tasks    taskHeap
+	byID     map[string]*Task
+	inFlight map[string]uint64
+	seq      uint64
+	clock    func() time.Time
+	wakeCh   chan struct{}
 }
 
 func New() *HeapScheduler {
 	return &HeapScheduler{
-		byID:   make(map[string]*Task),
-		clock:  time.Now,
-		wakeCh: make(chan struct{}, 1),
+		byID:     make(map[string]*Task),
+		inFlight: make(map[string]uint64),
+		clock:    time.Now,
+		wakeCh:   make(chan struct{}, 1),
 	}
 }
 
@@ -91,10 +95,15 @@ func (s *HeapScheduler) Schedule(t Task) {
 		panic("schedule: 任务缺少 ID，无法幂等改期")
 	}
 	s.mu.Lock()
+	if _, ok := s.inFlight[t.ID]; ok {
+		s.mu.Unlock()
+		return
+	}
 	existing, ok := s.byID[t.ID]
 	if ok {
 		existing.At = t.At
 		existing.Fn = t.Fn
+		existing.AsyncFn = t.AsyncFn
 		heap.Fix(&s.tasks, existing.heapIndex)
 	} else {
 		s.seq++
@@ -166,24 +175,46 @@ func (s *HeapScheduler) runDue(ctx context.Context) {
 		}
 		t := heap.Pop(&s.tasks).(*Task)
 		delete(s.byID, t.ID)
+		if t.AsyncFn == nil {
+			s.mu.Unlock()
+			if err := s.invoke(func() error { return t.Fn(ctx) }); err != nil && s.OnError != nil {
+				s.OnError(t.ID, err)
+			}
+			continue
+		}
+		generation := t.seq
+		s.inFlight[t.ID] = generation
 		s.mu.Unlock()
 
-		if err := s.invoke(t, ctx); err != nil && s.OnError != nil {
-			s.OnError(t.ID, err)
+		done := func(err error) { s.complete(t.ID, generation, err) }
+		if err := s.invoke(func() error { return t.AsyncFn(ctx, done) }); err != nil {
+			done(err)
 		}
 	}
 }
 
-// invoke 是 Fn 边界上的保险丝：业务任务的 panic 一律降级为普通错误，只走 OnError
+func (s *HeapScheduler) complete(id string, generation uint64, cause error) {
+	s.mu.Lock()
+	current, ok := s.inFlight[id]
+	if ok && current == generation {
+		delete(s.inFlight, id)
+	}
+	s.mu.Unlock()
+	if ok && current == generation && cause != nil && s.OnError != nil {
+		s.OnError(id, cause)
+	}
+}
+
+// invoke 是业务任务边界上的保险丝：panic 一律降级为普通错误，只走 OnError
 // 上报，调度循环与进程都活着。逐任务包裹——一个任务 panic 不殃及同批到期的其他
-// 任务。只包 Fn 这一次调用，调度器自身的 bug 该炸还得炸，不吞机制层错误。审计 P2-3。
-func (s *HeapScheduler) invoke(t *Task, ctx context.Context) (err error) {
+// 任务。调度器自身的 bug 该炸还得炸，不吞机制层错误。审计 P2-3。
+func (s *HeapScheduler) invoke(fn func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("schedule: 任务 panic: %v\n%s", r, debug.Stack())
 		}
 	}()
-	return t.Fn(ctx)
+	return fn()
 }
 
 func (s *HeapScheduler) delay() time.Duration {

@@ -36,7 +36,7 @@ type Config struct {
 	Cap      Capturer
 	Fetcher  Fetcher
 	UID      string        // 监听哪个 B站账号
-	Interval time.Duration // 隔多久问一轮；0 会让 time.NewTicker panic
+	Interval time.Duration // 隔多久问一轮；必须为正，否则找不到下一个检查点
 	// Cookie 是 B站登录态（如 SESSDATA 等），大幅降低风控概率。它是凭据，
 	// 从 creds.json 读，不写在配置文件里。
 	Cookie string
@@ -279,17 +279,42 @@ func (f *Feature) MarkPushed(tgt, id string) {
 func (f *Feature) loop(ctx context.Context) {
 	f.round(ctx) // 启动时先跑一轮
 
-	ticker := time.NewTicker(f.cfg.Interval)
-	defer ticker.Stop()
+	// 检查点对齐墙上时钟而非启动相位：重启不再把抓取负载平移到任意时刻，
+	// 多个实例的重启时刻再随机，检查点也落在同一网格上。网格还刻意从整点
+	// 后移一分钟——整点是日历推送与到期提醒的天然触发点，错开减少瞬时并发。
+	if f.cfg.Interval <= 0 {
+		panic("biliwatch: Interval 必须为正，否则轮询找不到下一个检查点")
+	}
+	timer := time.NewTimer(nextPollDelay(time.Now(), f.cfg.Interval))
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			f.round(ctx)
+			timer.Reset(nextPollDelay(time.Now(), f.cfg.Interval))
 		}
 	}
+}
+
+// pollOffset 是检查点相对整点网格的后移量：错开整点上其它定时任务的触发点。
+const pollOffset = time.Minute
+
+// nextPollDelay 给出从 now 到下一个检查点的时长：检查点是「now 所在整点 +
+// pollOffset + k·period」网格上第一个严格晚于 now 的点。每轮从整点重算而非
+// 在上次结果上累加，慢轮与睡眠唤醒后不会补跑积压的轮次。
+func nextPollDelay(now time.Time, period time.Duration) time.Duration {
+	elapsed := now.Sub(now.Truncate(time.Hour))
+	k := 0
+	// elapsed < pollOffset 必须先分流：负 Duration 的整除向零截断成 0，混进
+	// 下面那支会跳过整点后第一个检查点。>= 不能写成 >：恰踩检查点时 > 会
+	// 算出 0 延迟，同一点被 timer 立刻重跑。
+	if elapsed >= pollOffset {
+		k = int((elapsed-pollOffset)/period) + 1
+	}
+	return pollOffset + time.Duration(k)*period - elapsed
 }
 
 // round 执行一轮动态轮询。

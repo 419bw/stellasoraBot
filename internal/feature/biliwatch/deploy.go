@@ -10,8 +10,8 @@ type DeployConfig struct {
 	UID      string     `yaml:"uid"`
 }
 
-// LoadDeployConfig 两项都必须给：Interval 为 0 会让 time.NewTicker 直接 panic，
-// 而 panic 发生在 Start 起的后台轮里，进程没有守护，表现为服务静默停摆。
+// LoadDeployConfig 两项都必须给：Interval 为 0 或负值时轮询循环找不到下一个
+// 检查点，而它发生在 Start 起的后台轮里，进程没有守护，表现为服务静默停摆。
 // UID 留空则是"谁都不监听"——一个空转的轮询循环，比报错更难查。
 func LoadDeployConfig(path string) (DeployConfig, *config.File, error) {
 	var d DeployConfig

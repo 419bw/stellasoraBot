@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -541,5 +542,82 @@ func TestFixtureListRowsDecode(t *testing.T) {
 			t.Errorf("公告 %d 在夹具里重复", it.ID)
 		}
 		seen[it.ID] = true
+	}
+}
+
+// 读不懂的日期行出现时，攒着的条目名必须就地作废：名字活到下一个条目块会偷
+// 别人的窗口。5075 的延期条目把心危盛典挂上紧急悬赏的档期，幽灵进了日历还
+// 发了到期提醒。表里钉住污染形状必杀、紧邻共用窗口不误伤、同名吸收不变，
+// 以及简单规则的取舍（块内先异常后可读：名字丢弃，349 份语料 0 例）。
+func TestUnreadableDateLineDropsPendingNames(t *testing.T) {
+	type wantEntry struct{ name, start, end string }
+	cases := []struct {
+		what string
+		news stellasora.NewsBody
+		want []wantEntry
+	}{
+		{
+			what: "5075 延期条目：名字不许认领下一条目的窗口",
+			news: loadDetail(t, 5075),
+			want: []wantEntry{
+				{"星途一载·特别致谢", "2026-11-10 11:00", "2026-12-04 10:59"},
+				{"紧急悬赏", "2026-11-10 11:00", "2026-11-13 03:59"},
+				{"攻略纪录大征集", "2026-11-10 12:00", "2026-11-17 10:59"},
+			},
+		},
+		{
+			what: "4550 紧邻双池：中间没有 Weird 行，共用窗口不受影响",
+			news: syn("11月13日维护更新说明",
+				`<p>✦ 全新活动<br>- 执笔展卷<br>活动时间：2026/11/13 维护结束后 ~ 2026/11/27 03:59<br>`+
+					`✦ 全新旅人与秘纹<br>- 新增全新地属性五星旅人「风影」，可通过参与限时招募活动「划破黑暗的银枪」获得。<br>`+
+					`- 风属性五星秘纹「春日纪事」限时复刻，可通过参与限时招募活动「春日暖阳梦微醺」获得。<br>`+
+					`招募时间：2026/11/17 12:00 ~ 2026/12/01 10:59</p>`),
+			want: []wantEntry{
+				{"执笔展卷", "2026-11-13 00:00", "2026-11-27 03:59"},
+				{"划破黑暗的银枪", "2026-11-17 12:00", "2026-12-01 10:59"},
+				{"春日暖阳梦微醺", "2026-11-17 12:00", "2026-12-01 10:59"},
+			},
+		},
+		{
+			what: "4169 同名吸收：主线名字被清，签到活动独自认领，结果仍是一条",
+			news: syn("08月11日维护更新说明",
+				`<p>▌版本新增内容<br>✦ 全新剧情<br>- 主线剧情第八章「往日残影」<br>开放时间：2026/08/11 维护结束后常驻<br>`+
+					`- 主线剧情更新纪念签到活动「往日残影」<br>活动时间：2026/08/11 维护结束后 ~ 2026/08/25 03:59<br>`+
+					`✦ 全新活动<br>- 出击海滨阵地<br>活动时间：2026/08/11 维护结束后 ~ 2026/09/08 10:59</p>`),
+			want: []wantEntry{
+				{"往日残影", "2026-08-11 00:00", "2026-08-25 03:59"},
+				{"出击海滨阵地", "2026-08-11 00:00", "2026-09-08 10:59"},
+			},
+		},
+		{
+			what: "块内先异常后可读：名字丢弃（语料 0 例，简单规则的已知取舍）",
+			news: syn("11月10日在线闪断更新",
+				`<p>■ 新增内容<br>- 活动A<br>报名截止 26/11/01<br>活动时间：2026/11/10 11:00 ~ 2026/11/13 03:59<br>`+
+					`- 活动B<br>活动时间：2026/11/10 12:00 ~ 2026/11/17 10:59</p>`),
+			want: []wantEntry{
+				{"活动B", "2026-11-10 12:00", "2026-11-17 10:59"},
+			},
+		},
+	}
+	for _, c := range cases {
+		r := stellasora.Parse(c.news, testZone)
+		if len(r.Entries) != len(c.want) {
+			t.Errorf("%s：条目 = %d, want %d（%+v）", c.what, len(r.Entries), len(c.want), r.Entries)
+			continue
+		}
+		for i, w := range c.want {
+			e := r.Entries[i]
+			if e.Name != w.name || !e.Ival.Start.Equal(at(w.start)) || !e.Ival.End.Equal(at(w.end)) {
+				t.Errorf("%s：条目[%d] = %s %s~%s, want %s %s~%s", c.what, i,
+					e.Name, e.Ival.Start.Format("01-02 15:04"), e.Ival.End.Format("01-02 15:04"),
+					w.name, w.start, w.end)
+			}
+		}
+	}
+
+	// 异常行本身照旧记录：修的是污染，不是把读不懂的形状藏起来，校准还要靠它。
+	r := stellasora.Parse(loadDetail(t, 5075), testZone)
+	if len(r.Weird) != 1 || !strings.Contains(r.Weird[0], "延长至") {
+		t.Errorf("延期行应原样留在 Weird 里：%+v", r.Weird)
 	}
 }

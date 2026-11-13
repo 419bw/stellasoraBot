@@ -274,9 +274,12 @@ func Parse(n NewsBody, loc *time.Location) Result {
 			continue
 		}
 
-		// 含日期却没认出窗口
+		// 含日期却没认出窗口。攒着的名字就地作废：这个块已经用读不懂的方式
+		// 说过时间，名字若活到下一块会偷别人的窗口——5075 的延期条目就把
+		// 心危盛典挂上了紧急悬赏的档期，幽灵进了日历还发了到期提醒。
 		if dateRe.MatchString(ln) && !ignoreDateRe.MatchString(ln) {
 			r.Weird = append(r.Weird, ln)
+			pending = nil
 		}
 	}
 

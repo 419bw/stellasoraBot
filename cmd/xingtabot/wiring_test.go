@@ -263,7 +263,8 @@ maxDays: 60
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o := odc.ToConfig(calops.Config{Zone: zone, Source: "src"}); o.Zone != zone || o.Source != "src" {
+	pendingCh := make(chan []annsync.Item, 1)
+	if o := odc.ToConfig(calops.Config{Zone: zone, Source: "src", Admins: []string{"a"}, Pending: pendingCh}); o.Zone != zone || o.Source != "src" || len(o.Admins) != 1 || o.Pending == nil {
 		t.Error("calops 的接线依赖被 ToConfig 覆盖了")
 	}
 
@@ -300,8 +301,8 @@ retention: 2280h
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := sdc.ToConfig(annsync.Config{Logf: logf}); s.Logf == nil {
-		t.Error("annsync 的 Logf 被 ToConfig 清成 nil 了")
+	if s := sdc.ToConfig(annsync.Config{Logf: logf, OnNewPending: func([]annsync.Item) {}}); s.Logf == nil || s.OnNewPending == nil {
+		t.Error("annsync 的 Logf/OnNewPending 被 ToConfig 清成 nil 了")
 	}
 
 	bdc, _, err := biliwatch.LoadDeployConfig(writeFeatureYML(t, "biliwatch", `

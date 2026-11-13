@@ -10,6 +10,7 @@ package calops
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"xingta/internal/command"
 	"xingta/internal/feature/text"
 	"xingta/internal/kernel"
+	"xingta/internal/kernel/queue"
 	"xingta/internal/qq"
 	"xingta/internal/store"
 )
@@ -35,6 +37,10 @@ type Config struct {
 	Now      func() time.Time
 	Refresh  Refresher
 	Logf     func(format string, args ...any)
+	// Admins 与 Pending 是接线值（main 给），不是功能级可调参数，不进 calops.yml：
+	// 管理员名单是机器级的（config.yml 的 admin），通道是引擎与功能之间的接缝。
+	Admins  []string              // 空 = 待确认通知关闭
+	Pending <-chan []annsync.Item // 引擎"新待确认"批次的接收端；nil = 不启用
 }
 
 func (c Config) withDefaults() Config {
@@ -73,6 +79,8 @@ func (f *feature) Start(ctx context.Context, api kernel.API) error {
 			Usage: "列出解析存疑的活动，可加页码：review 2", Run: command.Text(f.review)},
 		{Name: "override", Admin: true, C2COnly: true,
 			Usage: "改时间：override <id> <开始> <结束> [备注]，时间写 2026-09-08 10:59", Run: command.Text(f.override)},
+		{Name: "extend", Admin: true, C2COnly: true,
+			Usage: "延期（只改终点）：extend <活动名或id> <新结束时间> [备注]，时间写 2026-11-13 10:59", Run: command.Text(f.extend)},
 		{Name: "confirm", Admin: true, C2COnly: true,
 			Usage: "把当前解析值固化下来：confirm <id>", Run: command.Text(f.confirm)},
 		{Name: "hide", Admin: true, C2COnly: true,
@@ -84,6 +92,11 @@ func (f *feature) Start(ctx context.Context, api kernel.API) error {
 		if err := f.reg.Add(c); err != nil {
 			return err
 		}
+	}
+	if len(f.cfg.Admins) > 0 && f.cfg.Pending != nil {
+		go f.drainPending(ctx, api)
+	} else {
+		f.cfg.Logf("calops: 待确认通知未启用（admin 为空或未接线）")
 	}
 	return nil
 }
@@ -102,6 +115,10 @@ func (f *feature) review(ctx context.Context, m *qq.Message, args []string) (str
 	items, err := annsync.ReadItems(f.doc, f.cfg.Source)
 	if err != nil {
 		return "", fmt.Errorf("读公告快照: %w", err)
+	}
+	active, err := annsync.ReadActiveRecs(f.doc, f.cfg.Source)
+	if err != nil {
+		return "", fmt.Errorf("读在历活动: %w", err)
 	}
 
 	rows := make([]string, 0, len(pending)+len(items))
@@ -136,8 +153,9 @@ func (f *feature) review(ctx context.Context, m *qq.Message, args []string) (str
 		if !it.Published.IsZero() {
 			when = it.Published.In(f.cfg.Zone).Format("01-02 15:04") + " 发"
 		}
-		rows = append(rows, fmt.Sprintf("· %s\n  %s %s［%s］",
-			label, when, text.OneLine(it.Title), note))
+		row := fmt.Sprintf("· %s\n  %s %s［%s］",
+			label, when, text.OneLine(it.Title), note)
+		rows = append(rows, row+f.sameNameHint(it.Title, active))
 	}
 
 	page, _ := pageArg(args)
@@ -152,6 +170,39 @@ func (f *feature) review(ctx context.Context, m *qq.Message, args []string) (str
 		out += fmt.Sprintf("\n更早未采信的 %d 条没列出来（超过 30 天的旧公告）", len(ancient))
 	}
 	return out, nil
+}
+
+// 仅用于 review 提示：从公告标题里取第一对引号内的活动名。与解析器的命名判据
+// 同形但各管各的——这里只做展示线索，不参与任何数据判定。
+var reviewNameRe = regexp.MustCompile(`[「『]([^」』]{1,40})[」』]`)
+
+// sameNameHint 给可疑公告附上同名在历记录：待确认桶里的快照号不是记录 ID，
+// 不给出真正能改的那条，运维就得自己考古原公告号。
+func (f *feature) sameNameHint(title string, active []annsync.Rec) string {
+	m := reviewNameRe.FindStringSubmatch(title)
+	if m == nil {
+		return ""
+	}
+	want := annsync.NormName(strings.TrimSpace(m[1]))
+	var hits []annsync.Rec
+	for _, r := range active {
+		if annsync.NormName(r.Title) == want {
+			hits = append(hits, r)
+		}
+	}
+	if len(hits) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, h := range hits {
+		if i == 3 {
+			fmt.Fprintf(&b, "\n  …等 %d 条同名", len(hits))
+			break
+		}
+		fmt.Fprintf(&b, "\n  同名在历：%s（%s → %s）", h.ID, f.when(h.Start), f.when(h.End))
+	}
+	fmt.Fprintf(&b, "\n  改期发：extend %s <新结束时间>", hits[0].ID)
+	return b.String()
 }
 
 func (f *feature) override(ctx context.Context, m *qq.Message, args []string) (string, error) {
@@ -193,6 +244,86 @@ func (f *feature) override(ctx context.Context, m *qq.Message, args []string) (s
 
 	return fmt.Sprintf("已覆盖 %s\n  %s\n  原解析：%s［%s］\n  改为：%s → %s%s",
 		id, text.OneLine(rec.Title), oldStartEnd(rec, f), rec.Status,
+		f.when(start), f.when(end), noteSuffix(o.Note)), nil
+}
+
+// extend 是延期专用：官方延长活动时人只需要给新终点，起点与既有覆盖的其余字段
+// 原样保留。按名字定位省掉"考古原公告号再拼三段 ID"——review 里的快照号不是
+// 记录 ID，照抄必然失败，这条路就是为那个死胡同开的。
+func (f *feature) extend(ctx context.Context, m *qq.Message, args []string) (string, error) {
+	if len(args) == 0 {
+		return "缺少活动名或 ID。写法：extend <活动名或id> <新结束时间> [备注]，时间写 2026-11-13 10:59", nil
+	}
+	var rec annsync.Rec
+	if strings.Count(args[0], ":") >= 2 {
+		r, ok, err := annsync.ReadRec(f.doc, args[0])
+		if err != nil {
+			return "", fmt.Errorf("读活动记录: %w", err)
+		}
+		if !ok {
+			return f.notFound(args[0]), nil
+		}
+		rec = r
+	} else {
+		rs, err := annsync.ReadActiveRecs(f.doc, f.cfg.Source)
+		if err != nil {
+			return "", fmt.Errorf("读在历活动: %w", err)
+		}
+		want := annsync.NormName(args[0])
+		var hits []annsync.Rec
+		for _, r := range rs {
+			if annsync.NormName(r.Title) == want {
+				hits = append(hits, r)
+			}
+		}
+		switch len(hits) {
+		case 0:
+			return fmt.Sprintf("没找到叫 %q 的在历活动；发 events 看名字，或用 review 里的 ID", args[0]), nil
+		case 1:
+			rec = hits[0]
+		default:
+			// 复玩活动同名不同窗，改错一期全群都看到错时间——宁可让人挑。
+			var b strings.Builder
+			b.WriteString("同名多条，用 ID 重发：extend <id> <新结束时间>")
+			for _, h := range hits {
+				fmt.Fprintf(&b, "\n· %s\n  %s（%s → %s）", h.ID, text.OneLine(h.Title), f.when(h.Start), f.when(h.End))
+			}
+			return b.String(), nil
+		}
+	}
+
+	end, rest, err := takeTime(args[1:], f.cfg.Now(), f.cfg.Zone, true)
+	if err != nil {
+		return "新结束时间没看懂：" + err.Error() + "\n写法：extend " + args[0] + " 2026-11-13 10:59", nil
+	}
+	old, _, _ := f.ov.Get(rec.ID)
+	start := old.Start
+	if start.IsZero() {
+		start = rec.Start
+	}
+	if start.IsZero() {
+		return "这条还没有起点，没法只改终点；用 override 写全起止", nil
+	}
+	if !end.After(start) {
+		return fmt.Sprintf("结束时间 %s 不在开始时间 %s 之后，这样写日历上会显示不出来",
+			f.when(end), f.when(start)), nil
+	}
+	o := annsync.Override{
+		Start: start, End: end, Title: old.Title, Hide: old.Hide,
+		Note: firstNonEmpty(strings.TrimSpace(strings.Join(rest, " ")), "人工延期"),
+		By:   m.Display(), At: f.cfg.Now(),
+	}
+	if err := f.ov.Put(rec.ID, o); err != nil {
+		return "", fmt.Errorf("写覆盖: %w", err)
+	}
+	f.touch()
+
+	oldEnd := old.End
+	if oldEnd.IsZero() {
+		oldEnd = rec.End
+	}
+	return fmt.Sprintf("已延期 %s（%s）\n  原：%s → %s\n  改为：%s → %s%s",
+		text.OneLine(rec.Title), rec.ID, f.when(start), f.when(oldEnd),
 		f.when(start), f.when(end), noteSuffix(o.Note)), nil
 }
 
@@ -439,4 +570,68 @@ func parseClock(s string) (hh, mm, ss int, ok bool) {
 		}
 	}
 	return 0, 0, 0, false
+}
+
+// drainPending 把引擎报来的"新待确认"批次投成管理员私聊。走队列而不是直发：
+// 限流、退避、日额度全在那一条路上，主动消息的规矩不能绕。
+func (f *feature) drainPending(ctx context.Context, api kernel.API) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case items := <-f.cfg.Pending:
+			msg := formatPending(items, f.cfg.Zone, f.cfg.Source)
+			for _, admin := range f.cfg.Admins {
+				it := queue.Item{
+					ID:     fmt.Sprintf("calops:pending:%s:%d@u:%s", f.cfg.Source, f.cfg.Now().UnixMilli(), admin),
+					Target: "u:" + admin,
+					Text:   msg,
+				}
+				if err := api.Submit(it); err != nil {
+					f.cfg.Logf("calops: 待确认通知投递失败（%s）: %v", admin, err)
+				}
+			}
+		}
+	}
+}
+
+const pendingNoticeCap = 10
+
+// formatPending 一批新待确认合成一条私聊。封顶条数：冷启动全新库可能一次冒出
+// 几十条旧公告，全列出来会撞平台单条长度上限，尾巴交代数量即可。
+func formatPending(items []annsync.Item, zone *time.Location, source string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "新待确认公告（%d 条）：", len(items))
+	for i, it := range items {
+		if i == pendingNoticeCap {
+			fmt.Fprintf(&b, "\n…等 %d 条", len(items)-pendingNoticeCap)
+			break
+		}
+		label := it.Ref.ID
+		if source != "" {
+			label = source + ":" + it.Ref.ID
+		}
+		when := "发布时间未知"
+		if !it.Published.IsZero() {
+			when = it.Published.In(zone).Format("01-02 15:04") + " 发"
+		}
+		fmt.Fprintf(&b, "\n· %s（%s，%s）", text.OneLine(it.Title), label, when)
+		note := it.Note
+		if note == "" {
+			note = eventsBrief(it.Events)
+		}
+		if note != "" {
+			fmt.Fprintf(&b, "\n  %s", text.OneLine(note))
+		}
+	}
+	b.WriteString("\n发 review 看全部；改期可发 extend <活动名> <新结束时间>")
+	return b.String()
+}
+
+func eventsBrief(evs []annsync.Event) string {
+	parts := make([]string, 0, len(evs))
+	for _, ev := range evs {
+		parts = append(parts, text.OneLine(ev.Title)+"［"+ev.Status+"］")
+	}
+	return strings.Join(parts, "、")
 }

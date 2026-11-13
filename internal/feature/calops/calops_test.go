@@ -3,6 +3,7 @@ package calops_test
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -11,7 +12,9 @@ import (
 	"xingta/internal/annsync"
 	"xingta/internal/command"
 	"xingta/internal/feature/calops"
+	"xingta/internal/kernel"
 	"xingta/internal/kernel/calendar"
+	"xingta/internal/kernel/queue"
 	"xingta/internal/qq"
 	"xingta/internal/store/storetest"
 )
@@ -470,7 +473,7 @@ func TestHideRemovesFromCalendarAndShowRestores(t *testing.T) {
 // 门槛由机制层统一查，功能只负责声明。
 func TestEveryOpsCommandIsAdminOnly(t *testing.T) {
 	r := newRig(t)
-	for _, name := range []string{"review", "override", "confirm", "hide", "show"} {
+	for _, name := range []string{"review", "override", "extend", "confirm", "hide", "show"} {
 		c, ok := r.reg.Lookup(name)
 		if !ok {
 			t.Errorf("命令 %q 没注册上", name)
@@ -628,7 +631,7 @@ func TestReviewListsRecentSuspectsAndHidesAncient(t *testing.T) {
 // 运维命令全部使用纯英文唯一命令名，且不设别名。
 func TestAllAdminCommandsRegistered(t *testing.T) {
 	r := newRig(t)
-	for _, name := range []string{"review", "override", "confirm", "hide", "show"} {
+	for _, name := range []string{"review", "override", "extend", "confirm", "hide", "show"} {
 		c, ok := r.reg.Lookup(name)
 		if !ok {
 			t.Errorf("命令 %q 没注册上", name)
@@ -640,5 +643,291 @@ func TestAllAdminCommandsRegistered(t *testing.T) {
 		if len(c.Aliases) != 0 {
 			t.Errorf("命令 %q 不应包含别名: %+v", name, c.Aliases)
 		}
+	}
+}
+
+// ---- extend ----------------------------------------------------------------
+
+func TestExtendByNameChangesOnlyEnd(t *testing.T) {
+	r := newRig(t)
+	r.seed(t)
+	r.waitFor(t, "乾淨活動进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
+	rec, _, _ := annsync.ReadRec(r.doc, "test:1:0")
+
+	newEnd := time.Date(2026, 9, 30, 23, 0, 0, 0, zone)
+	got := r.run(t, "extend", "乾淨活動", "2026-09-30", "23:00", "官方延期")
+	if !strings.Contains(got, "已延期") || !strings.Contains(got, "test:1:0") {
+		t.Errorf("回复没确认改了哪条：%q", got)
+	}
+	if !strings.Contains(got, "官方延期") || !strings.Contains(got, "原：") {
+		t.Errorf("回复缺备注或原窗口，人工核不出改了什么：%q", got)
+	}
+
+	r.waitFor(t, "延期生效到日历且起点不变", func() bool {
+		a, ok := r.cal.Get("test:1:0")
+		return ok && a.End.Equal(newEnd) && a.Start.Equal(rec.Start)
+	})
+	o, ok, err := annsync.NewOverrideStore(r.doc).Get("test:1:0")
+	if err != nil || !ok {
+		t.Fatalf("覆盖没落盘：ok=%v err=%v", ok, err)
+	}
+	if !o.Start.Equal(rec.Start) || !o.End.Equal(newEnd) || o.Hide || o.Note != "官方延期" {
+		t.Errorf("覆盖内容 = %+v", o)
+	}
+
+	// 只写日期：按当天 23:59:59，与 override 的收敛一致
+	r.run(t, "extend", "乾淨活動", "2026-10-05")
+	eod := time.Date(2026, 10, 5, 23, 59, 59, 0, zone)
+	r.waitFor(t, "日期写法生效", func() bool {
+		a, ok := r.cal.Get("test:1:0")
+		return ok && a.End.Equal(eod)
+	})
+
+	// 官方改口重抓，人工延期不被冲掉
+	r.src.revise("1", annsync.Item{
+		Title: "乾淨活動",
+		Events: []annsync.Event{{
+			Title: "乾淨活動", Label: "活動時間",
+			Start: now.Add(-48 * time.Hour), End: now.Add(24 * time.Hour), Status: annsync.StatusOK,
+		}},
+	})
+	r.waitFor(t, "重抓后延期仍在", func() bool {
+		a, ok := r.cal.Get("test:1:0")
+		return ok && a.End.Equal(eod)
+	})
+	deadline := time.Now().Add(150 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		a, ok := r.cal.Get("test:1:0")
+		if !ok || !a.End.Equal(eod) {
+			t.Fatalf("后续刷新把延期冲掉了：%+v (ok=%v)", a, ok)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestExtendRejectsBadInput(t *testing.T) {
+	r := newRig(t)
+	r.seed(t)
+	r.waitFor(t, "进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
+
+	cases := []struct {
+		what string
+		args []string
+		want string
+	}{
+		{"缺参", nil, "缺少活动名或 ID"},
+		{"名字不存在", []string{"查無此名", "2026-09-30", "10:59"}, "没找到"},
+		{"终点早于起点", []string{"乾淨活動", "2026-08-01", "10:59"}, "不在开始时间"},
+		{"时间看不懂", []string{"乾淨活動", "下周三"}, "没看懂"},
+		{"没有起点的记录", []string{"test:2:0", "2026-09-30", "10:59"}, "还没有起点"},
+		{"ID 不存在", []string{"test:99:0", "2026-09-30", "10:59"}, "找不到"},
+	}
+	for _, c := range cases {
+		got := r.run(t, "extend", c.args...)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s：回复 = %q, want 含 %q", c.what, got, c.want)
+		}
+	}
+	if ovs, _ := annsync.NewOverrideStore(r.doc).All(); len(ovs) != 0 {
+		t.Errorf("被拒的写法不该留下任何覆盖：%v", ovs)
+	}
+}
+
+// 复玩活动同名不同窗：改错一期全群看到错时间，必须列候选让人挑，不能默认改一条。
+func TestExtendMultipleMatchesListsCandidates(t *testing.T) {
+	r := newRig(t)
+	r.src.set("1", annsync.Item{
+		Title: "複玩活動",
+		Events: []annsync.Event{{
+			Title: "複玩活動", Start: now.Add(-24 * time.Hour), End: now.Add(24 * time.Hour), Status: annsync.StatusOK,
+		}},
+	})
+	r.src.set("2", annsync.Item{
+		Title: "複玩活動",
+		Events: []annsync.Event{{
+			Title: "複玩活動", Start: now.Add(48 * time.Hour), End: now.Add(96 * time.Hour), Status: annsync.StatusOK,
+		}},
+	})
+	r.waitRecs(t, 2)
+
+	got := r.run(t, "extend", "複玩活動", "2026-09-30", "10:59")
+	if !strings.Contains(got, "同名多条") || !strings.Contains(got, "test:1:0") || !strings.Contains(got, "test:2:0") {
+		t.Errorf("同名多条该列候选且不写：%q", got)
+	}
+	if ovs, _ := annsync.NewOverrideStore(r.doc).All(); len(ovs) != 0 {
+		t.Errorf("候选阶段不该写覆盖：%v", ovs)
+	}
+}
+
+// 已有覆盖时 extend 只动终点：起点、改名、隐藏状态都是人工核过的，不能被顺手冲掉。
+func TestExtendPreservesExistingOverride(t *testing.T) {
+	r := newRig(t)
+	r.seed(t)
+	r.waitFor(t, "进日历", func() bool { _, ok := r.cal.Get("test:1:0"); return ok })
+
+	ov := annsync.NewOverrideStore(r.doc)
+	customStart := time.Date(2026, 9, 1, 11, 0, 0, 0, zone)
+	if err := ov.Put("test:1:0", annsync.Override{
+		Start: customStart, End: now.Add(48 * time.Hour), Title: "人工改名", Note: "核对过",
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	r.run(t, "hide", "test:1:0", "先藏起来")
+
+	newEnd := time.Date(2026, 9, 30, 10, 59, 0, 0, zone)
+	got := r.run(t, "extend", "test:1:0", "2026-09-30", "10:59")
+	if !strings.Contains(got, "已延期") {
+		t.Fatalf("按 ID 延期没写成：%q", got)
+	}
+	o, ok, err := ov.Get("test:1:0")
+	if err != nil || !ok {
+		t.Fatalf("覆盖读不回：ok=%v err=%v", ok, err)
+	}
+	if !o.Start.Equal(customStart) || !o.End.Equal(newEnd) || o.Title != "人工改名" || !o.Hide {
+		t.Errorf("覆盖的其余字段被冲掉了：%+v", o)
+	}
+	r.waitFor(t, "隐藏状态保留（重投影后仍在历外）", func() bool { _, ok := r.cal.Get("test:1:0"); return !ok })
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, ok := r.cal.Get("test:1:0"); ok {
+			t.Fatal("隐藏的记录被延期顺手放出来了")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestReviewHintsSameNameRecord(t *testing.T) {
+	r := newRig(t)
+	r.src.set("1", annsync.Item{
+		Title: "「心危盛典」活动说明",
+		Events: []annsync.Event{{
+			Title: "心危盛典", Start: now.Add(-24 * time.Hour), End: now.Add(24 * time.Hour), Status: annsync.StatusOK,
+		}},
+	})
+	r.src.set("2", annsync.Item{Title: "「心危盛典」活动说明", Suspect: true})
+	r.waitRecs(t, 1)
+
+	got := r.run(t, "review")
+	if !strings.Contains(got, "同名在历：test:1:0") {
+		t.Errorf("可疑公告没附同名在历记录，运维还得自己考古公告号：%q", got)
+	}
+	if !strings.Contains(got, "extend test:1:0") {
+		t.Errorf("没给出可抄的改期命令：%q", got)
+	}
+}
+
+// ---- 待确认通知 --------------------------------------------------------------
+
+// fakeAPI 只实现 Submit：drain 只用到这一面，其余方法嵌空接口即可。
+type fakeAPI struct {
+	kernel.API
+	mu  sync.Mutex
+	got []queue.Item
+}
+
+func (a *fakeAPI) Submit(it queue.Item) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.got = append(a.got, it)
+	return nil
+}
+
+func (a *fakeAPI) submitted() []queue.Item {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]queue.Item(nil), a.got...)
+}
+
+func startOps(t *testing.T, cfg calops.Config, api kernel.API) {
+	t.Helper()
+	ops := calops.New(storetest.NewMem(), command.NewRegistry(), cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := ops.Start(ctx, api); err != nil {
+		t.Fatalf("calops Start: %v", err)
+	}
+}
+
+func TestPendingNoticeReachesEveryAdmin(t *testing.T) {
+	ch := make(chan []annsync.Item, 4)
+	api := &fakeAPI{}
+	startOps(t, calops.Config{
+		Source: "test", Zone: zone, PageSize: 4,
+		Now:    func() time.Time { return now },
+		Admins: []string{"A", "B"}, Pending: ch,
+	}, api)
+
+	ch <- []annsync.Item{
+		{Ref: annsync.Ref{ID: "5054"}, Title: "「心危盛典」活动说明", Suspect: true,
+			Note: "标题像活动公告，但正文没抓到时间窗口", Published: now},
+		{Ref: annsync.Ref{ID: "2"}, Title: "說不清的活動",
+			Events: []annsync.Event{{Title: "說不清的活動", Status: annsync.StatusPending}}},
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(api.submitted()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	got := api.submitted()
+	if len(got) != 2 {
+		t.Fatalf("每个管理员应恰一条，实际 %d 条", len(got))
+	}
+	targets := map[string]bool{}
+	for _, it := range got {
+		targets[it.Target] = true
+		if !strings.Contains(it.Text, "心危盛典") || !strings.Contains(it.Text, "test:5054") {
+			t.Errorf("通知没带上标题与公告号：%q", it.Text)
+		}
+		if !strings.Contains(it.Text, "說不清的活動［pending］") {
+			t.Errorf("无 Note 的条目该列子活动与状态：%q", it.Text)
+		}
+		if !strings.Contains(it.Text, "review") || !strings.Contains(it.Text, "extend") {
+			t.Errorf("通知没指下一步操作：%q", it.Text)
+		}
+	}
+	if !targets["u:A"] || !targets["u:B"] {
+		t.Errorf("投递目标 = %v，want u:A 与 u:B", targets)
+	}
+}
+
+func TestPendingNoticeOffWithoutAdmins(t *testing.T) {
+	ch := make(chan []annsync.Item, 4)
+	api := &fakeAPI{}
+	startOps(t, calops.Config{
+		Source: "test", Zone: zone, PageSize: 4,
+		Now: func() time.Time { return now }, Pending: ch,
+	}, api)
+
+	ch <- []annsync.Item{{Ref: annsync.Ref{ID: "1"}, Title: "可疑", Suspect: true}}
+	time.Sleep(60 * time.Millisecond)
+	if got := api.submitted(); len(got) != 0 {
+		t.Errorf("admin 为空时不该发任何通知：%d 条", len(got))
+	}
+}
+
+func TestPendingNoticeCapsLongBatch(t *testing.T) {
+	ch := make(chan []annsync.Item, 4)
+	api := &fakeAPI{}
+	startOps(t, calops.Config{
+		Source: "test", Zone: zone, PageSize: 4,
+		Now:    func() time.Time { return now },
+		Admins: []string{"A"}, Pending: ch,
+	}, api)
+
+	items := make([]annsync.Item, 12)
+	for i := range items {
+		items[i] = annsync.Item{Ref: annsync.Ref{ID: fmt.Sprint(i)}, Title: fmt.Sprintf("公告%02d", i), Suspect: true}
+	}
+	ch <- items
+	deadline := time.Now().Add(3 * time.Second)
+	for len(api.submitted()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	got := api.submitted()
+	if len(got) != 1 {
+		t.Fatalf("应恰一条，实际 %d", len(got))
+	}
+	msg := got[0].Text
+	if !strings.Contains(msg, "等 2 条") || !strings.Contains(msg, "公告09") || strings.Contains(msg, "公告10") {
+		t.Errorf("长批次该封顶并交代数量：%q", msg)
 	}
 }

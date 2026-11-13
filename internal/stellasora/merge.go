@@ -1,8 +1,6 @@
 package stellasora
 
 import (
-	"regexp"
-	"strings"
 	"time"
 
 	"xingta/internal/annsync"
@@ -140,13 +138,8 @@ func (s *Source) Merge(all []annsync.Item) []annsync.Item {
 	return out
 }
 
-// normEventName 配对用的名字规范化：去空白与常见标点，剥引号。
-// 「优雅起舞 千金驾到」与「优雅起舞 千金驾到！」（官方加叹号）必须配得上。
-var punctRe = regexp.MustCompile(`[！!。，,、~\s]`)
-
-func normEventName(s string) string {
-	return strings.Trim(punctRe.ReplaceAllString(s, ""), "「」『』")
-}
+// normEventName 用引擎的共享口径：运维侧按名查记录与跨条合并必须配得上一致。
+func normEventName(s string) string { return annsync.NormName(s) }
 
 func ioU(s1, e1, s2, e2 time.Time) float64 {
 	maxStart := s1

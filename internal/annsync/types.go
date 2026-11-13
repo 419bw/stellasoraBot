@@ -160,6 +160,10 @@ type Config struct {
 	Retention time.Duration
 	Now       func() time.Time
 	Logf      func(format string, args ...any)
+	// OnNewPending 报告本轮"新进入待确认桶"的条目（上一份快照不在桶里、这份在）。
+	// 每轮至多一次，在投影成功之后调用；nil = 关闭。回调跑在引擎唯一的循环
+	// goroutine 上，不得阻塞——通知侧的积压不能拖住整条同步链。
+	OnNewPending func(items []Item)
 }
 
 func (c Config) withDefaults() Config {

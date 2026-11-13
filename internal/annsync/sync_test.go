@@ -3,6 +3,7 @@ package annsync_test
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"xingta/internal/annsync"
 	"xingta/internal/kernel/calendar"
+	"xingta/internal/store"
 	"xingta/internal/store/storetest"
 )
 
@@ -940,4 +942,141 @@ func TestRetentionWindowFiltersAncientAnnouncements(t *testing.T) {
 	if _, ok := w2.inner.Get("fake:zero:0"); !ok {
 		t.Errorf("自定义 7 天保留期下，零值时间活动 fake:zero:0 应当保留")
 	}
+}
+
+// ---- OnNewPending ----------------------------------------------------------
+
+// 通知的去重靠快照迁移本身：新可疑报一次，持续可疑不重报，变干净再变可疑再报。
+// 这条链要是松了，管理员要么被每轮刷屏，要么永远收不到第二次延期。
+func TestOnNewPendingReportsTransitionsOnly(t *testing.T) {
+	doc := storetest.NewMem()
+	w := newWriter()
+	src := newSource("fake", ref("1"))
+	src.mu.Lock()
+	src.items["1"] = annsync.Item{Title: "全是图片的公告", Suspect: true}
+	src.mu.Unlock()
+
+	var mu sync.Mutex
+	var batches [][]annsync.Item
+	cfg := testCfg(nil)
+	cfg.OnNewPending = func(items []annsync.Item) {
+		mu.Lock()
+		defer mu.Unlock()
+		batches = append(batches, items)
+	}
+	start(t, annsync.NewFeature(doc, w, src, nil, cfg))
+
+	waitFor(t, "新可疑条目报一次", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(batches) == 1
+	})
+	mu.Lock()
+	if len(batches[0]) != 1 || batches[0][0].Ref.ID != "1" {
+		mu.Unlock()
+		t.Fatalf("首批内容 = %+v", batches[0])
+	}
+	mu.Unlock()
+	waitNot(t, "持续可疑不重报", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(batches) > 1
+	})
+
+	// 变干净：快照迁移出桶，不报
+	src.mu.Lock()
+	src.items["1"] = annsync.Item{Title: "干净了",
+		Events: []annsync.Event{ev("干净了", base, base.Add(time.Hour), annsync.StatusOK)}}
+	src.mu.Unlock()
+	waitFor(t, "干净快照落盘", func() bool {
+		items, err := annsync.ReadItems(doc, "fake")
+		return err == nil && len(items) == 1 && !items[0].Suspect && len(items[0].Events) == 1
+	})
+	waitNot(t, "变干净不报", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(batches) > 1
+	})
+
+	// 再变可疑（改指纹逼重抓）：是新情况，再报
+	src.mu.Lock()
+	src.items["1"] = annsync.Item{Title: "又可疑了", Suspect: true}
+	src.refs[0] = annsync.Ref{ID: "1", Hash: sha256.Sum256([]byte("changed"))}
+	src.mu.Unlock()
+	waitFor(t, "再次可疑再报", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(batches) == 2
+	})
+}
+
+// 与 review 同口径：30 天以外的旧公告不占桶，也不该拿陈年旧账去打扰管理员。
+func TestOnNewPendingSkipsAncientItems(t *testing.T) {
+	doc := storetest.NewMem()
+	w := newWriter()
+	src := newSource("fake", ref("1"))
+	src.mu.Lock()
+	src.items["1"] = annsync.Item{Title: "半年前的维护说明",
+		Published: base.Add(-40 * 24 * time.Hour), Suspect: true}
+	src.mu.Unlock()
+
+	var mu sync.Mutex
+	calls := 0
+	cfg := testCfg(func() time.Time { return base })
+	cfg.OnNewPending = func([]annsync.Item) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+	}
+	start(t, annsync.NewFeature(doc, w, src, nil, cfg))
+
+	waitFor(t, "旧公告快照落盘", func() bool {
+		items, err := annsync.ReadItems(doc, "fake")
+		return err == nil && len(items) == 1
+	})
+	waitNot(t, "旧公告不报", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls > 0
+	})
+}
+
+// newsScanFailDoc 让 reproject 的第一步（读快照）确定性失败：
+// 数据没投进日历就不该通知，否则管理员收到的是空报。
+type newsScanFailDoc struct{ store.Doc }
+
+func (d newsScanFailDoc) Scan(ns, prefix string, fn func(string, []byte) error) error {
+	if ns == "news" {
+		return errors.New("boom: 读快照失败")
+	}
+	return d.Doc.Scan(ns, prefix, fn)
+}
+
+func TestOnNewPendingSilentWhenProjectionFails(t *testing.T) {
+	mem := storetest.NewMem()
+	w := newWriter()
+	src := newSource("fake", ref("1"))
+	src.mu.Lock()
+	src.items["1"] = annsync.Item{Title: "全是图片的公告", Suspect: true}
+	src.mu.Unlock()
+
+	var mu sync.Mutex
+	calls := 0
+	cfg := testCfg(nil)
+	cfg.OnNewPending = func([]annsync.Item) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+	}
+	start(t, annsync.NewFeature(newsScanFailDoc{mem}, w, src, nil, cfg))
+
+	waitFor(t, "快照已写（抓取本身成功）", func() bool {
+		items, err := annsync.ReadItems(mem, "fake")
+		return err == nil && len(items) == 1
+	})
+	waitNot(t, "投影失败不报", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls > 0
+	})
 }

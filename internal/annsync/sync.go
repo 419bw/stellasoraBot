@@ -150,6 +150,7 @@ func (s *syncer) round(ctx context.Context) error {
 
 	todo := pick(refs, st, full)
 	var aborted error
+	var newPending []Item
 	var prev time.Time
 	for i, r := range todo {
 		if i > 0 {
@@ -172,6 +173,14 @@ func (s *syncer) round(ctx context.Context) error {
 			aborted = fmt.Errorf("抓取 %s/%s: %w", src, r.ID, ferr)
 			break
 		}
+		if s.cfg.OnNewPending != nil && inReviewBucket(item) &&
+			(item.Published.IsZero() || now.Sub(item.Published) < RetryAge) {
+			var old Item
+			oldOK, _ := s.doc.Get(nsNews, src+":"+r.ID, &old)
+			if !oldOK || !inReviewBucket(old) {
+				newPending = append(newPending, item)
+			}
+		}
 		if err := s.saveItem(item); err != nil {
 			return fmt.Errorf("写入 %s/%s: %w", src, r.ID, err)
 		}
@@ -188,6 +197,11 @@ func (s *syncer) round(ctx context.Context) error {
 
 	if err := s.reproject(); err != nil {
 		return err
+	}
+	// 投影成功才报：没投出去的数据运维看不见，通知了也是空报。代价是投影失败时
+	// 本轮迁移丢失（快照已写、不会重放）——罕见的存储错误，条目仍列在 review，可接受。
+	if len(newPending) > 0 && s.cfg.OnNewPending != nil {
+		s.cfg.OnNewPending(newPending)
 	}
 
 	// LastSuccess 记的是"最近一次成功把数据投进日历"：抓取被限流打断也算，
@@ -407,6 +421,20 @@ func pick(refs []Ref, st state, full bool) []Ref {
 // RetryAge 之后的公告不再重抓：真官网实测 28 条半年前解析不出来的旧公告，
 // 会因「有待确认就重抓」每轮重抓，待确认桶永远清不完。公告自己不会变好，到期放手。
 const RetryAge = 30 * 24 * time.Hour
+
+// inReviewBucket 与运维侧「待确认」同口径：整条可疑，或有子活动状态不是
+// ok/fuzzy_start。引擎只报状态迁移，要不要通知、怎么通知是消费方的事。
+func inReviewBucket(it Item) bool {
+	if it.Suspect {
+		return true
+	}
+	for _, ev := range it.Events {
+		if ev.Status != StatusOK && ev.Status != StatusFuzzyStart {
+			return true
+		}
+	}
+	return false
+}
 
 // wantsRetry 报告这条条目值不值得下一轮再解析一次：发布未满 RetryAge（发布时间
 // 未知按刚发算），且整条可疑，或还有待确认/未知状态的子活动。

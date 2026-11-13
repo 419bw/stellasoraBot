@@ -168,7 +168,17 @@ func run() error {
 	logf("身份确认: %s (%s)", profile.Username, profile.ID)
 
 	src := stellasora.New(stellasora.Config{BaseURL: cfg.Source, Zone: zone})
-	sync := annsync.NewFeature(doc, cal, src, nil, syncDC.ToConfig(annsync.Config{Logf: logf}))
+	// 通道解开创建顺序环：calops 要 Refresh: sync，sync 要通知回调。非阻塞发送
+	// 保证引擎 goroutine 永不被通知侧拖住；积压满了丢弃有日志，不静默。
+	pendingCh := make(chan []annsync.Item, 16)
+	onNewPending := func(items []annsync.Item) {
+		select {
+		case pendingCh <- items:
+		default:
+			logf("calops: 待确认通知积压已满，丢弃本批 %d 条", len(items))
+		}
+	}
+	sync := annsync.NewFeature(doc, cal, src, nil, syncDC.ToConfig(annsync.Config{Logf: logf, OnNewPending: onNewPending}))
 	reg := command.NewRegistry()
 
 	// ---- 功能：一行一个，删掉即关掉 ---------------------------------------
@@ -224,6 +234,7 @@ func run() error {
 	rt.Register(calexpiry.New(doc, expiryDC.ToConfig(calexpiry.Config{Zone: zone, Logf: logf})))
 	rt.Register(calops.New(doc, reg, opsDC.ToConfig(calops.Config{
 		Source: src.Name(), Zone: zone, Refresh: sync, Logf: logf,
+		Admins: cfg.Admin, Pending: pendingCh,
 	})))
 	rt.Register(pushops.New(reg, targetStore, pushops.Config{Logf: logf}))
 	if poster != nil {
